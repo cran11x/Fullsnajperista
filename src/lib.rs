@@ -1,10 +1,11 @@
-// lib.rs - Glavni modul
+// lib.rs - CLEAN
 
 pub mod detection;
 pub mod buy;
 pub mod constants;
+pub mod accounts;  // ✅ Sada accounts/ folder postoji
 
-// Re-export najvažnije tipove
+// Re-export
 pub use detection::PumpBuyAccounts;
-pub use buy::{build_buy_instruction, build_buy_instruction_with_min_amount};
+pub use buy::build_buy_instruction;
 pub use constants::*;

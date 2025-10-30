@@ -1,4 +1,4 @@
-// detection.rs - ULTRA FAST
+// detection.rs - OPTIMIZED WITH TIMING FIX
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -24,19 +24,53 @@ pub struct PumpBuyAccounts {
 impl PumpBuyAccounts {
     pub async fn from_initialize_tx(
         rpc: &RpcClient,
-        mint: &Pubkey,
         init_signature: &str,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Pubkey)> {
         let sig = solana_sdk::signature::Signature::from_str(init_signature)?;
 
-        let tx = rpc.get_transaction_with_config(
-            &sig,
-            solana_client::rpc_config::RpcTransactionConfig {
-                encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                max_supported_transaction_version: Some(0),
-                commitment: Some(CommitmentConfig::confirmed()),
+        // ✅ OPTIMIZED for 'confirmed' (dRPC requires it)
+        let mut attempts = 0;
+        let max_attempts = 20;
+
+        println!("      ⚡ Fetching...");
+
+        let tx = loop {
+            match rpc.get_transaction_with_config(
+                &sig,
+                solana_client::rpc_config::RpcTransactionConfig {
+                    encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
+                    max_supported_transaction_version: Some(0),
+                    commitment: Some(CommitmentConfig::confirmed()),  // ✅ Required by dRPC
+                }
+            ).await {
+                Ok(tx) => {
+                    if attempts > 0 {
+                        println!("      ✅ Got it! ({})", attempts + 1);
+                    } else {
+                        println!("      ✅ Got it!");
+                    }
+                    break tx;
+                }
+                Err(e) if attempts < max_attempts => {
+                    attempts += 1;
+                    // Aggressive retry: 80ms, 100ms, 120ms...
+                    let delay = 80 + (attempts * 20);
+
+                    if attempts == 1 {
+                        print!("      ⏳");
+                    } else if attempts % 2 == 0 {
+                        print!(".");
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Err(e) => {
+                    println!("\n      ❌ Failed ({} tries)", attempts + 1);
+                    return Err(anyhow!("TX not available: {}", e));
+                }
             }
-        ).await?;
+        };
 
         if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
             use base64::{engine::general_purpose, Engine as _};
@@ -58,7 +92,10 @@ impl PumpBuyAccounts {
 
             let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
-            // ✅ Nađi Buy instrukciju u istoj TX (nakon Initialize)
+            // ✅ Extract mint (account #1)
+            let mint = account_keys.get(1).ok_or_else(|| anyhow!("No mint found"))?;
+
+            // ✅ Find Buy instruction in the same TX (after Initialize)
             let mut creator_vault: Option<Pubkey> = None;
 
             for ix in instructions {
@@ -70,7 +107,7 @@ impl PumpBuyAccounts {
                             .filter_map(|&idx| account_keys.get(idx as usize).copied())
                             .collect();
 
-                        // Buy instrukcija ima ~16 accounta
+                        // Buy instruction has ~16 accounts
                         if ix_accounts.len() >= 15 {
                             creator_vault = Some(ix_accounts[9]);
                             break;
@@ -98,7 +135,7 @@ impl PumpBuyAccounts {
                 let fee_config = Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")?;
                 let fee_program = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")?;
 
-                return Ok(PumpBuyAccounts {
+                let accounts = PumpBuyAccounts {
                     mint: *mint,
                     bonding_curve,
                     associated_bonding_curve,
@@ -109,17 +146,19 @@ impl PumpBuyAccounts {
                     fee_recipient,
                     fee_config,
                     fee_program,
-                });
+                };
+
+                return Ok((accounts, *mint));
             }
         }
 
-        Err(anyhow!("Failed to extract"))
+        Err(anyhow!("Failed to extract accounts from transaction"))
     }
 
     pub async fn from_existing_buy_tx(
         _rpc: &RpcClient,
         _mint: &Pubkey,
     ) -> Result<Self> {
-        Err(anyhow!("Use from_initialize_tx"))
+        Err(anyhow!("Use from_initialize_tx instead"))
     }
 }

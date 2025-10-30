@@ -1,25 +1,26 @@
-// main.rs - ULTRA FAST
+// main.rs - FIXED
 
 mod detection;
 mod buy;
+mod accounts;  // ✅ Dodaj ovo
 
 use anyhow::{anyhow, Result};
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::{
+    nonblocking::rpc_client::RpcClient,
+    rpc_config::RpcSendTransactionConfig,
+};
 use solana_sdk::{
     bs58,
     compute_budget::ComputeBudgetInstruction,
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
-    signature::{Keypair, Signature, Signer},
+    signature::{Keypair, Signer},
     transaction::VersionedTransaction,
-    commitment_config::CommitmentConfig,
 };
 use spl_associated_token_account::{get_associated_token_address, instruction::create_associated_token_account};
 use std::str::FromStr;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use futures_util::StreamExt;
-use solana_transaction_status::UiTransactionEncoding;
-use solana_client::rpc_config::RpcTransactionConfig;
 
 use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
@@ -54,24 +55,23 @@ impl BotConfig {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    println!("⚡ ULTRA-FAST Sniper");
+    println!("⚡ ULTRA-FAST Sniper v2.0");
     println!("{}", "=".repeat(50));
 
     let wallet = load_wallet()?;
-    println!("💰 {}", wallet.pubkey());
+    println!("💰 Wallet: {}", wallet.pubkey());
 
     let rpc = RpcClient::new(RPC_URL.to_string());
     let balance = rpc.get_balance(&wallet.pubkey()).await?;
-    println!("💵 {} SOL", balance as f64 / 1_000_000_000.0);
+    println!("💵 Balance: {} SOL", balance as f64 / 1_000_000_000.0);
 
     let config = BotConfig::new(wallet);
 
-    println!("\n🎯 {} SOL | Priority: {}",
-             config.sol_amount as f64 / 1_000_000_000.0,
-             config.priority_fee
-    );
+    println!("\n🎯 Buy Amount: {} SOL", config.sol_amount as f64 / 1_000_000_000.0);
+    println!("⚡ Priority Fee: {} (HIGH)", config.priority_fee);
+    println!("🔧 Compute Units: {}", config.compute_units);
 
-    println!("\n📡 Connecting...");
+    println!("\n📡 Connecting to WebSocket...");
     listen_for_new_tokens(config).await?;
 
     Ok(())
@@ -89,7 +89,7 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                 "mentions": [pump_program.to_string()]
             },
             {
-                "commitment": "confirmed"
+                "commitment": "processed"
             }
         ]
     });
@@ -100,7 +100,7 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     use futures_util::SinkExt;
     write.send(WsMessage::Text(subscribe_msg.to_string())).await?;
 
-    println!("✅ Listening\n");
+    println!("✅ Listening for new tokens...\n");
 
     let mut detected = 0;
 
@@ -112,17 +112,18 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                         detected += 1;
 
                         println!("\n🔔 TOKEN #{}", detected);
-                        println!("   {}", signature);
+                        println!("   Signature: {}", signature);
 
                         match ultra_fast_buy(&config, &signature).await {
                             Ok(_) => {
-                                println!("✅ DONE");
+                                println!("✅ BUY COMPLETE!");
                                 if config.one_shot_mode {
+                                    println!("\n👋 One-shot mode: Exiting...");
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("❌ {}", e);
+                                eprintln!("❌ Buy failed: {}", e);
                             }
                         }
                     }
@@ -131,18 +132,29 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
         }
     }
 
-    println!("\n👋 Detected: {}", detected);
+    println!("\n📊 Summary: Detected {} tokens", detected);
     Ok(())
 }
 
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
-    let mint = extract_mint_from_signature(config, init_signature).await?;
-    println!("🪙 {}", mint);
 
-    let accounts = PumpBuyAccounts::from_initialize_tx(&config.rpc, &mint, init_signature).await?;
+
+    let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
+    println!("   🪙 Mint: {}", mint);
 
     let user_wallet = config.wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
+
+    println!("   🏗️  Building transaction...");
+
+    // ✅ FIX: Build buy instruction BEFORE vec
+    let buy_ix = build_buy_instruction(
+        &config.rpc,
+        &accounts,
+        &user_wallet,
+        &user_ata,
+        config.sol_amount,
+    ).await?;
 
     let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
@@ -153,12 +165,7 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             &accounts.mint,
             &spl_token::id(),
         ),
-        build_buy_instruction(
-            &accounts,
-            &user_wallet,
-            &user_ata,
-            config.sol_amount,
-        )?,
+        buy_ix,  // ✅ Add it here
     ];
 
     let recent_blockhash = config.rpc.get_latest_blockhash().await?;
@@ -174,40 +181,20 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         &[&config.wallet],
     )?;
 
-    println!("🚀 SENDING");
-    let signature = config.rpc.send_transaction(&tx).await?;
-
-    println!("✅ {}", signature);
-    println!("   https://solscan.io/tx/{}", signature);
-
-    Ok(())
-}
-
-async fn extract_mint_from_signature(config: &BotConfig, signature: &str) -> Result<Pubkey> {
-    let sig = Signature::from_str(signature)?;
-    let tx = config.rpc.get_transaction_with_config(
-        &sig,
-        RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::JsonParsed),
-            max_supported_transaction_version: Some(0),
-            commitment: Some(CommitmentConfig::confirmed()),
+    println!("   🚀 Sending transaction...");
+    let signature = config.rpc.send_transaction_with_config(
+        &tx,
+        RpcSendTransactionConfig {
+            skip_preflight: true,
+            max_retries: Some(0),
+            ..Default::default()
         }
     ).await?;
 
-    if let solana_transaction_status::EncodedTransaction::Json(ui_tx) = &tx.transaction.transaction {
-        if let solana_transaction_status::UiMessage::Parsed(parsed) = &ui_tx.message {
-            let accounts: Vec<Pubkey> = parsed.account_keys
-                .iter()
-                .filter_map(|key| Pubkey::from_str(&key.pubkey).ok())
-                .collect();
+    println!("   ✅ TX Sent: {}", signature);
+    println!("   🔗 Solscan: https://solscan.io/tx/{}", signature);
 
-            if accounts.len() > 1 {
-                return Ok(accounts[1]);
-            }
-        }
-    }
-
-    Err(anyhow!("Could not extract mint"))
+    Ok(())
 }
 
 fn load_wallet() -> Result<Keypair> {
@@ -224,7 +211,7 @@ fn load_wallet() -> Result<Keypair> {
         return Ok(keypair);
     }
 
-    Err(anyhow!("Set SOLANA_PRIVATE_KEY in .env"))
+    Err(anyhow!("Set SOLANA_PRIVATE_KEY in .env file"))
 }
 
 fn is_initialize_bonding_curve(notification: &serde_json::Value) -> bool {
