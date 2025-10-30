@@ -1,4 +1,4 @@
-// main.rs - Test verzija sa ONE-SHOT modom
+// main.rs - Fixed verzija - procesira JEDAN token po jedan
 
 mod detection;
 mod buy;
@@ -12,8 +12,6 @@ use solana_sdk::{bs58, commitment_config::CommitmentConfig, compute_budget::Comp
 use solana_transaction_status::UiTransactionEncoding;
 use spl_associated_token_account::{get_associated_token_address, instruction::create_associated_token_account};
 use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use futures_util::StreamExt;
 
@@ -153,12 +151,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// WebSocket listener sa one-shot modom
+/// ✅ FIXED: WebSocket listener - procesira JEDAN token po jedan
 async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
-
-    // Shared state za zaustavljanje nakon prvog buy-a
-    let should_stop = Arc::new(AtomicBool::new(false));
 
     let subscribe_msg = serde_json::json!({
         "jsonrpc": "2.0",
@@ -185,14 +180,9 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     println!("   (Press Ctrl+C to stop)\n");
 
     let mut detected_count = 0;
+    let mut successful_buys = 0;
 
     while let Some(msg) = read.next().await {
-        // 🛑 Check da li treba da se zaustavi
-        if should_stop.load(Ordering::Relaxed) {
-            println!("\n🛑 ONE-SHOT MODE: Stopping after successful buy");
-            break;
-        }
-
         if let Ok(WsMessage::Text(text)) = msg {
             if let Ok(notification) = serde_json::from_str::<serde_json::Value>(&text) {
 
@@ -206,42 +196,46 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                         println!("   Time: {}", chrono::Utc::now().format("%H:%M:%S"));
                         println!("{}", "=".repeat(50));
 
-                        // Process novi token
-                        let config_clone = clone_config(&config);
-                        let stop_flag = should_stop.clone();
+                        // ✅ ČEKA da se završi procesiranje PRE nego što pređe na sledeći!
+                        match process_new_token(&config, signature).await {
+                            Ok(_) => {
+                                successful_buys += 1;
 
-                        // Process novi token
-                        let config_clone = clone_config(&config);
-                        let stop_flag = should_stop.clone();
-                        let is_one_shot = config_clone.one_shot_mode;  // ✅ Uzmi PRE move
-
-                        tokio::spawn(async move {
-                            match process_new_token(config_clone, signature).await {
-                                Ok(_) => {
-                                    if is_one_shot {  // ✅ Koristi lokalnu kopiju
-                                        stop_flag.store(true, Ordering::Relaxed);
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("❌ Error processing token: {}", e);
+                                // 🛑 ONE-SHOT MODE: zaustavi se nakon prvog uspešnog buy-a
+                                if config.one_shot_mode {
+                                    println!("\n🛑 ONE-SHOT MODE: Stopping after successful buy");
+                                    break;
                                 }
                             }
-                        });
+                            Err(e) => {
+                                eprintln!("\n❌ Error processing token: {}", e);
+
+                                // Nastavi dalje sa sledećim tokenom
+                                if config.one_shot_mode {
+                                    println!("   (One-shot mode: will try next token)");
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    println!("\n👋 Bot stopped. Total tokens detected: {}", detected_count);
+    println!("\n{}", "=".repeat(50));
+    println!("👋 Bot stopped.");
+    println!("   Total tokens detected: {}", detected_count);
+    println!("   Successful buys: {}", successful_buys);
+    println!("{}", "=".repeat(50));
+
     Ok(())
 }
 
 /// Procesira novi token
-async fn process_new_token(config: BotConfig, signature: String) -> Result<()> {
+async fn process_new_token(config: &BotConfig, signature: String) -> Result<()> {
     println!("🔍 Step 1/4: Fetching transaction details...");
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+  
 
     let sig = Signature::from_str(&signature)?;
     let tx = config.rpc.get_transaction_with_config(
@@ -287,7 +281,7 @@ async fn process_new_token(config: BotConfig, signature: String) -> Result<()> {
     println!("\n🔍 Step 3/4: Building buy transaction...");
     println!("   Amount: {} SOL", config.sol_amount as f64 / 1_000_000_000.0);
 
-    execute_buy(&config, &accounts).await?;
+    execute_buy(config, &accounts).await?;
 
     println!("\n✅ Step 4/4: COMPLETE!");
     Ok(())
@@ -432,19 +426,4 @@ fn extract_mint_from_tx(
         }
     }
     Err(anyhow!("Could not extract mint from transaction"))
-}
-
-fn clone_config(config: &BotConfig) -> BotConfig {
-    BotConfig {
-        rpc: RpcClient::new(RPC_URL.to_string()),
-        wallet: Keypair::from_bytes(&config.wallet.to_bytes()).unwrap(),
-        sol_amount: config.sol_amount,
-        use_jito: config.use_jito,
-        jito_tip: config.jito_tip,
-        priority_fee: config.priority_fee,
-        compute_units: config.compute_units,
-        one_shot_mode: config.one_shot_mode,
-        dry_run: config.dry_run,
-        max_price_sol: config.max_price_sol,
-    }
 }
