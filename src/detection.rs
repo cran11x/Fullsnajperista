@@ -1,4 +1,4 @@
-// detection.rs - OPTIMIZED WITH TIMING FIX
+// detection.rs - FIXED FOR dRPC
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -28,50 +28,31 @@ impl PumpBuyAccounts {
     ) -> Result<(Self, Pubkey)> {
         let sig = solana_sdk::signature::Signature::from_str(init_signature)?;
 
-        // ✅ OPTIMIZED for 'confirmed' (dRPC requires it)
-        let mut attempts = 0;
-        let max_attempts = 20;
-
-        println!("      ⚡ Fetching...");
-
-        let tx = loop {
-            match rpc.get_transaction_with_config(
-                &sig,
-                solana_client::rpc_config::RpcTransactionConfig {
-                    encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                    max_supported_transaction_version: Some(0),
-                    commitment: Some(CommitmentConfig::confirmed()),  // ✅ Required by dRPC
-                }
-            ).await {
-                Ok(tx) => {
-                    if attempts > 0 {
-                        println!("      ✅ Got it! ({})", attempts + 1);
-                    } else {
-                        println!("      ✅ Got it!");
+        // ✅ MINI RETRY - 2 attempts with 80ms delay (dRPC needs time)
+        let tx = match rpc.get_transaction_with_config(
+            &sig,
+            solana_client::rpc_config::RpcTransactionConfig {
+                encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
+                max_supported_transaction_version: Some(0),
+                commitment: Some(CommitmentConfig::confirmed()),  // ✅ dRPC requires 'confirmed'
+            }
+        ).await {
+            Ok(tx) => tx,
+            Err(_) => {
+                // ✅ ONE retry after 80ms
+                tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+                rpc.get_transaction_with_config(
+                    &sig,
+                    solana_client::rpc_config::RpcTransactionConfig {
+                        encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
+                        max_supported_transaction_version: Some(0),
+                        commitment: Some(CommitmentConfig::confirmed()),
                     }
-                    break tx;
-                }
-                Err(e) if attempts < max_attempts => {
-                    attempts += 1;
-                    // Aggressive retry: 80ms, 100ms, 120ms...
-                    let delay = 80 + (attempts * 20);
-
-                    if attempts == 1 {
-                        print!("      ⏳");
-                    } else if attempts % 2 == 0 {
-                        print!(".");
-                    }
-
-                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-                    continue;
-                }
-                Err(e) => {
-                    println!("\n      ❌ Failed ({} tries)", attempts + 1);
-                    return Err(anyhow!("TX not available: {}", e));
-                }
+                ).await.map_err(|e| anyhow!("TX not ready: {}", e))?
             }
         };
 
+        // ✅ Fast parsing
         if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
             use base64::{engine::general_purpose, Engine as _};
             use solana_sdk::message::VersionedMessage;
@@ -95,7 +76,7 @@ impl PumpBuyAccounts {
             // ✅ Extract mint (account #1)
             let mint = account_keys.get(1).ok_or_else(|| anyhow!("No mint found"))?;
 
-            // ✅ Find Buy instruction in the same TX (after Initialize)
+            // ✅ Find creator_vault from Buy instruction
             let mut creator_vault: Option<Pubkey> = None;
 
             for ix in instructions {
@@ -107,7 +88,6 @@ impl PumpBuyAccounts {
                             .filter_map(|&idx| account_keys.get(idx as usize).copied())
                             .collect();
 
-                        // Buy instruction has ~16 accounts
                         if ix_accounts.len() >= 15 {
                             creator_vault = Some(ix_accounts[9]);
                             break;
@@ -128,6 +108,7 @@ impl PumpBuyAccounts {
                         mint
                     );
 
+                // ✅ Static accounts
                 let global = Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")?;
                 let fee_recipient = Pubkey::from_str("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")?;
                 let event_authority = Pubkey::from_str("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")?;
@@ -148,11 +129,12 @@ impl PumpBuyAccounts {
                     fee_program,
                 };
 
+                println!("      ✅ Ready!");
                 return Ok((accounts, *mint));
             }
         }
 
-        Err(anyhow!("Failed to extract accounts from transaction"))
+        Err(anyhow!("Failed to extract accounts"))
     }
 
     pub async fn from_existing_buy_tx(

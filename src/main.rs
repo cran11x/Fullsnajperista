@@ -1,8 +1,8 @@
-// main.rs - FIXED
+// main.rs - BACK TO BASICS - PURE SPEED
 
 mod detection;
 mod buy;
-mod accounts;  // ✅ Dodaj ovo
+mod accounts;
 
 use anyhow::{anyhow, Result};
 use solana_client::{
@@ -44,7 +44,7 @@ impl BotConfig {
             rpc: RpcClient::new(RPC_URL.to_string()),
             wallet,
             sol_amount: 2_000_000,
-            priority_fee: 500_000,
+            priority_fee: 2_000_000,
             compute_units: 300_000,
             one_shot_mode: true,
         }
@@ -55,7 +55,7 @@ impl BotConfig {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    println!("⚡ ULTRA-FAST Sniper v2.0");
+    println!("⚡ SIMPLE FAST Sniper");
     println!("{}", "=".repeat(50));
 
     let wallet = load_wallet()?;
@@ -63,15 +63,15 @@ async fn main() -> Result<()> {
 
     let rpc = RpcClient::new(RPC_URL.to_string());
     let balance = rpc.get_balance(&wallet.pubkey()).await?;
-    println!("💵 Balance: {} SOL", balance as f64 / 1_000_000_000.0);
+    println!("💵 Balance: {} SOL", balance as f64 / 1e9);
 
     let config = BotConfig::new(wallet);
 
-    println!("\n🎯 Buy Amount: {} SOL", config.sol_amount as f64 / 1_000_000_000.0);
-    println!("⚡ Priority Fee: {} (HIGH)", config.priority_fee);
-    println!("🔧 Compute Units: {}", config.compute_units);
+    println!("\n🎯 Buy: {} SOL | Fee: {}",
+             config.sol_amount as f64 / 1e9,
+             config.priority_fee);
 
-    println!("\n📡 Connecting to WebSocket...");
+    println!("\n📡 Connecting...");
     listen_for_new_tokens(config).await?;
 
     Ok(())
@@ -100,7 +100,7 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     use futures_util::SinkExt;
     write.send(WsMessage::Text(subscribe_msg.to_string())).await?;
 
-    println!("✅ Listening for new tokens...\n");
+    println!("✅ Listening...\n");
 
     let mut detected = 0;
 
@@ -112,18 +112,17 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                         detected += 1;
 
                         println!("\n🔔 TOKEN #{}", detected);
-                        println!("   Signature: {}", signature);
+                        println!("   Sig: {}", signature);
 
                         match ultra_fast_buy(&config, &signature).await {
                             Ok(_) => {
-                                println!("✅ BUY COMPLETE!");
+                                println!("✅ DONE!");
                                 if config.one_shot_mode {
-                                    println!("\n👋 One-shot mode: Exiting...");
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("❌ Buy failed: {}", e);
+                                eprintln!("❌ Failed: {}", e);
                             }
                         }
                     }
@@ -132,22 +131,18 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
         }
     }
 
-    println!("\n📊 Summary: Detected {} tokens", detected);
     Ok(())
 }
 
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
-
-
+    // STEP 1: Get accounts
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
-    println!("   🪙 Mint: {}", mint);
+    println!("   🪙 {}", mint);
 
     let user_wallet = config.wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
 
-    println!("   🏗️  Building transaction...");
-
-    // ✅ FIX: Build buy instruction BEFORE vec
+    // STEP 2: Build instruction
     let buy_ix = build_buy_instruction(
         &config.rpc,
         &accounts,
@@ -156,7 +151,7 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         config.sol_amount,
     ).await?;
 
-    let mut instructions = vec![
+    let instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
         ComputeBudgetInstruction::set_compute_unit_price(config.priority_fee),
         create_associated_token_account(
@@ -165,10 +160,12 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             &accounts.mint,
             &spl_token::id(),
         ),
-        buy_ix,  // ✅ Add it here
+        buy_ix,
     ];
 
+    // STEP 3: Get blockhash & build TX
     let recent_blockhash = config.rpc.get_latest_blockhash().await?;
+
     let msg = v0::Message::try_compile(
         &user_wallet,
         &instructions,
@@ -181,7 +178,8 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         &[&config.wallet],
     )?;
 
-    println!("   🚀 Sending transaction...");
+    // STEP 4: Send
+    println!("   🚀 Sending...");
     let signature = config.rpc.send_transaction_with_config(
         &tx,
         RpcSendTransactionConfig {
@@ -191,8 +189,8 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         }
     ).await?;
 
-    println!("   ✅ TX Sent: {}", signature);
-    println!("   🔗 Solscan: https://solscan.io/tx/{}", signature);
+    println!("   ✅ {}", signature);
+    println!("   🔗 https://solscan.io/tx/{}", signature);
 
     Ok(())
 }

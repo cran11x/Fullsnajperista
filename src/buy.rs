@@ -9,6 +9,8 @@ use solana_sdk::{
 use solana_client::nonblocking::rpc_client::RpcClient;
 use borsh::BorshDeserialize;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 use crate::detection::PumpBuyAccounts;
 
@@ -37,6 +39,17 @@ pub async fn calculate_initial_buy_amount(
     Ok(global.get_initial_buy_price(sol_lamports))
 }
 
+static GLOBAL_CACHE: OnceCell<GlobalAccount> = OnceCell::const_new();
+
+pub async fn get_or_fetch_global(rpc: &RpcClient) -> Result<GlobalAccount> {
+    GLOBAL_CACHE.get_or_try_init(|| async {
+        let global_pubkey = Pubkey::from_str(GLOBAL_ACCOUNT)?;
+        let global_data = rpc.get_account_data(&global_pubkey).await?;
+        let global: GlobalAccount = BorshDeserialize::deserialize(&mut &global_data[..])?;
+        Ok::<_, anyhow::Error>(global)
+    }).await.cloned()
+}
+
 pub async fn build_buy_instruction(
     rpc: &RpcClient,
     accounts: &PumpBuyAccounts,
@@ -44,16 +57,20 @@ pub async fn build_buy_instruction(
     user_token_account: &Pubkey,
     sol_lamports: u64,
 ) -> Result<Instruction> {
-    let token_amount = calculate_initial_buy_amount(rpc, sol_lamports).await?;
-    let max_sol_cost = (sol_lamports as u128 * 120 / 100) as u64;  // +20%
-    println!("   💰 Buying: {} tokens for {} SOL",
+    // ✅ Use cached global (1 fetch on first run, then instant)
+    let global = get_or_fetch_global(rpc).await?;
+    let token_amount = global.get_initial_buy_price(sol_lamports);
+
+    let max_sol_cost = (sol_lamports as u128 * 150 / 100) as u64;  // 50% slippage
+
+    println!("   💰 {} tokens for {} SOL (max: {})",
              token_amount,
-             sol_lamports as f64 / 1_000_000_000.0);
+             sol_lamports as f64 / 1e9,
+             max_sol_cost as f64 / 1e9);
 
     let mut data = Vec::with_capacity(32);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
     data.extend_from_slice(&token_amount.to_le_bytes());
-    data.extend_from_slice(&max_sol_cost.to_le_bytes());
     data.extend_from_slice(&max_sol_cost.to_le_bytes());
     data.push(0x00);
 
