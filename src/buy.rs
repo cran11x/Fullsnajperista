@@ -1,4 +1,4 @@
-// buy.rs - USE GIT REPO
+// buy.rs - ULTRA OPTIMIZED WITH CACHE
 
 use anyhow::Result;
 use solana_sdk::{
@@ -9,17 +9,31 @@ use solana_sdk::{
 use solana_client::nonblocking::rpc_client::RpcClient;
 use borsh::BorshDeserialize;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::OnceCell;
+use std::sync::OnceLock;
 
 use crate::detection::PumpBuyAccounts;
-
-// ✅ Import from git repo files you sent
 use crate::accounts::GlobalAccount;
 
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 const GLOBAL_ACCOUNT: &str = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf";
+
+// 🚀 GLOBAL CACHE - ONE FETCH AT STARTUP
+static GLOBAL_CACHE: OnceLock<GlobalAccount> = OnceLock::new();
+
+/// Pre-load global account at startup (call once)
+pub async fn preload_global(rpc: &RpcClient) -> Result<()> {
+    let global_pubkey = Pubkey::from_str(GLOBAL_ACCOUNT)?;
+    let global_data = rpc.get_account_data(&global_pubkey).await?;
+    let global: GlobalAccount = BorshDeserialize::deserialize(&mut &global_data[..])?;
+    GLOBAL_CACHE.set(global).ok();
+    Ok(())
+}
+
+/// Get cached global (instant - no RPC call)
+pub fn get_cached_global() -> Result<&'static GlobalAccount> {
+    GLOBAL_CACHE.get().ok_or_else(|| anyhow::anyhow!("Global not preloaded - call preload_global() first"))
+}
 
 pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID).expect("Invalid pump program");
@@ -29,39 +43,19 @@ pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
     )
 }
 
-pub async fn calculate_initial_buy_amount(
-    rpc: &RpcClient,
-    sol_lamports: u64,
-) -> Result<u64> {
-    let global_pubkey = Pubkey::from_str(GLOBAL_ACCOUNT)?;
-    let global_data = rpc.get_account_data(&global_pubkey).await?;
-    let global: GlobalAccount = BorshDeserialize::deserialize(&mut &global_data[..])?;
-    Ok(global.get_initial_buy_price(sol_lamports))
-}
-
-static GLOBAL_CACHE: OnceCell<GlobalAccount> = OnceCell::const_new();
-
-pub async fn get_or_fetch_global(rpc: &RpcClient) -> Result<GlobalAccount> {
-    GLOBAL_CACHE.get_or_try_init(|| async {
-        let global_pubkey = Pubkey::from_str(GLOBAL_ACCOUNT)?;
-        let global_data = rpc.get_account_data(&global_pubkey).await?;
-        let global: GlobalAccount = BorshDeserialize::deserialize(&mut &global_data[..])?;
-        Ok::<_, anyhow::Error>(global)
-    }).await.cloned()
-}
-
 pub async fn build_buy_instruction(
-    rpc: &RpcClient,
+    _rpc: &RpcClient, // ⚡ Not used anymore - uses cache
     accounts: &PumpBuyAccounts,
     user_wallet: &Pubkey,
     user_token_account: &Pubkey,
     sol_lamports: u64,
 ) -> Result<Instruction> {
-    // ✅ Use cached global (1 fetch on first run, then instant)
-    let global = get_or_fetch_global(rpc).await?;
+    // ⚡ INSTANT - no RPC call
+    let global = get_cached_global()?;
     let token_amount = global.get_initial_buy_price(sol_lamports);
 
-    let max_sol_cost = (sol_lamports as u128 * 150 / 100) as u64;  // 50% slippage
+    // ⚡ 20% slippage for speed (agresivno)
+    let max_sol_cost = (sol_lamports as u128 * 120 / 100) as u64;
 
     println!("   💰 {} tokens for {} SOL (max: {})",
              token_amount,
