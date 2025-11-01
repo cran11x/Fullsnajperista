@@ -1,10 +1,10 @@
-// main.rs - DEFINITIVNA VERZIJA - GARANTOVANO KOMPAJLIRA
+// main.rs - FIXED: Tip included in buy transaction
 
 mod detection;
 mod buy;
 mod accounts;
 mod jito;
-mod helius;  // ⚡ Helius Sender for ultra-low latency
+mod helius;
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -15,20 +15,36 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signer},
     transaction::VersionedTransaction,
+    system_instruction,
 };
 use spl_associated_token_account::{get_associated_token_address, instruction::create_associated_token_account};
 use std::str::FromStr;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use futures_util::StreamExt;
+use rand::seq::SliceRandom;
 
 use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
 use jito::send_jito_bundle;
-use helius::send_helius_transaction;  // ⚡ Helius Sender
+use helius::send_helius_transaction;
 
 const RPC_URL: &str = "https://lb.drpc.org/ogrpc?network=solana&dkey=AovWXi0VzUCig4R4vBTXu4nRoZLjr_kR8LqsQrxF2MGT";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+// ✅ Helius tip accounts (from official docs)
+const HELIUS_TIP_ACCOUNTS: [&str; 10] = [
+    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+    "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
+    "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
+    "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
+    "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
+    "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
+    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+    "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
+    "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+];
 
 struct BotConfig {
     wallet: Keypair,
@@ -37,7 +53,7 @@ struct BotConfig {
     priority_fee: u64,
     compute_units: u32,
     one_shot_mode: bool,
-    submission_mode: SubmissionMode,  // 🚀 Choose: Helius, Jito, or RPC
+    submission_mode: SubmissionMode,
     jito_tip: u64,
 }
 
@@ -57,8 +73,8 @@ impl BotConfig {
             priority_fee: 5_000_000,     // 5M micro-lamports
             compute_units: 250_000,      // Optimized
             one_shot_mode: true,
-            submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST DUAL ROUTING!
-            jito_tip: 1_000_000,         // 0.001 SOL (minimum for Helius)
+            submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST!
+            jito_tip: 1_000_000,         // 0.001 SOL
         }
     }
 }
@@ -67,7 +83,7 @@ impl BotConfig {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    println!("⚡ ULTRA FAST JITO SNIPER");
+    println!("⚡ ULTRA FAST HELIUS SNIPER");
     println!("{}", "=".repeat(50));
 
     let wallet = load_wallet()?;
@@ -172,6 +188,12 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         config.sol_amount,
     ).await?;
 
+    // ✅ FIXED: Add tip to same transaction!
+    let mut rng = rand::thread_rng();
+    let tip_account = Pubkey::from_str(
+        HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap()
+    )?;
+
     let instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
         ComputeBudgetInstruction::set_compute_unit_price(config.priority_fee),
@@ -182,6 +204,12 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             &spl_token::id(),
         ),
         buy_ix,
+        // ✅ TIP in same TX!
+        system_instruction::transfer(
+            &user_wallet,
+            &tip_account,
+            config.jito_tip,
+        ),
     ];
 
     let recent_blockhash = config.rpc.get_latest_blockhash().await?;
@@ -199,16 +227,13 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
     )?;
 
     println!("   🚀 Sending...");
-
-    // Calculate and log transaction signature for tracking
     let tx_sig = tx.signatures[0];
     println!("   📝 TX Sig: {}", tx_sig);
 
     match config.submission_mode {
         SubmissionMode::Helius => {
-            // ⚡ HELIUS SENDER - Dual routing (validators + Jito)
-            let tx_for_helius = tx.clone();
-            match send_helius_transaction(tx_for_helius, &config.wallet, recent_blockhash, config.jito_tip).await {
+            // ⚡ HELIUS SENDER - Tip already in TX!
+            match send_helius_transaction(tx.clone()).await {
                 Ok(signature) => {
                     println!("   ✅ Helius Sender: {}", signature);
                     println!("   ⚡ Dual routed to validators + Jito");
@@ -218,14 +243,11 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
                 }
                 Err(e) => {
                     eprintln!("   ⚠️ Helius failed: {}, trying RPC...", e);
-                    // Fall through to RPC
                 }
             }
         }
         SubmissionMode::Jito => {
-            // 🚀 JITO BUNDLE - Custom implementation
-            let tx_for_jito = tx.clone();
-            match send_jito_bundle(tx_for_jito, &config.wallet, recent_blockhash, config.jito_tip).await {
+            match send_jito_bundle(tx.clone(), &config.wallet, recent_blockhash, config.jito_tip).await {
                 Ok(bundle_id) => {
                     println!("   ✅ Jito Bundle: {}", bundle_id);
                     println!("   ⚡ Bundle submitted to validators");
@@ -235,19 +257,16 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
                 }
                 Err(e) => {
                     eprintln!("   ⚠️ Jito failed: {}, trying RPC...", e);
-                    // Fall through to RPC
                 }
             }
         }
         SubmissionMode::Rpc => {
-            // 📡 Regular RPC - Guaranteed but slower
             println!("   📡 Using Regular RPC...");
         }
     }
 
-    // RPC fallback (or primary if mode is Rpc)
+    // RPC fallback
     let signature = config.rpc.send_transaction(&tx).await?;
-
     println!("   ✅ RPC: {}", signature);
     println!("   🔗 https://solscan.io/tx/{}", signature);
 
