@@ -28,7 +28,7 @@ use buy::build_buy_instruction;
 use jito::send_jito_bundle;
 use helius::send_helius_transaction;
 
-const RPC_URL: &str = "https://lb.drpc.org/ogrpc?network=solana&dkey=AovWXi0VzUCig4R4vBTXu4nRoZLjr_kR8LqsQrxF2MGT";
+const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
@@ -71,7 +71,7 @@ impl BotConfig {
             wallet,
             sol_amount: 2_000_000,       // 0.002 SOL
             priority_fee: 5_000_000,     // 5M micro-lamports
-            compute_units: 250_000,      // Optimized
+            compute_units: 200_000,      // Optimized
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST!
             jito_tip: 1_000_000,         // 0.001 SOL

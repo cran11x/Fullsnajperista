@@ -1,4 +1,4 @@
-// detection.rs - ZERO DELAY, FAIL FAST
+// detection.rs - WITH RETRY LOGIC!
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -28,17 +28,48 @@ impl PumpBuyAccounts {
     ) -> Result<(Self, Pubkey)> {
         let sig = solana_sdk::signature::Signature::from_str(init_signature)?;
 
-        // ⚡ INSTANT FETCH - NO DELAY (risk it for speed!)
-        let tx = rpc.get_transaction_with_config(
-            &sig,
-            solana_client::rpc_config::RpcTransactionConfig {
-                encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                max_supported_transaction_version: Some(0),
-                commitment: Some(CommitmentConfig::confirmed()),
-            }
-        ).await.map_err(|e| anyhow!("TX not ready: {}", e))?;
+        // ⚡ RETRY LOGIC - Wait for TX to be available!
+        let mut attempts = 0;
+        let max_attempts = 8;  // Try for ~2.4 seconds
 
-        // ⚡ Fast parsing
+        let tx = loop {
+            attempts += 1;
+
+            // Try to fetch TX
+            match rpc.get_transaction_with_config(
+                &sig,
+                solana_client::rpc_config::RpcTransactionConfig {
+                    encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
+                    max_supported_transaction_version: Some(0),
+                    commitment: Some(CommitmentConfig::confirmed()),
+                }
+            ).await {
+                Ok(tx) => {
+                    println!("      ✅ TX ready! (attempt {})", attempts);
+                    break tx;
+                }
+                Err(e) => {
+                    if attempts >= max_attempts {
+                        return Err(anyhow!("TX not available after {} attempts: {}", max_attempts, e));
+                    }
+
+                    // Wait progressively longer
+                    let wait_ms = match attempts {
+                        1 => 100,
+                        2 => 150,
+                        3 => 200,
+                        4 => 300,
+                        _ => 400,
+                    };
+
+                    println!("      ⏳ Waiting for TX... ({}/{}, {}ms)",
+                             attempts, max_attempts, wait_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+                }
+            }
+        };
+
+        // Parse transaction
         if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
             use base64::{engine::general_purpose, Engine as _};
             use solana_sdk::message::VersionedMessage;
@@ -59,10 +90,10 @@ impl PumpBuyAccounts {
 
             let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
-            // ⚡ Extract mint (account #1)
+            // Extract mint (account #1)
             let mint = account_keys.get(1).ok_or_else(|| anyhow!("No mint found"))?;
 
-            // ⚡ Find creator_vault from Buy instruction
+            // Find creator_vault from Buy instruction
             let mut creator_vault: Option<Pubkey> = None;
 
             for ix in instructions {
@@ -94,9 +125,9 @@ impl PumpBuyAccounts {
                         mint
                     );
 
-                // ⚡ Static accounts (hardcoded - no RPC)
+                // Static accounts
                 let global = Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")?;
-                let fee_recipient = Pubkey::from_str("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")?;
+                let fee_recipient = Pubkey::from_str("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")?;
                 let event_authority = Pubkey::from_str("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")?;
                 let global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")?;
                 let fee_config = Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")?;
@@ -115,7 +146,6 @@ impl PumpBuyAccounts {
                     fee_program,
                 };
 
-                println!("      ✅ Ready!");
                 return Ok((accounts, *mint));
             }
         }
