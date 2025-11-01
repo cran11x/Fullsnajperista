@@ -54,8 +54,8 @@ pub async fn build_buy_instruction(
     let global = get_cached_global()?;
     let token_amount = global.get_initial_buy_price(sol_lamports);
 
-    // ⚡ 20% slippage for speed (agresivno)
-    let max_sol_cost = (sol_lamports as u128 * 120 / 100) as u64;
+    // ⚡ 100% slippage - better to overpay than fail!
+    let max_sol_cost = (sol_lamports as u128 * 200 / 100) as u64;
 
     println!("   💰 {} tokens for {} SOL (max: {})",
              token_amount,

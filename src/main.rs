@@ -69,12 +69,12 @@ impl BotConfig {
         Self {
             rpc: RpcClient::new(RPC_URL.to_string()),
             wallet,
-            sol_amount: 2_000_000,       // 0.002 SOL
-            priority_fee: 5_000_000,     // 5M micro-lamports
+            sol_amount: 50_000_000,       // 0.02 SOL
+            priority_fee: 9_000_000,     // 5M micro-lamports
             compute_units: 200_000,      // Optimized
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST!
-            jito_tip: 1_000_000,         // 0.001 SOL
+            jito_tip: 1_500_000,         // 0.001 SOL
         }
     }
 }
