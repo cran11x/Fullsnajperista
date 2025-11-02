@@ -195,6 +195,8 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     Ok(())
 }
 
+// main.rs - UPDATED ultra_fast_buy sa multi-submission
+
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
@@ -210,12 +212,10 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
                 let count = socials.count();
                 println!("   📱 {} social(s) in {}ms", count, check_time);
 
-                // Display socials (compact)
                 if count > 0 {
                     socials.display();
                 }
 
-                // Apply filters
                 if config.require_socials && !socials.has_any() {
                     println!("   ⏭️  SKIP: No socials");
                     return Ok(());
@@ -256,7 +256,7 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         config.sol_amount,
     ).await?;
 
-    // ✅ FIXED: Add tip to same transaction!
+    // Random tip account
     let mut rng = rand::thread_rng();
     let tip_account = Pubkey::from_str(
         HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap()
@@ -272,7 +272,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             &spl_token::id(),
         ),
         buy_ix,
-        // ✅ TIP in same TX!
         system_instruction::transfer(
             &user_wallet,
             &tip_account,
@@ -294,51 +293,89 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         &[&config.wallet],
     )?;
 
-    println!("   🚀 Sending...");
     let tx_sig = tx.signatures[0];
-    println!("   📝 TX Sig: {}", tx_sig);
+    println!("   🔐 TX Sig: {}", tx_sig);
+    println!("   🚀 Multi-submission mode...");
 
-    match config.submission_mode {
-        SubmissionMode::Helius => {
-            // ⚡ HELIUS SENDER - Tip already in TX!
-            match send_helius_transaction(tx.clone()).await {
-                Ok(signature) => {
-                    println!("   ✅ Helius Sender: {}", signature);
+    // 🔥 MULTI-SUBMISSION - Šalji istovremeno na 3 endpointa!
+    let tx_helius = tx.clone();
+    let tx_jito = tx.clone();
+    let tx_rpc = tx.clone();
+
+    // Za Jito treba wallet keypair - koristimo insecure_clone()
+    let wallet_bytes = config.wallet.to_bytes();
+    let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
+    let jito_tip = config.jito_tip;
+
+    // RPC client za task
+    let rpc_url = RPC_URL.to_string();
+
+    // Task 1: Helius Sender
+    let helius_task = tokio::spawn(async move {
+        match send_helius_transaction(tx_helius).await {
+            Ok(sig) => Ok(format!("Helius: {}", sig)),
+            Err(e) => Err(e),
+        }
+    });
+
+    // Task 2: Jito Bundle
+    let jito_task = tokio::spawn(async move {
+        match send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await {
+            Ok(bundle_id) => Ok(format!("Jito: {}", bundle_id)),
+            Err(e) => Err(e),
+        }
+    });
+
+    // Task 3: Regular RPC
+    let rpc_task = tokio::spawn(async move {
+        let rpc = RpcClient::new(rpc_url);
+        match rpc.send_transaction(&tx_rpc).await {
+            Ok(sig) => Ok(format!("RPC: {}", sig)),
+            Err(e) => Err(anyhow::anyhow!("RPC error: {}", e)),
+        }
+    });
+
+    // 🏆 Prvi koji uspe - POBEDIO SI!
+    let result = tokio::select! {
+        res = helius_task => {
+            match res {
+                Ok(Ok(msg)) => {
+                    println!("   ✅ {} 🏆", msg);
                     println!("   ⚡ Dual routed to validators + Jito");
-                    println!("   🔗 Track TX: https://solscan.io/tx/{}", tx_sig);
-                    println!("   ⏳ Wait ~3-5 seconds for confirmation...");
-                    return Ok(());
+                    Ok(())
                 }
-                Err(e) => {
-                    eprintln!("   ⚠️ Helius failed: {}, trying RPC...", e);
-                }
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(anyhow::anyhow!("Helius task panic: {}", e))
             }
         }
-        SubmissionMode::Jito => {
-            match send_jito_bundle(tx.clone(), &config.wallet, recent_blockhash, config.jito_tip).await {
-                Ok(bundle_id) => {
-                    println!("   ✅ Jito Bundle: {}", bundle_id);
+        res = jito_task => {
+            match res {
+                Ok(Ok(msg)) => {
+                    println!("   ✅ {} 🏆", msg);
                     println!("   ⚡ Bundle submitted to validators");
-                    println!("   🔗 Track TX: https://solscan.io/tx/{}", tx_sig);
-                    println!("   ⏳ Wait ~5-10 seconds for confirmation...");
-                    return Ok(());
+                    Ok(())
                 }
-                Err(e) => {
-                    eprintln!("   ⚠️ Jito failed: {}, trying RPC...", e);
-                }
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(anyhow::anyhow!("Jito task panic: {}", e))
             }
         }
-        SubmissionMode::Rpc => {
-            println!("   📡 Using Regular RPC...");
+        res = rpc_task => {
+            match res {
+                Ok(Ok(msg)) => {
+                    println!("   ✅ {} 🏆", msg);
+                    Ok(())
+                }
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(anyhow::anyhow!("RPC task panic: {}", e))
+            }
         }
-    }
+    };
 
-    // RPC fallback
-    let signature = config.rpc.send_transaction(&tx).await?;
-    println!("   ✅ RPC: {}", signature);
-    println!("   🔗 https://solscan.io/tx/{}", signature);
+    // Prikaži link
+    println!("   🔗 Track TX: https://solscan.io/tx/{}", tx_sig);
+    println!("   ⏳ Wait ~3-5 seconds for confirmation...");
 
-    Ok(())
+    result
 }
 
 fn load_wallet() -> Result<Keypair> {
