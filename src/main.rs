@@ -199,46 +199,48 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
 
-    // 🔥 SOCIAL CHECK - Skip if no socials!
+    // 🔥 SOCIAL CHECK - Optimized with short timeouts!
     if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
+        let check_start = std::time::Instant::now();
         println!("   🔍 Checking socials...");
 
         match check_token_socials(&mint.to_string()).await {
             Ok(socials) => {
+                let check_time = check_start.elapsed().as_millis();
                 let count = socials.count();
-                println!("   📱 Found {} social link(s)", count);
+                println!("   📱 {} social(s) in {}ms", count, check_time);
 
-                // Display socials
+                // Display socials (compact)
                 if count > 0 {
                     socials.display();
                 }
 
                 // Apply filters
                 if config.require_socials && !socials.has_any() {
-                    println!("   ⏭️  SKIPPED: No socials found");
+                    println!("   ⏭️  SKIP: No socials");
                     return Ok(());
                 }
 
                 if config.require_twitter && !socials.has_twitter() {
-                    println!("   ⏭️  SKIPPED: No Twitter/X");
+                    println!("   ⏭️  SKIP: No Twitter/X");
                     return Ok(());
                 }
 
                 if count < config.min_socials_count {
-                    println!("   ⏭️  SKIPPED: Only {} socials (need {})",
-                             count, config.min_socials_count);
+                    println!("   ⏭️  SKIP: Need {} socials", config.min_socials_count);
                     return Ok(());
                 }
 
-                println!("   ✅ Social check passed!");
+                println!("   ✅ Pass!");
             }
             Err(e) => {
-                println!("   ⚠️  Social check failed: {}", e);
+                let check_time = check_start.elapsed().as_millis();
+                println!("   ⚠️  Check failed in {}ms: {}", check_time, e);
                 if config.require_socials {
-                    println!("   ⏭️  SKIPPED: Could not verify socials");
+                    println!("   ⏭️  SKIP: Could not verify");
                     return Ok(());
                 }
-                println!("   ⚡ Proceeding anyway (social check optional)...");
+                println!("   ⚡ Proceeding anyway...");
             }
         }
     }
