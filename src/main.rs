@@ -5,6 +5,7 @@ mod buy;
 mod accounts;
 mod jito;
 mod helius;
+mod socials;
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -27,6 +28,7 @@ use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
 use jito::send_jito_bundle;
 use helius::send_helius_transaction;
+use socials::check_token_socials;
 
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
@@ -55,6 +57,9 @@ struct BotConfig {
     one_shot_mode: bool,
     submission_mode: SubmissionMode,
     jito_tip: u64,
+    require_socials: bool,          // Skip tokens without socials
+    require_twitter: bool,           // Require Twitter/X specifically
+    min_socials_count: usize,        // Minimum number of social links
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +80,9 @@ impl BotConfig {
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST!
             jito_tip: 1_500_000,         // 0.001 SOL
+            require_socials: true,        // 🔥 FILTER: Skip tokens without socials
+            require_twitter: false,       // Optional: Require Twitter specifically
+            min_socials_count: 1,         // Minimum 1 social link required
         }
     }
 }
@@ -109,6 +117,20 @@ async fn main() -> Result<()> {
     };
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
+
+    // Social filtering config
+    if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
+        println!("\n🔥 Social Filters:");
+        if config.require_socials {
+            println!("   ✓ Skip tokens without socials");
+        }
+        if config.require_twitter {
+            println!("   ✓ Require Twitter/X");
+        }
+        if config.min_socials_count > 0 {
+            println!("   ✓ Min {} social links", config.min_socials_count);
+        }
+    }
 
     println!("\n🔡 Connecting...");
     listen_for_new_tokens(config).await?;
@@ -176,6 +198,50 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
+
+    // 🔥 SOCIAL CHECK - Skip if no socials!
+    if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
+        println!("   🔍 Checking socials...");
+
+        match check_token_socials(&mint.to_string()).await {
+            Ok(socials) => {
+                let count = socials.count();
+                println!("   📱 Found {} social link(s)", count);
+
+                // Display socials
+                if count > 0 {
+                    socials.display();
+                }
+
+                // Apply filters
+                if config.require_socials && !socials.has_any() {
+                    println!("   ⏭️  SKIPPED: No socials found");
+                    return Ok(());
+                }
+
+                if config.require_twitter && !socials.has_twitter() {
+                    println!("   ⏭️  SKIPPED: No Twitter/X");
+                    return Ok(());
+                }
+
+                if count < config.min_socials_count {
+                    println!("   ⏭️  SKIPPED: Only {} socials (need {})",
+                             count, config.min_socials_count);
+                    return Ok(());
+                }
+
+                println!("   ✅ Social check passed!");
+            }
+            Err(e) => {
+                println!("   ⚠️  Social check failed: {}", e);
+                if config.require_socials {
+                    println!("   ⏭️  SKIPPED: Could not verify socials");
+                    return Ok(());
+                }
+                println!("   ⚡ Proceeding anyway (social check optional)...");
+            }
+        }
+    }
 
     let user_wallet = config.wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
