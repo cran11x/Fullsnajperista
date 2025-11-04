@@ -1,4 +1,4 @@
-// detection.rs - WITH RETRY LOGIC!
+// detection.rs - WITH RETRY LOGIC + DEV BUY DETECTION!
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -6,6 +6,7 @@ use solana_sdk::{pubkey::Pubkey, commitment_config::CommitmentConfig};
 use std::str::FromStr;
 
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 
 #[derive(Debug, Clone)]
 pub struct PumpBuyAccounts {
@@ -19,6 +20,7 @@ pub struct PumpBuyAccounts {
     pub fee_recipient: Pubkey,
     pub fee_config: Pubkey,
     pub fee_program: Pubkey,
+    pub dev_buy_sol: u64,  // 🔥 Developer's initial buy amount in lamports
 }
 
 impl PumpBuyAccounts {
@@ -93,9 +95,11 @@ impl PumpBuyAccounts {
             // Extract mint (account #1)
             let mint = account_keys.get(1).ok_or_else(|| anyhow!("No mint found"))?;
 
-            // Find creator_vault from Buy instruction
+            // 🔥 Extract dev buy amount from transaction
+            let mut dev_buy_sol = 0u64;
             let mut creator_vault: Option<Pubkey> = None;
 
+            // Look through instructions to find buy instruction
             for ix in instructions {
                 let program_id_idx = ix.program_id_index as usize;
                 if let Some(&program_id) = account_keys.get(program_id_idx) {
@@ -105,9 +109,47 @@ impl PumpBuyAccounts {
                             .filter_map(|&idx| account_keys.get(idx as usize).copied())
                             .collect();
 
+                        // Check if this is a buy instruction (has discriminator)
+                        if ix.data.len() >= 8 {
+                            let discriminator = &ix.data[0..8];
+                            if discriminator == BUY_DISCRIMINATOR {
+                                // Buy instruction found! Extract max_sol_cost (bytes 16-24)
+                                if ix.data.len() >= 24 {
+                                    let max_sol_bytes = &ix.data[16..24];
+                                    dev_buy_sol = u64::from_le_bytes(max_sol_bytes.try_into().unwrap_or([0u8; 8]));
+                                    println!("      💰 Dev buy detected: {} SOL", dev_buy_sol as f64 / 1e9);
+                                }
+                            }
+                        }
+
+                        // Get creator_vault (account index 9 in buy instruction)
                         if ix_accounts.len() >= 15 {
                             creator_vault = Some(ix_accounts[9]);
-                            break;
+                        }
+                    }
+                }
+            }
+
+            // If no buy instruction found, check balance changes
+            if dev_buy_sol == 0 {
+                if let Some(meta) = &tx.transaction.meta {
+                    let pre_balances = &meta.pre_balances;
+                    let post_balances = &meta.post_balances;
+
+                    // Creator is typically account #6 or #7
+                    for i in 6..8.min(pre_balances.len()) {
+                        if i < post_balances.len() {
+                            let pre = pre_balances[i];
+                            let post = post_balances[i];
+                            if pre > post {
+                                let spent = pre - post;
+                                // Filter out rent/fees (usually dev buy is > 0.1 SOL)
+                                if spent > 100_000_000 {  // > 0.1 SOL
+                                    dev_buy_sol = spent;
+                                    println!("      💰 Dev buy (from balances): {} SOL", dev_buy_sol as f64 / 1e9);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -144,6 +186,7 @@ impl PumpBuyAccounts {
                     fee_recipient,
                     fee_config,
                     fee_program,
+                    dev_buy_sol,  // 🔥 Include dev buy amount
                 };
 
                 return Ok((accounts, *mint));

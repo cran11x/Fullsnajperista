@@ -6,6 +6,7 @@ mod accounts;
 mod jito;
 mod helius;
 mod socials;
+mod creator_check;
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -60,6 +61,10 @@ struct BotConfig {
     require_socials: bool,
     require_twitter: bool,
     min_socials_count: usize,
+    // 🔥 DEV BUY FILTERS
+    min_dev_buy_usd: f64,  // Minimum dev buy in USD
+    max_dev_buy_usd: f64,  // Maximum dev buy in USD
+    sol_price_usd: f64,    // Current SOL price for conversion
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +88,10 @@ impl BotConfig {
             require_socials: true,        // 🔥 DISABLED for speed
             require_twitter: false,
             min_socials_count: 0,
+            // 🔥 DEV BUY FILTERS ($600-$1200 range)
+            min_dev_buy_usd: 600.0,
+            max_dev_buy_usd: 1200.0,
+            sol_price_usd: 122.0,  // 🔥 UPDATED: Current SOL price
         }
     }
 }
@@ -118,6 +127,11 @@ async fn main() -> Result<()> {
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
 
+    // 🛑 ONE-SHOT MODE INFO
+    if config.one_shot_mode {
+        println!("\n🛑 ONE-SHOT MODE: Bot will stop after first successful buy!");
+    }
+
     if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
         println!("\n🔥 Social Filters:");
         if config.require_socials {
@@ -130,6 +144,16 @@ async fn main() -> Result<()> {
             println!("   ✓ Min {} social links", config.min_socials_count);
         }
     }
+
+    // 🔥 DEV BUY FILTER INFO
+    let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
+    let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
+    println!("\n💰 Dev Buy Filter:");
+    println!("   ✓ Range: ${}-${} (@ ${}/SOL)",
+             config.min_dev_buy_usd as u32,
+             config.max_dev_buy_usd as u32,
+             config.sol_price_usd as u32);
+    println!("   ✓ SOL Range: {:.2}-{:.2} SOL", min_sol, max_sol);
 
     println!("\n📡 Connecting...");
     listen_for_new_tokens(config).await?;
@@ -178,6 +202,8 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                             Ok(_) => {
                                 println!("✅ DONE!");
                                 if config.one_shot_mode {
+                                    println!("\n🛑 ONE-SHOT MODE: Stopping bot after successful buy!");
+                                    println!("🔴 Bot will now exit...\n");
                                     break;
                                 }
                             }
@@ -197,6 +223,21 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
+
+    // 🔥 DEV BUY FILTER CHECK
+    let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
+    let dev_buy_usd = dev_buy_sol * config.sol_price_usd;
+
+    println!("   💰 Dev buy: {:.3} SOL (${:.0})", dev_buy_sol, dev_buy_usd);
+
+    if dev_buy_usd < config.min_dev_buy_usd || dev_buy_usd > config.max_dev_buy_usd {
+        println!("   ⛔ SKIP: Dev buy ${:.0} outside range ${}-${}",
+                 dev_buy_usd,
+                 config.min_dev_buy_usd,
+                 config.max_dev_buy_usd);
+        return Err(anyhow!("Token skipped - dev buy outside range"));
+    }
+    println!("   ✅ Dev buy in range!");
 
     // 🚀 PARALLEL: Start social check in background while preparing TX!
     let social_check_enabled = config.require_socials || config.require_twitter || config.min_socials_count > 0;
@@ -319,12 +360,12 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             }
             Ok(Err(e)) => {
                 println!("   ⏭️  {}", e);
-                return Ok(()); // Skip this token
+                return Err(anyhow!("Token skipped - social check failed")); // Skip this token
             }
             Err(e) => {
                 println!("   ⚠️  Social task panicked: {}", e);
                 if config.require_socials {
-                    return Ok(());
+                    return Err(anyhow!("Token skipped - social check required"));
                 }
             }
         }
