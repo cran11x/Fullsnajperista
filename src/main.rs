@@ -1,4 +1,4 @@
-// main.rs - FIXED: Tip included in buy transaction
+// main.rs - ULTRA PARALLEL: Social check + TX prep + Multi-submission
 
 mod detection;
 mod buy;
@@ -28,7 +28,7 @@ use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
 use jito::send_jito_bundle;
 use helius::send_helius_transaction;
-use socials::check_token_socials;
+use socials::{check_token_socials, Socials};
 
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
@@ -57,16 +57,16 @@ struct BotConfig {
     one_shot_mode: bool,
     submission_mode: SubmissionMode,
     jito_tip: u64,
-    require_socials: bool,          // Skip tokens without socials
-    require_twitter: bool,           // Require Twitter/X specifically
-    min_socials_count: usize,        // Minimum number of social links
+    require_socials: bool,
+    require_twitter: bool,
+    min_socials_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum SubmissionMode {
-    Helius,  // ⚡ RECOMMENDED: Dual routing (validators + Jito)
-    Jito,    // Custom Jito bundles
-    Rpc,     // Regular RPC (slower but guaranteed)
+    Helius,
+    Jito,
+    Rpc,
 }
 
 impl BotConfig {
@@ -74,15 +74,15 @@ impl BotConfig {
         Self {
             rpc: RpcClient::new(RPC_URL.to_string()),
             wallet,
-            sol_amount: 50_000_000,       // 0.02 SOL
-            priority_fee: 9_000_000,     // 5M micro-lamports
-            compute_units: 200_000,      // Optimized
+            sol_amount: 15_000_000,
+            priority_fee: 11_000_000,
+            compute_units: 200_000,
             one_shot_mode: true,
-            submission_mode: SubmissionMode::Helius,  // 🚀 ULTRA FAST!
-            jito_tip: 1_500_000,         // 0.001 SOL
-            require_socials: true,        // 🔥 FILTER: Skip tokens without socials
-            require_twitter: false,       // Optional: Require Twitter specifically
-            min_socials_count: 1,         // Minimum 1 social link required
+            submission_mode: SubmissionMode::Helius,
+            jito_tip: 1_500_000,
+            require_socials: true,        // 🔥 DISABLED for speed
+            require_twitter: false,
+            min_socials_count: 0,
         }
     }
 }
@@ -118,7 +118,6 @@ async fn main() -> Result<()> {
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
 
-    // Social filtering config
     if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
         println!("\n🔥 Social Filters:");
         if config.require_socials {
@@ -132,7 +131,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("\n🔡 Connecting...");
+    println!("\n📡 Connecting...");
     listen_for_new_tokens(config).await?;
 
     Ok(())
@@ -195,56 +194,74 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     Ok(())
 }
 
-// main.rs - UPDATED ultra_fast_buy sa multi-submission
-
 async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
 
-    // 🔥 SOCIAL CHECK - Optimized with short timeouts!
-    if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
-        let check_start = std::time::Instant::now();
-        println!("   🔍 Checking socials...");
+    // 🚀 PARALLEL: Start social check in background while preparing TX!
+    let social_check_enabled = config.require_socials || config.require_twitter || config.min_socials_count > 0;
 
-        match check_token_socials(&mint.to_string()).await {
-            Ok(socials) => {
-                let check_time = check_start.elapsed().as_millis();
-                let count = socials.count();
-                println!("   📱 {} social(s) in {}ms", count, check_time);
+    let social_task = if social_check_enabled {
+        println!("   🔍 Checking socials (parallel with retry)...");
+        let mint_str = mint.to_string();
+        let require_socials = config.require_socials;
+        let require_twitter = config.require_twitter;
+        let min_socials = config.min_socials_count;
 
-                if count > 0 {
-                    socials.display();
+        Some(tokio::spawn(async move {
+            // Retry logic for metadata indexing
+            let mut attempts = 0;
+            let max_attempts = 3;
+
+            loop {
+                attempts += 1;
+
+                match check_token_socials(&mint_str).await {
+                    Ok(socials) => {
+                        println!("   📱 {} social(s) found (attempt {})", socials.count(), attempts);
+                        if socials.count() > 0 {
+                            socials.display();
+                        }
+
+                        // Check filters
+                        if require_socials && !socials.has_any() {
+                            return Err(anyhow!("SKIP: No socials"));
+                        }
+                        if require_twitter && !socials.has_twitter() {
+                            return Err(anyhow!("SKIP: No Twitter/X"));
+                        }
+                        if socials.count() < min_socials {
+                            return Err(anyhow!("SKIP: Need {} socials", min_socials));
+                        }
+
+                        return Ok(socials);
+                    }
+                    Err(e) if attempts < max_attempts => {
+                        println!("   ⏳ Metadata not ready (attempt {}/{}), retrying in 2s...", attempts, max_attempts);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+                    }
+                    Err(e) => {
+                        println!("   ⚠️  Social check failed after {} attempts", max_attempts);
+                        if require_socials {
+                            return Err(anyhow!("SKIP: Could not verify socials"));
+                        }
+                        // If not required, proceed anyway
+                        return Ok(Socials {
+                            twitter: None,
+                            website: None,
+                            telegram: None,
+                            discord: None,
+                        });
+                    }
                 }
-
-                if config.require_socials && !socials.has_any() {
-                    println!("   ⏭️  SKIP: No socials");
-                    return Ok(());
-                }
-
-                if config.require_twitter && !socials.has_twitter() {
-                    println!("   ⏭️  SKIP: No Twitter/X");
-                    return Ok(());
-                }
-
-                if count < config.min_socials_count {
-                    println!("   ⏭️  SKIP: Need {} socials", config.min_socials_count);
-                    return Ok(());
-                }
-
-                println!("   ✅ Pass!");
             }
-            Err(e) => {
-                let check_time = check_start.elapsed().as_millis();
-                println!("   ⚠️  Check failed in {}ms: {}", check_time, e);
-                if config.require_socials {
-                    println!("   ⏭️  SKIP: Could not verify");
-                    return Ok(());
-                }
-                println!("   ⚡ Proceeding anyway...");
-            }
-        }
-    }
+        }))
+    } else {
+        None
+    };
 
+    // ⚡ While socials are being checked, prepare the transaction!
+    println!("   ⚡ Preparing TX...");
     let user_wallet = config.wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
 
@@ -256,7 +273,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         config.sol_amount,
     ).await?;
 
-    // Random tip account
     let mut rng = rand::thread_rng();
     let tip_account = Pubkey::from_str(
         HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap()
@@ -294,23 +310,39 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
     )?;
 
     let tx_sig = tx.signatures[0];
-    println!("   🔐 TX Sig: {}", tx_sig);
+
+    // 🎯 Wait for social check to complete (if enabled)
+    if let Some(task) = social_task {
+        match task.await {
+            Ok(Ok(_)) => {
+                println!("   ✅ Social check passed!");
+            }
+            Ok(Err(e)) => {
+                println!("   ⏭️  {}", e);
+                return Ok(()); // Skip this token
+            }
+            Err(e) => {
+                println!("   ⚠️  Social task panicked: {}", e);
+                if config.require_socials {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    println!("   🔖 TX Sig: {}", tx_sig);
     println!("   🚀 Multi-submission mode...");
 
-    // 🔥 MULTI-SUBMISSION - Šalji istovremeno na 3 endpointa!
+    // 🔥 MULTI-SUBMISSION
     let tx_helius = tx.clone();
     let tx_jito = tx.clone();
     let tx_rpc = tx.clone();
 
-    // Za Jito treba wallet keypair - koristimo insecure_clone()
     let wallet_bytes = config.wallet.to_bytes();
     let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
     let jito_tip = config.jito_tip;
-
-    // RPC client za task
     let rpc_url = RPC_URL.to_string();
 
-    // Task 1: Helius Sender
     let helius_task = tokio::spawn(async move {
         match send_helius_transaction(tx_helius).await {
             Ok(sig) => Ok(format!("Helius: {}", sig)),
@@ -318,7 +350,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         }
     });
 
-    // Task 2: Jito Bundle
     let jito_task = tokio::spawn(async move {
         match send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await {
             Ok(bundle_id) => Ok(format!("Jito: {}", bundle_id)),
@@ -326,7 +357,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         }
     });
 
-    // Task 3: Regular RPC
     let rpc_task = tokio::spawn(async move {
         let rpc = RpcClient::new(rpc_url);
         match rpc.send_transaction(&tx_rpc).await {
@@ -335,7 +365,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         }
     });
 
-    // 🏆 Prvi koji uspe - POBEDIO SI!
     let result = tokio::select! {
         res = helius_task => {
             match res {
@@ -371,7 +400,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         }
     };
 
-    // Prikaži link
     println!("   🔗 Track TX: https://solscan.io/tx/{}", tx_sig);
     println!("   ⏳ Wait ~3-5 seconds for confirmation...");
 
