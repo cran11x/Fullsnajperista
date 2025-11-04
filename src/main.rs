@@ -6,7 +6,6 @@ mod accounts;
 mod jito;
 mod helius;
 mod socials;
-mod creator_check;
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
