@@ -6,6 +6,7 @@ mod accounts;
 mod jito;
 mod helius;
 mod socials;
+mod das_check;
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -29,6 +30,7 @@ use buy::build_buy_instruction;
 use jito::send_jito_bundle;
 use helius::send_helius_transaction;
 use socials::{check_token_socials, Socials};
+use das_check::check_creator_token_count_das;
 
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
@@ -86,7 +88,7 @@ impl BotConfig {
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,
             jito_tip: 1_500_000,
-            require_socials: true,        // 🔥 DISABLED for speed
+            require_socials: false,        // 🔥 DISABLED for speed
             require_twitter: false,
             min_socials_count: 0,
             // 🔥 DEV BUY FILTERS ($600-$1200 range)
@@ -242,14 +244,15 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
     }
     println!("   ✅ Dev buy in range!");
 
-    // 🔥 DEV TOKEN COUNT CHECK
-    println!("   🔍 Checking creator history...");
-    match PumpBuyAccounts::check_creator_token_count(&config.rpc, &accounts.creator).await {
+    // 🔥 DEV TOKEN COUNT CHECK (DAS API - FAST!)
+    println!("   🔍 Checking creator tokens...");
+    match check_creator_token_count_das(&accounts.creator).await {
         Ok(count) => {
-            println!("   📊 Creator tokens: {}", count);
-            if count > config.max_dev_tokens {
-                return Err(anyhow!("SKIP: Dev has {} tokens (max {})", count, config.max_dev_tokens));
+            println!("   🎨 Creator has {} tokens", count);
+            if count > config.max_dev_tokens as u32 {
+                return Err(anyhow!("SKIP: Creator has {} tokens (max {})", count, config.max_dev_tokens));
             }
+            println!("   ✅ Creator token count OK!");
         }
         Err(e) => {
             println!("   ⚠️  Token count check failed: {} (proceeding)", e);
