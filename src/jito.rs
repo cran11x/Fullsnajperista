@@ -24,10 +24,11 @@ const JITO_TIP_ACCOUNTS: [&str; 8] = [
 ];
 
 const JITO_ENDPOINTS: [&str; 4] = [
-    "https://frankfurt.mainnet.block-engine.jito.wtf",
-    "https://amsterdam.mainnet.block-engine.jito.wtf",
     "https://ny.mainnet.block-engine.jito.wtf",
     "https://mainnet.block-engine.jito.wtf",
+    "https://frankfurt.mainnet.block-engine.jito.wtf",
+    "https://amsterdam.mainnet.block-engine.jito.wtf",
+
 ];
 
 pub struct JitoClient {
