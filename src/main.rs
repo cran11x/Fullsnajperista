@@ -1,4 +1,4 @@
-// main.rs - ULTRA PARALLEL: Social check + TX prep + Multi-submission
+// main.rs - WITH TRACKER FLAG
 
 mod detection;
 mod buy;
@@ -24,6 +24,7 @@ use std::str::FromStr;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use futures_util::StreamExt;
 use rand::seq::SliceRandom;
+use chrono::Utc;
 
 use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
@@ -31,12 +32,14 @@ use jito::send_jito_bundle;
 use helius::send_helius_transaction;
 use socials::{check_token_socials, Socials};
 use das_check::check_creator_token_count_das;
-
+use crate::accounts::{TokenBuy, TokenTracker};
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
-// ✅ Helius tip accounts (from official docs)
+// 🔧 TOGGLE THIS
+const ENABLE_TRACKER: bool = true;
+
 const HELIUS_TIP_ACCOUNTS: [&str; 10] = [
     "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
     "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
@@ -62,13 +65,11 @@ struct BotConfig {
     require_socials: bool,
     require_twitter: bool,
     min_socials_count: usize,
-    // 🔥 DEV BUY FILTERS
-    min_dev_buy_usd: f64,  // Minimum dev buy in USD
-    max_dev_buy_usd: f64,  // Maximum dev buy in USD
-    sol_price_usd: f64,    // Current SOL price for conversion
+    min_dev_buy_usd: f64,
+    max_dev_buy_usd: f64,
+    sol_price_usd: f64,
     max_dev_tokens: usize,
 }
-
 
 #[derive(Debug, Clone, Copy)]
 enum SubmissionMode {
@@ -88,13 +89,12 @@ impl BotConfig {
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,
             jito_tip: 1_500_000,
-            require_socials: false,        // 🔥 DISABLED for speed
+            require_socials: false,
             require_twitter: false,
             min_socials_count: 0,
-            // 🔥 DEV BUY FILTERS ($600-$1200 range)
             min_dev_buy_usd: 600.0,
             max_dev_buy_usd: 1200.0,
-            sol_price_usd: 122.0,  // 🔥 UPDATED: Current SOL price
+            sol_price_usd: 122.0,
             max_dev_tokens: 10,
         }
     }
@@ -120,6 +120,22 @@ async fn main() -> Result<()> {
 
     let config = BotConfig::new(wallet);
 
+    // Initialize tracker if enabled
+    let mut tracker = if ENABLE_TRACKER {
+        match TokenTracker::new() {
+            Ok(t) => {
+                println!("✅ Tracker enabled");
+                Some(t)
+            }
+            Err(e) => {
+                println!("⚠️  Tracker failed to init: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     println!("\n🎯 Config:");
     println!("   Buy: {} SOL", config.sol_amount as f64 / 1e9);
     println!("   Priority: {} micro-lamports", config.priority_fee);
@@ -130,8 +146,8 @@ async fn main() -> Result<()> {
     };
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
+    println!("   Tracker: {}", if ENABLE_TRACKER { "✅ ON" } else { "❌ OFF" });
 
-    // 🛑 ONE-SHOT MODE INFO
     if config.one_shot_mode {
         println!("\n🛑 ONE-SHOT MODE: Bot will stop after first successful buy!");
     }
@@ -149,7 +165,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 🔥 DEV BUY FILTER INFO
     let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
     let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
     println!("\n💰 Dev Buy Filter:");
@@ -161,12 +176,12 @@ async fn main() -> Result<()> {
     println!("   ✓ SOL Range: {:.2}-{:.2} SOL", min_sol, max_sol);
 
     println!("\n📡 Connecting...");
-    listen_for_new_tokens(config).await?;
+    listen_for_new_tokens(config, tracker).await?;
 
     Ok(())
 }
 
-async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
+async fn listen_for_new_tokens(config: BotConfig, mut tracker: Option<TokenTracker>) -> Result<()> {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
     let subscribe_msg = serde_json::json!({
@@ -203,12 +218,14 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
                         println!("\n🔔 TOKEN #{}", detected);
                         println!("   Sig: {}", signature);
 
-                        match ultra_fast_buy(&config, &signature).await {
+                        match ultra_fast_buy(&config, &signature, detected, &mut tracker).await {
                             Ok(_) => {
                                 println!("✅ DONE!");
                                 if config.one_shot_mode {
-                                    println!("\n🛑 ONE-SHOT MODE: Stopping bot after successful buy!");
-                                    println!("🔴 Bot will now exit...\n");
+                                    println!("\n🛑 ONE-SHOT MODE: Stopping bot!");
+                                    if let Some(t) = &tracker {
+                                        t.print_summary();
+                                    }
                                     break;
                                 }
                             }
@@ -225,71 +242,64 @@ async fn listen_for_new_tokens(config: BotConfig) -> Result<()> {
     Ok(())
 }
 
-async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> {
+async fn ultra_fast_buy(
+    config: &BotConfig,
+    init_signature: &str,
+    token_number: u32,
+    tracker: &mut Option<TokenTracker>,
+) -> Result<()> {
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
 
-    // 🔥 DEV BUY FILTER CHECK
     let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
     let dev_buy_usd = dev_buy_sol * config.sol_price_usd;
 
-    println!("   💰 Dev buy: {:.3} SOL (${:.0})", dev_buy_sol, dev_buy_usd);
+    println!("   💰 Dev: {:.2} SOL (${:.0})", dev_buy_sol, dev_buy_usd);
 
-    if dev_buy_usd < config.min_dev_buy_usd || dev_buy_usd > config.max_dev_buy_usd {
-        println!("   ⛔ SKIP: Dev buy ${:.0} outside range ${}-${}",
-                 dev_buy_usd,
-                 config.min_dev_buy_usd,
-                 config.max_dev_buy_usd);
-        return Err(anyhow!("Token skipped - dev buy outside range"));
+    let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
+    let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
+
+    if dev_buy_sol < min_sol {
+        return Err(anyhow!("SKIP: Dev buy {:.2} SOL < min {:.2} SOL", dev_buy_sol, min_sol));
     }
+    if dev_buy_sol > max_sol {
+        return Err(anyhow!("SKIP: Dev buy {:.2} SOL > max {:.2} SOL", dev_buy_sol, max_sol));
+    }
+
     println!("   ✅ Dev buy in range!");
 
-    // 🔥 DEV TOKEN COUNT CHECK (DAS API - FAST!)
-    println!("   🔍 Checking creator tokens...");
-    match check_creator_token_count_das(&accounts.creator).await {
-        Ok(count) => {
-            println!("   🎨 Creator has {} tokens", count);
-            if count > config.max_dev_tokens as u32 {
-                return Err(anyhow!("SKIP: Creator has {} tokens (max {})", count, config.max_dev_tokens));
-            }
-            println!("   ✅ Creator token count OK!");
-        }
-        Err(e) => {
-            println!("   ⚠️  Token count check failed: {} (proceeding)", e);
-        }
+    let creator_count = check_creator_token_count_das(&accounts.creator).await.unwrap_or(0);
+    println!("   👤 Creator tokens: {}", creator_count);
+
+    if creator_count as usize > config.max_dev_tokens {
+        return Err(anyhow!("SKIP: Creator has {} tokens (max {})", creator_count, config.max_dev_tokens));
     }
 
-    // 🚀 PARALLEL: Start social check in background while preparing TX!
-    let social_check_enabled = config.require_socials || config.require_twitter || config.min_socials_count > 0;
+    let mint_str = mint.to_string();
+    let require_socials = config.require_socials;
+    let require_twitter = config.require_twitter;
+    let min_socials = config.min_socials_count;
 
-    let social_task = if social_check_enabled {
-        println!("   🔍 Checking socials (parallel with retry)...");
-        let mint_str = mint.to_string();
-        let require_socials = config.require_socials;
-        let require_twitter = config.require_twitter;
-        let min_socials = config.min_socials_count;
-
+    let social_task = if require_socials || require_twitter || min_socials > 0 {
         Some(tokio::spawn(async move {
-            // Retry logic for metadata indexing
-            let mut attempts = 0;
             let max_attempts = 3;
+            let mut attempts = 0;
 
             loop {
                 attempts += 1;
 
                 match check_token_socials(&mint_str).await {
                     Ok(socials) => {
-                        println!("   📱 {} social(s) found (attempt {})", socials.count(), attempts);
+                        println!("   📱 {} social(s) (attempt {})", socials.count(), attempts);
                         if socials.count() > 0 {
                             socials.display();
                         }
 
-                        // Check filters
                         if require_socials && !socials.has_any() {
                             return Err(anyhow!("SKIP: No socials"));
                         }
                         if require_twitter && !socials.has_twitter() {
-                            return Err(anyhow!("SKIP: No Twitter/X"));
+                            return Err(anyhow!("SKIP: No Twitter"));
                         }
                         if socials.count() < min_socials {
                             return Err(anyhow!("SKIP: Need {} socials", min_socials));
@@ -297,16 +307,13 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
 
                         return Ok(socials);
                     }
-                    Err(e) if attempts < max_attempts => {
-                        println!("   ⏳ Metadata not ready (attempt {}/{}), retrying in 2s...", attempts, max_attempts);
+                    Err(_) if attempts < max_attempts => {
                         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
                     }
-                    Err(e) => {
-                        println!("   ⚠️  Social check failed after {} attempts", max_attempts);
+                    Err(_) => {
                         if require_socials {
                             return Err(anyhow!("SKIP: Could not verify socials"));
                         }
-                        // If not required, proceed anyway
                         return Ok(Socials {
                             twitter: None,
                             website: None,
@@ -321,7 +328,6 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         None
     };
 
-    // ⚡ While socials are being checked, prepare the transaction!
     println!("   ⚡ Preparing TX...");
     let user_wallet = config.wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
@@ -372,29 +378,30 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
 
     let tx_sig = tx.signatures[0];
 
-    // 🎯 Wait for social check to complete (if enabled)
-    if let Some(task) = social_task {
+    // Get socials result if enabled
+    let socials_result = if let Some(task) = social_task {
         match task.await {
-            Ok(Ok(_)) => {
+            Ok(Ok(s)) => {
                 println!("   ✅ Social check passed!");
+                Some(s)
             }
             Ok(Err(e)) => {
-                println!("   ⏭️  {}", e);
-                return Err(anyhow!("Token skipped - social check failed")); // Skip this token
+                return Err(e);
             }
-            Err(e) => {
-                println!("   ⚠️  Social task panicked: {}", e);
+            Err(_) => {
                 if config.require_socials {
-                    return Err(anyhow!("Token skipped - social check required"));
+                    return Err(anyhow!("Social check required"));
                 }
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
     println!("   🔖 TX Sig: {}", tx_sig);
-    println!("   🚀 Multi-submission mode...");
+    println!("   🚀 Multi-submission...");
 
-    // 🔥 MULTI-SUBMISSION
     let tx_helius = tx.clone();
     let tx_jito = tx.clone();
     let tx_rpc = tx.clone();
@@ -431,22 +438,20 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
             match res {
                 Ok(Ok(msg)) => {
                     println!("   ✅ {} 🏆", msg);
-                    println!("   ⚡ Dual routed to validators + Jito");
                     Ok(())
                 }
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow::anyhow!("Helius task panic: {}", e))
+                Err(e) => Err(anyhow::anyhow!("Helius panic: {}", e))
             }
         }
         res = jito_task => {
             match res {
                 Ok(Ok(msg)) => {
                     println!("   ✅ {} 🏆", msg);
-                    println!("   ⚡ Bundle submitted to validators");
                     Ok(())
                 }
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow::anyhow!("Jito task panic: {}", e))
+                Err(e) => Err(anyhow::anyhow!("Jito panic: {}", e))
             }
         }
         res = rpc_task => {
@@ -456,13 +461,41 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
                     Ok(())
                 }
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow::anyhow!("RPC task panic: {}", e))
+                Err(e) => Err(anyhow::anyhow!("RPC panic: {}", e))
             }
         }
     };
 
-    println!("   🔗 Track TX: https://solscan.io/tx/{}", tx_sig);
-    println!("   ⏳ Wait ~3-5 seconds for confirmation...");
+    println!("   🔗 https://solscan.io/tx/{}", tx_sig);
+
+    // ✅ TRACK IF ENABLED
+    if let (Ok(()), Some(tracker)) = (&result, tracker) {
+        let buy = TokenBuy {
+            token_number,
+            mint: mint.to_string(),
+            signature: init_signature.to_string(),
+            creator: accounts.creator.to_string(),
+            dev_buy_sol,
+            our_buy_sol: config.sol_amount as f64 / 1e9,
+            timestamp: Utc::now(),
+            has_socials: socials_result.as_ref().map(|s| s.has_any()).unwrap_or(false),
+            twitter: socials_result.as_ref().and_then(|s| s.twitter.clone()),
+            website: socials_result.as_ref().and_then(|s| s.website.clone()),
+            telegram: socials_result.as_ref().and_then(|s| s.telegram.clone()),
+            creator_token_count: creator_count,
+            detection_method: if accounts.dev_buy_sol > 0 {
+                "instruction".to_string()
+            } else {
+                "balance_fallback".to_string()
+            },
+        };
+
+        if let Err(e) = tracker.record_buy(buy) {
+            println!("   ⚠️  Tracker error: {}", e);
+        } else {
+            tracker.print_periodic_stats();
+        }
+    }
 
     result
 }

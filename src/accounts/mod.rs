@@ -1,4 +1,5 @@
-//! Accounts for the Pump.fun Solana Program
-
 mod global;
 pub use global::*;
+
+mod tracker;  // ← ADD
+pub use tracker::*;  // ← ADD

@@ -1,4 +1,4 @@
-// detection.rs - WITH RETRY LOGIC + DEV BUY DETECTION + FIXED TOKEN COUNT!
+// detection.rs - WITH DEBUG FLAG (SET TO true/false)
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -7,6 +7,9 @@ use std::str::FromStr;
 
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
+
+// 🔧 TOGGLE THIS: true = detailed logs, false = normal logs
+const DEBUG: bool = true;
 
 #[derive(Debug, Clone)]
 pub struct PumpBuyAccounts {
@@ -96,7 +99,12 @@ impl PumpBuyAccounts {
             let mut dev_buy_sol = 0u64;
             let mut creator_vault: Option<Pubkey> = None;
 
-            for ix in instructions {
+            if DEBUG {
+                println!("      🔍 DEBUG: TX {} instructions, {} accounts",
+                         instructions.len(), account_keys.len());
+            }
+
+            for (ix_idx, ix) in instructions.iter().enumerate() {
                 let program_id_idx = ix.program_id_index as usize;
                 if let Some(&program_id) = account_keys.get(program_id_idx) {
                     if program_id == pump_program {
@@ -107,11 +115,24 @@ impl PumpBuyAccounts {
 
                         if ix.data.len() >= 8 {
                             let discriminator = &ix.data[0..8];
+
+                            if DEBUG {
+                                println!("      🔍 IX[{}]: Pump instruction, discriminator={:02x?}",
+                                         ix_idx, discriminator);
+                            }
+
                             if discriminator == BUY_DISCRIMINATOR {
                                 if ix.data.len() >= 24 {
                                     let max_sol_bytes = &ix.data[16..24];
                                     dev_buy_sol = u64::from_le_bytes(max_sol_bytes.try_into().unwrap_or([0u8; 8]));
-                                    println!("      💰 Dev buy: {} SOL", dev_buy_sol as f64 / 1e9);
+
+                                    if DEBUG {
+                                        let token_amount = u64::from_le_bytes(ix.data[8..16].try_into().unwrap());
+                                        println!("      ✅ BUY found: {} SOL, {} tokens, bytes={:02x?}",
+                                                 dev_buy_sol as f64 / 1e9, token_amount, max_sol_bytes);
+                                    } else {
+                                        println!("      💰 Dev buy: {} SOL", dev_buy_sol as f64 / 1e9);
+                                    }
                                 }
                             }
                         }
@@ -124,9 +145,29 @@ impl PumpBuyAccounts {
             }
 
             if dev_buy_sol == 0 {
+                if DEBUG {
+                    println!("      ⚠️  No BUY instruction - checking balances...");
+                }
+
                 if let Some(meta) = &tx.transaction.meta {
                     let pre_balances = &meta.pre_balances;
                     let post_balances = &meta.post_balances;
+
+                    if DEBUG {
+                        println!("      📊 Balance changes:");
+                        for i in 0..pre_balances.len().min(10) {
+                            if i < post_balances.len() {
+                                let pre = pre_balances[i];
+                                let post = post_balances[i];
+                                let diff = if pre > post {
+                                    format!("-{:.4}", (pre - post) as f64 / 1e9)
+                                } else {
+                                    format!("+{:.4}", (post - pre) as f64 / 1e9)
+                                };
+                                println!("         [{}] {} SOL", i, diff);
+                            }
+                        }
+                    }
 
                     for i in 6..8.min(pre_balances.len()) {
                         if i < post_balances.len() {
@@ -136,13 +177,63 @@ impl PumpBuyAccounts {
                                 let spent = pre - post;
                                 if spent > 100_000_000 {
                                     dev_buy_sol = spent;
-                                    println!("      💰 Dev buy (balances): {} SOL", dev_buy_sol as f64 / 1e9);
+                                    if DEBUG {
+                                        println!("      ⚠️  Balance fallback [{}]: {} SOL (ESTIMATE!)",
+                                                 i, dev_buy_sol as f64 / 1e9);
+                                    } else {
+                                        println!("      💰 Dev buy (balances): {} SOL", dev_buy_sol as f64 / 1e9);
+                                    }
                                     break;
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if DEBUG && dev_buy_sol > 0 {
+                println!("      📋 Final: {} SOL", dev_buy_sol as f64 / 1e9);
+            }
+
+            // Check if we found the necessary accounts
+            if creator_vault.is_none() {
+                println!("      ❌ EXTRACTION FAILED - DEBUG INFO:");
+                println!("         mint: {:?}", mint);
+                println!("         creator: {:?}", creator);
+                println!("         dev_buy_sol: {} SOL", dev_buy_sol as f64 / 1e9);
+                println!("         creator_vault: None");
+                println!("         Total instructions analyzed: {}", instructions.len());
+
+                // Show which instructions were found
+                let mut pump_ix_count = 0;
+                let mut buy_ix_count = 0;
+                for (ix_idx, ix) in instructions.iter().enumerate() {
+                    let program_id_idx = ix.program_id_index as usize;
+                    if let Some(&program_id) = account_keys.get(program_id_idx) {
+                        if program_id == pump_program {
+                            pump_ix_count += 1;
+                            if ix.data.len() >= 8 {
+                                let disc = &ix.data[0..8];
+                                println!("         IX[{}]: Pump.fun, discriminator={:02x?}, {} accounts",
+                                         ix_idx, disc, ix.accounts.len());
+                                if disc == &BUY_DISCRIMINATOR {
+                                    buy_ix_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                println!("         Pump.fun instructions found: {}", pump_ix_count);
+                println!("         BUY instructions found: {}", buy_ix_count);
+
+                if buy_ix_count == 0 {
+                    println!("      💡 REASON: No BUY instruction found - dev created token but didn't buy");
+                } else {
+                    println!("      💡 REASON: BUY instruction found but creator_vault missing (account count < 15)");
+                }
+
+                return Err(anyhow!("Token created without buy - dev didn't buy"));
             }
 
             if let Some(creator_vault) = creator_vault {
@@ -183,10 +274,12 @@ impl PumpBuyAccounts {
             }
         }
 
-        Err(anyhow!("Failed to extract accounts"))
+        // If we get here, something went wrong during parsing
+        println!("      ❌ FATAL: Failed to parse transaction");
+        println!("         This should never happen - check transaction format");
+        Err(anyhow!("Failed to extract accounts - transaction parse error"))
     }
 
-    /// 🔥 FIXED: Count PUMP program Create transactions properly
     pub async fn check_creator_token_count(
         rpc: &RpcClient,
         creator: &Pubkey,
@@ -196,7 +289,6 @@ impl PumpBuyAccounts {
 
         let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
-        // Get recent signatures
         let sigs = match rpc.get_signatures_for_address(creator).await {
             Ok(s) => s,
             Err(_) => return Ok(0),
@@ -204,14 +296,12 @@ impl PumpBuyAccounts {
 
         let mut token_count = 0;
 
-        // Check last 50 transactions max (fast)
         for sig_info in sigs.iter().take(50) {
             let sig = match solana_sdk::signature::Signature::from_str(&sig_info.signature) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
 
-            // Fetch transaction
             let tx_result = rpc.get_transaction_with_config(
                 &sig,
                 RpcTransactionConfig {
@@ -222,9 +312,7 @@ impl PumpBuyAccounts {
             ).await;
 
             if let Ok(tx) = tx_result {
-                // Check logs for "Program log: Instruction: Create"
                 if let Some(meta) = tx.transaction.meta {
-                    // Extract logs from OptionSerializer
                     let logs: Option<Vec<String>> = meta.log_messages.into();
 
                     if let Some(log_messages) = logs {
@@ -243,7 +331,6 @@ impl PumpBuyAccounts {
                 }
             }
 
-            // Stop early if already over limit (optimization)
             if token_count > 10 {
                 break;
             }

@@ -64,7 +64,7 @@ async fn try_das_api(creator: &Pubkey) -> Result<u32> {
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(200))
+        .timeout(std::time::Duration::from_millis(500))
         .build()?;
 
     let response: DasResponse = client
