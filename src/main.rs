@@ -64,7 +64,9 @@ struct BotConfig {
     min_dev_buy_usd: f64,  // Minimum dev buy in USD
     max_dev_buy_usd: f64,  // Maximum dev buy in USD
     sol_price_usd: f64,    // Current SOL price for conversion
+    max_dev_tokens: usize,
 }
+
 
 #[derive(Debug, Clone, Copy)]
 enum SubmissionMode {
@@ -91,6 +93,7 @@ impl BotConfig {
             min_dev_buy_usd: 600.0,
             max_dev_buy_usd: 1200.0,
             sol_price_usd: 122.0,  // 🔥 UPDATED: Current SOL price
+            max_dev_tokens: 10,
         }
     }
 }
@@ -152,6 +155,7 @@ async fn main() -> Result<()> {
              config.min_dev_buy_usd as u32,
              config.max_dev_buy_usd as u32,
              config.sol_price_usd as u32);
+    println!("   ✓ Max dev tokens: {}", config.max_dev_tokens);
     println!("   ✓ SOL Range: {:.2}-{:.2} SOL", min_sol, max_sol);
 
     println!("\n📡 Connecting...");
@@ -237,6 +241,20 @@ async fn ultra_fast_buy(config: &BotConfig, init_signature: &str) -> Result<()> 
         return Err(anyhow!("Token skipped - dev buy outside range"));
     }
     println!("   ✅ Dev buy in range!");
+
+    // 🔥 DEV TOKEN COUNT CHECK
+    println!("   🔍 Checking creator history...");
+    match PumpBuyAccounts::check_creator_token_count(&config.rpc, &accounts.creator).await {
+        Ok(count) => {
+            println!("   📊 Creator tokens: {}", count);
+            if count > config.max_dev_tokens {
+                return Err(anyhow!("SKIP: Dev has {} tokens (max {})", count, config.max_dev_tokens));
+            }
+        }
+        Err(e) => {
+            println!("   ⚠️  Token count check failed: {} (proceeding)", e);
+        }
+    }
 
     // 🚀 PARALLEL: Start social check in background while preparing TX!
     let social_check_enabled = config.require_socials || config.require_twitter || config.min_socials_count > 0;
