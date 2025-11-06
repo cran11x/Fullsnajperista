@@ -18,32 +18,36 @@ struct DasResult {
     total: u32,
 }
 
-/// ⚡ HYBRID: Try DAS API first (fast), fallback to transaction parsing (reliable)
+/// ⚡ HYBRID: Try transaction parsing FIRST (more reliable for pump.fun), DAS as fallback
 pub async fn check_creator_token_count_das(creator: &Pubkey) -> Result<u32> {
-    // 🚀 STEP 1: Try DAS API (instant if indexed)
-    match try_das_api(creator).await {
+    // 🚀 STEP 1: Try transaction parsing (most reliable for Pump.fun)
+    match try_transaction_parsing(creator).await {
         Ok(count) if count > 0 => {
-            println!("      ✅ DAS API: {} tokens", count);
-            return Ok(count);
+            println!("      ✅ Transaction parsing: {} tokens", count);
+            return Ok(count as u32);
         }
         Ok(_) => {
-            println!("      ⚠️  DAS API returned 0 - trying transaction fallback...");
+            println!("      ⚠️  Transaction parsing found 0 - trying DAS API...");
         }
         Err(e) => {
-            println!("      ⚠️  DAS API failed: {} - trying transaction fallback...", e);
+            println!("      ⚠️  Transaction parsing failed: {} - trying DAS API...", e);
         }
     }
 
-    // 🔥 STEP 2: Fallback to transaction parsing (slower but reliable)
-    match try_transaction_parsing(creator).await {
-        Ok(count) => {
-            println!("      ✅ Transaction parsing: {} tokens", count);
-            Ok(count as u32)
+    // 🔥 STEP 2: Fallback to DAS API
+    match try_das_api(creator).await {
+        Ok(count) if count > 0 => {
+            println!("      ✅ DAS API: {} tokens", count);
+            Ok(count)
+        }
+        Ok(_) => {
+            println!("      ❌ Both methods returned 0");
+            Ok(999) // Can't verify - skip to be safe
         }
         Err(e) => {
             println!("      ❌ Both methods failed: {}", e);
             println!("      ⚠️  CRITICAL: Returning 999 to trigger skip filter!");
-            Ok(999) // ← Return high number to skip risky tokens
+            Ok(999)
         }
     }
 }
@@ -52,7 +56,41 @@ pub async fn check_creator_token_count_das(creator: &Pubkey) -> Result<u32> {
 async fn try_das_api(creator: &Pubkey) -> Result<u32> {
     let url = format!("https://mainnet.helius-rpc.com/?api-key={}", HELIUS_API_KEY);
 
-    let request_body = serde_json::json!({
+    // Try method 1: searchAssets (more comprehensive)
+    let search_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "searchAssets",
+        "params": {
+            "creatorAddress": creator.to_string(),
+            "creatorVerified": false,
+            "page": 1,
+            "limit": 1000  // ← Increased to get real total
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(800))
+        .build()?;
+
+    let response_text = client
+        .post(&url)
+        .json(&search_body)
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    let json: serde_json::Value = serde_json::from_str(&response_text)?;
+
+    if let Some(total) = json["result"]["total"].as_u64() {
+        if total > 0 {
+            return Ok(total as u32);
+        }
+    }
+
+    // Fallback: Try getAssetsByCreator
+    let assets_body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "1",
         "method": "getAssetsByCreator",
@@ -60,23 +98,25 @@ async fn try_das_api(creator: &Pubkey) -> Result<u32> {
             "creatorAddress": creator.to_string(),
             "onlyVerified": false,
             "page": 1,
-            "limit": 1
+            "limit": 1000  // ← Increased to get real total
         }
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(400)) // ← Increased timeout
-        .build()?;
-
-    let response: DasResponse = client
+    let response_text2 = client
         .post(&url)
-        .json(&request_body)
+        .json(&assets_body)
         .send()
         .await?
-        .json()
+        .text()
         .await?;
 
-    Ok(response.result.total)
+    let json2: serde_json::Value = serde_json::from_str(&response_text2)?;
+
+    if let Some(total) = json2["result"]["total"].as_u64() {
+        return Ok(total as u32);
+    }
+
+    Err(anyhow::anyhow!("DAS API returned no data"))
 }
 
 /// Fallback: Parse transactions to count pump.fun creates
@@ -106,9 +146,10 @@ async fn try_transaction_parsing(creator: &Pubkey) -> Result<usize> {
     }
 
     let mut token_count = 0;
+    let mut tx_checked = 0;
 
-    // Check last 50 transactions
-    for sig_info in sigs.iter().take(50) {
+    // Check last 100 transactions (increased from 50)
+    for sig_info in sigs.iter().take(100) {
         let sig = match solana_sdk::signature::Signature::from_str(&sig_info.signature) {
             Ok(s) => s,
             Err(_) => continue,
@@ -124,6 +165,8 @@ async fn try_transaction_parsing(creator: &Pubkey) -> Result<usize> {
         ).await;
 
         if let Ok(tx) = tx_result {
+            tx_checked += 1;
+
             if let Some(meta) = tx.transaction.meta {
                 let logs: Option<Vec<String>> = meta.log_messages.into();
 
@@ -147,6 +190,12 @@ async fn try_transaction_parsing(creator: &Pubkey) -> Result<usize> {
         if token_count > 20 {
             break;
         }
+    }
+
+    // ⚠️ If checked many TXs but found 0 CREATE = active wallet with no creates = suspicious
+    if tx_checked >= 5 && token_count == 0 {
+        println!("      ⚠️  Wallet has {} TXs but 0 token creations - likely not real creator!", tx_checked);
+        return Err(anyhow::anyhow!("Active wallet but no token creations"));
     }
 
     Ok(token_count)
