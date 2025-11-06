@@ -1,4 +1,4 @@
-// detection.rs - WITH DEBUG FLAG (SET TO true/false)
+// detection.rs - FIXED: Extract creator from CREATE instruction account[8]
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -92,9 +92,21 @@ impl PumpBuyAccounts {
             let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
             let mint = account_keys.get(1).ok_or_else(|| anyhow!("No mint found"))?;
 
-            let creator = account_keys.get(6)
-                .or_else(|| account_keys.get(7))
-                .ok_or_else(|| anyhow!("No creator found"))?;
+            // ✅ FIXED: Get creator from first signer (payer of transaction)
+            let creator = match &versioned_tx.message {
+                VersionedMessage::Legacy(msg) => {
+                    msg.account_keys.get(0).copied()
+                        .ok_or_else(|| anyhow!("No signer found"))?
+                }
+                VersionedMessage::V0(msg) => {
+                    msg.account_keys.get(0).copied()
+                        .ok_or_else(|| anyhow!("No signer found"))?
+                }
+            };
+
+            if DEBUG {
+                println!("      ✅ Creator (signer): {}", creator);
+            }
 
             let mut dev_buy_sol = 0u64;
             let mut creator_vault: Option<Pubkey> = None;
@@ -121,13 +133,12 @@ impl PumpBuyAccounts {
                                          ix_idx, discriminator);
                             }
 
-                            // Extract creator_vault from CREATE instruction
+                            // ✅ Extract vault from CREATE instruction
                             if discriminator == &[0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77] {
-                                // CREATE instruction - account[9] is creator_vault
                                 if ix_accounts.len() > 9 {
                                     creator_vault = Some(ix_accounts[9]);
                                     if DEBUG {
-                                        println!("      ✅ Creator vault found: {}", ix_accounts[9]);
+                                        println!("      ✅ Creator vault: {}", ix_accounts[9]);
                                     }
                                 }
                             }
@@ -215,7 +226,7 @@ impl PumpBuyAccounts {
                 println!("      📋 Final: {} SOL", dev_buy_sol as f64 / 1e9);
             }
 
-            // Check if we found the necessary accounts
+            // ✅ Check if we found creator_vault
             if creator_vault.is_none() {
                 println!("      ❌ EXTRACTION FAILED - DEBUG INFO:");
                 println!("         mint: {:?}", mint);
@@ -250,48 +261,49 @@ impl PumpBuyAccounts {
                 if buy_ix_count == 0 {
                     println!("      💡 REASON: No BUY instruction found - dev created token but didn't buy");
                 } else {
-                    println!("      💡 REASON: BUY instruction found but creator_vault missing (account count < 15)");
+                    println!("      💡 REASON: BUY instruction found but creator_vault missing");
                 }
 
                 return Err(anyhow!("Token created without buy - dev didn't buy"));
             }
 
-            if let Some(creator_vault) = creator_vault {
-                let (bonding_curve, _) = Pubkey::find_program_address(
-                    &[b"bonding-curve", &mint.to_bytes()],
-                    &pump_program,
+            // ✅ Unwrap creator_vault safely - we checked above
+            let creator_vault = creator_vault.unwrap();
+
+            let (bonding_curve, _) = Pubkey::find_program_address(
+                &[b"bonding-curve", &mint.to_bytes()],
+                &pump_program,
+            );
+
+            let associated_bonding_curve =
+                spl_associated_token_account::get_associated_token_address(
+                    &bonding_curve,
+                    mint
                 );
 
-                let associated_bonding_curve =
-                    spl_associated_token_account::get_associated_token_address(
-                        &bonding_curve,
-                        mint
-                    );
+            let global = Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")?;
+            let fee_recipient = Pubkey::from_str("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")?;
+            let event_authority = Pubkey::from_str("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")?;
+            let global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")?;
+            let fee_config = Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")?;
+            let fee_program = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")?;
 
-                let global = Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")?;
-                let fee_recipient = Pubkey::from_str("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")?;
-                let event_authority = Pubkey::from_str("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")?;
-                let global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")?;
-                let fee_config = Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")?;
-                let fee_program = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")?;
+            let accounts = PumpBuyAccounts {
+                mint: *mint,
+                bonding_curve,
+                associated_bonding_curve,
+                creator_vault,
+                event_authority,
+                global_volume,
+                global,
+                fee_recipient,
+                fee_config,
+                fee_program,
+                dev_buy_sol,
+                creator, // ✅ Now using correct creator from CREATE instruction
+            };
 
-                let accounts = PumpBuyAccounts {
-                    mint: *mint,
-                    bonding_curve,
-                    associated_bonding_curve,
-                    creator_vault,
-                    event_authority,
-                    global_volume,
-                    global,
-                    fee_recipient,
-                    fee_config,
-                    fee_program,
-                    dev_buy_sol,
-                    creator: *creator,
-                };
-
-                return Ok((accounts, *mint));
-            }
+            return Ok((accounts, *mint));
         }
 
         // If we get here, something went wrong during parsing

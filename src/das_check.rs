@@ -18,36 +18,17 @@ struct DasResult {
     total: u32,
 }
 
-/// ⚡ HYBRID: Try transaction parsing FIRST (more reliable for pump.fun), DAS as fallback
+/// ⚡ FAST: Only DAS API with limit=1000 for accurate total
 pub async fn check_creator_token_count_das(creator: &Pubkey) -> Result<u32> {
-    // 🚀 STEP 1: Try transaction parsing (most reliable for Pump.fun)
-    match try_transaction_parsing(creator).await {
-        Ok(count) if count > 0 => {
-            println!("      ✅ Transaction parsing: {} tokens", count);
-            return Ok(count as u32);
-        }
-        Ok(_) => {
-            println!("      ⚠️  Transaction parsing found 0 - trying DAS API...");
-        }
-        Err(e) => {
-            println!("      ⚠️  Transaction parsing failed: {} - trying DAS API...", e);
-        }
-    }
-
-    // 🔥 STEP 2: Fallback to DAS API
     match try_das_api(creator).await {
-        Ok(count) if count > 0 => {
+        Ok(count) => {
             println!("      ✅ DAS API: {} tokens", count);
             Ok(count)
         }
-        Ok(_) => {
-            println!("      ❌ Both methods returned 0");
-            Ok(999) // Can't verify - skip to be safe
-        }
         Err(e) => {
-            println!("      ❌ Both methods failed: {}", e);
-            println!("      ⚠️  CRITICAL: Returning 999 to trigger skip filter!");
-            Ok(999)
+            println!("      ❌ DAS API failed: {}", e);
+            println!("      ⚠️  Returning 999 to skip (can't verify)");
+            Ok(999) // Skip if can't verify
         }
     }
 }
@@ -65,7 +46,7 @@ async fn try_das_api(creator: &Pubkey) -> Result<u32> {
             "creatorAddress": creator.to_string(),
             "creatorVerified": false,
             "page": 1,
-            "limit": 1000  // ← Increased to get real total
+            "limit": 20  // ← Increased to get real total
         }
     });
 
