@@ -65,7 +65,7 @@ async fn try_das_api(creator: &Pubkey) -> Result<u32> {
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(800)) // ← Increased timeout
+        .timeout(std::time::Duration::from_millis(400)) // ← Increased timeout
         .build()?;
 
     let response: DasResponse = client
@@ -101,8 +101,8 @@ async fn try_transaction_parsing(creator: &Pubkey) -> Result<usize> {
     };
 
     if sigs.is_empty() {
-        println!("      ⚠️  No transactions found for creator");
-        return Ok(0);
+        println!("      ⚠️  No TX history - likely fake creator (wallet never created tokens)");
+        return Err(anyhow::anyhow!("No transaction history"));
     }
 
     let mut token_count = 0;
