@@ -121,24 +121,42 @@ impl PumpBuyAccounts {
                                          ix_idx, discriminator);
                             }
 
-                            if discriminator == BUY_DISCRIMINATOR {
-                                if ix.data.len() >= 24 {
-                                    let max_sol_bytes = &ix.data[16..24];
-                                    dev_buy_sol = u64::from_le_bytes(max_sol_bytes.try_into().unwrap_or([0u8; 8]));
-
+                            // Extract creator_vault from CREATE instruction
+                            if discriminator == &[0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77] {
+                                // CREATE instruction - account[9] is creator_vault
+                                if ix_accounts.len() > 9 {
+                                    creator_vault = Some(ix_accounts[9]);
                                     if DEBUG {
-                                        let token_amount = u64::from_le_bytes(ix.data[8..16].try_into().unwrap());
-                                        println!("      ✅ BUY found: {} SOL, {} tokens, bytes={:02x?}",
-                                                 dev_buy_sol as f64 / 1e9, token_amount, max_sol_bytes);
-                                    } else {
-                                        println!("      💰 Dev buy: {} SOL", dev_buy_sol as f64 / 1e9);
+                                        println!("      ✅ Creator vault found: {}", ix_accounts[9]);
                                     }
                                 }
                             }
-                        }
 
-                        if ix_accounts.len() >= 15 {
-                            creator_vault = Some(ix_accounts[9]);
+                            if discriminator == BUY_DISCRIMINATOR {
+                                if ix.data.len() >= 24 {
+                                    let max_sol_bytes = &ix.data[16..24];
+                                    let raw_value = u64::from_le_bytes(max_sol_bytes.try_into().unwrap_or([0u8; 8]));
+
+                                    // 🔥 SANITY CHECK: If > 100 SOL, might be wrong parsing
+                                    if raw_value > 100_000_000_000 { // 100 SOL in lamports
+                                        if DEBUG {
+                                            println!("      ⚠️  Suspicious value: {} ({} SOL) - might be parsing error",
+                                                     raw_value, raw_value as f64 / 1e9);
+                                        }
+                                        // Don't set dev_buy_sol if unrealistic
+                                    } else {
+                                        dev_buy_sol = raw_value;
+
+                                        if DEBUG {
+                                            let token_amount = u64::from_le_bytes(ix.data[8..16].try_into().unwrap());
+                                            println!("      ✅ BUY found: {} SOL, {} tokens, bytes={:02x?}",
+                                                     dev_buy_sol as f64 / 1e9, token_amount, max_sol_bytes);
+                                        } else {
+                                            println!("      💰 Dev buy: {} SOL", dev_buy_sol as f64 / 1e9);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -169,16 +187,18 @@ impl PumpBuyAccounts {
                         }
                     }
 
-                    for i in 6..8.min(pre_balances.len()) {
+                    // 🔥 Check ALL accounts for spending, not just 6-7
+                    for i in 0..pre_balances.len().min(10) {
                         if i < post_balances.len() {
                             let pre = pre_balances[i];
                             let post = post_balances[i];
                             if pre > post {
                                 let spent = pre - post;
-                                if spent > 100_000_000 {
+                                // Look for significant spends (>0.1 SOL, but not rent ~0.002)
+                                if spent > 100_000_000 && spent < 100_000_000_000 { // 0.1-100 SOL
                                     dev_buy_sol = spent;
                                     if DEBUG {
-                                        println!("      ⚠️  Balance fallback [{}]: {} SOL (ESTIMATE!)",
+                                        println!("      ⚠️  Balance fallback [{}]: {} SOL",
                                                  i, dev_buy_sol as f64 / 1e9);
                                     } else {
                                         println!("      💰 Dev buy (balances): {} SOL", dev_buy_sol as f64 / 1e9);

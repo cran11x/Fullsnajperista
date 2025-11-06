@@ -1,4 +1,4 @@
-// das_check.rs - HYBRID: DAS API with transaction fallback
+// das_check.rs - IMPROVED: Better error handling
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -27,10 +27,10 @@ pub async fn check_creator_token_count_das(creator: &Pubkey) -> Result<u32> {
             return Ok(count);
         }
         Ok(_) => {
-            println!("      ⚠️  DAS API returned 0 - using transaction fallback");
+            println!("      ⚠️  DAS API returned 0 - trying transaction fallback...");
         }
         Err(e) => {
-            println!("      ⚠️  DAS API failed: {} - using transaction fallback", e);
+            println!("      ⚠️  DAS API failed: {} - trying transaction fallback...", e);
         }
     }
 
@@ -41,8 +41,9 @@ pub async fn check_creator_token_count_das(creator: &Pubkey) -> Result<u32> {
             Ok(count as u32)
         }
         Err(e) => {
-            println!("      ⚠️  Transaction parsing failed: {}", e);
-            Ok(0) // Default to 0 if all methods fail
+            println!("      ❌ Both methods failed: {}", e);
+            println!("      ⚠️  CRITICAL: Returning 999 to trigger skip filter!");
+            Ok(999) // ← Return high number to skip risky tokens
         }
     }
 }
@@ -64,7 +65,7 @@ async fn try_das_api(creator: &Pubkey) -> Result<u32> {
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_millis(800)) // ← Increased timeout
         .build()?;
 
     let response: DasResponse = client
@@ -90,11 +91,19 @@ async fn try_transaction_parsing(creator: &Pubkey) -> Result<usize> {
 
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
-    // Get signatures
+    // Get signatures with retry
     let sigs = match rpc.get_signatures_for_address(creator).await {
         Ok(s) => s,
-        Err(_) => return Ok(0),
+        Err(e) => {
+            println!("      ⚠️  RPC error getting signatures: {}", e);
+            return Err(anyhow::anyhow!("Could not get signatures"));
+        }
     };
+
+    if sigs.is_empty() {
+        println!("      ⚠️  No transactions found for creator");
+        return Ok(0);
+    }
 
     let mut token_count = 0;
 
