@@ -1,4 +1,5 @@
-// main.rs - WITH TRACKER FLAG
+// main.rs - FIXED VERSION WITH AUTO-RECONNECT
+// This replaces your current main.rs
 
 mod detection;
 mod buy;
@@ -22,9 +23,10 @@ use solana_sdk::{
 use spl_associated_token_account::{get_associated_token_address, instruction::create_associated_token_account};
 use std::str::FromStr;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, SinkExt};
 use rand::seq::SliceRandom;
 use chrono::Utc;
+use std::time::Duration;
 
 use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
@@ -33,11 +35,10 @@ use helius::send_helius_transaction;
 use socials::{check_token_socials, Socials};
 use das_check::check_creator_token_count_das;
 use crate::accounts::{TokenBuy, TokenTracker};
+
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-
-// 🔧 TOGGLE THIS
 const ENABLE_TRACKER: bool = true;
 
 const HELIUS_TIP_ACCOUNTS: [&str; 10] = [
@@ -104,8 +105,8 @@ impl BotConfig {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    println!("⚡ ULTRA FAST HELIUS SNIPER");
-    println!("{}", "=".repeat(50));
+    println!("⚡ ULTRA FAST HELIUS SNIPER v2.0 (AUTO-RECONNECT ENABLED)");
+    println!("{}", "=".repeat(60));
 
     let wallet = load_wallet()?;
     println!("💰 Wallet: {}", wallet.pubkey());
@@ -120,7 +121,6 @@ async fn main() -> Result<()> {
 
     let config = BotConfig::new(wallet);
 
-    // Initialize tracker if enabled
     let mut tracker = if ENABLE_TRACKER {
         match TokenTracker::new() {
             Ok(t) => {
@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
     println!("   Tracker: {}", if ENABLE_TRACKER { "✅ ON" } else { "❌ OFF" });
+    println!("   Auto-Reconnect: ✅ ENABLED"); // NEW
 
     if config.one_shot_mode {
         println!("\n🛑 ONE-SHOT MODE: Bot will stop after first successful buy!");
@@ -175,13 +176,65 @@ async fn main() -> Result<()> {
     println!("   ✓ Max dev tokens: {}", config.max_dev_tokens);
     println!("   ✓ SOL Range: {:.2}-{:.2} SOL", min_sol, max_sol);
 
-    println!("\n📡 Connecting...");
+    println!("\n📡 Starting WebSocket listener (will auto-reconnect on disconnect)...");
+
+    // 🔥 NEW: This now loops forever with auto-reconnect
     listen_for_new_tokens(config, tracker).await?;
 
     Ok(())
 }
 
+// 🔥 NEW: Wrapper that handles reconnection
 async fn listen_for_new_tokens(config: BotConfig, mut tracker: Option<TokenTracker>) -> Result<()> {
+    let mut detected = 0;
+    let mut reconnect_count = 0;
+    let mut total_reconnects = 0;
+
+    loop {
+        reconnect_count += 1;
+        total_reconnects += 1;
+
+        let reconnect_delay = if reconnect_count == 1 {
+            Duration::from_secs(0) // First connection, no delay
+        } else if reconnect_count < 5 {
+            Duration::from_secs(5) // Quick reconnect
+        } else {
+            Duration::from_secs(15) // Longer delay after multiple failures
+        };
+
+        if reconnect_delay.as_secs() > 0 {
+            println!("\n🔄 Reconnecting in {} seconds... (reconnect #{})",
+                     reconnect_delay.as_secs(), total_reconnects);
+            tokio::time::sleep(reconnect_delay).await;
+        }
+
+        println!("\n🔌 Connecting to WebSocket...");
+
+        match listen_websocket_once(&config, &mut tracker, &mut detected).await {
+            Ok(_) => {
+                println!("⚠️  WebSocket closed normally");
+                reconnect_count = 0; // Reset on clean close
+            }
+            Err(e) => {
+                eprintln!("❌ WebSocket error: {}", e);
+            }
+        }
+
+        // Safety check - if too many rapid reconnects, something is seriously wrong
+        if reconnect_count > 10 {
+            eprintln!("🚨 Too many rapid reconnects ({}), pausing for 60s...", reconnect_count);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            reconnect_count = 0;
+        }
+    }
+}
+
+// 🔥 NEW: Single WebSocket connection (can fail and return)
+async fn listen_websocket_once(
+    config: &BotConfig,
+    tracker: &mut Option<TokenTracker>,
+    detected: &mut u32,
+) -> Result<()> {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
     let subscribe_msg = serde_json::json!({
@@ -198,48 +251,117 @@ async fn listen_for_new_tokens(config: BotConfig, mut tracker: Option<TokenTrack
         ]
     });
 
-    let (ws_stream, _) = connect_async(WSS_URL).await?;
+    // Connect to WebSocket
+    let (ws_stream, _) = connect_async(WSS_URL).await
+        .map_err(|e| anyhow!("WS connect failed: {}", e))?;
+
     let (mut write, mut read) = ws_stream.split();
 
-    use futures_util::SinkExt;
-    write.send(WsMessage::Text(subscribe_msg.to_string())).await?;
+    // Subscribe
+    write.send(WsMessage::Text(subscribe_msg.to_string())).await
+        .map_err(|e| anyhow!("WS subscribe failed: {}", e))?;
 
-    println!("✅ Listening...\n");
+    println!("✅ Connected and listening...\n");
 
-    let mut detected = 0;
+    // 🔥 CRITICAL: Spawn ping task to keep connection alive
+    let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel(1);
+    let ping_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
 
-    while let Some(msg) = read.next().await {
-        if let Ok(WsMessage::Text(text)) = msg {
-            if let Ok(notification) = serde_json::from_str::<serde_json::Value>(&text) {
-                if is_initialize_bonding_curve(&notification) {
-                    if let Some(signature) = extract_signature(&notification) {
-                        detected += 1;
+            // Check if we should stop
+            if ping_rx.try_recv().is_ok() {
+                break;
+            }
 
-                        println!("\n🔔 TOKEN #{}", detected);
-                        println!("   Sig: {}", signature);
+            if let Err(e) = write.send(WsMessage::Ping(vec![])).await {
+                eprintln!("⚠️  Ping failed: {}", e);
+                break;
+            }
+        }
+    });
 
-                        match ultra_fast_buy(&config, &signature, detected, &mut tracker).await {
-                            Ok(_) => {
-                                println!("✅ DONE!");
-                                if config.one_shot_mode {
-                                    println!("\n🛑 ONE-SHOT MODE: Stopping bot!");
-                                    if let Some(t) = &tracker {
-                                        t.print_summary();
+    // Track last message time to detect stalls
+    let mut last_message_time = std::time::Instant::now();
+    let stall_timeout = Duration::from_secs(300); // 5 minutes with no messages = reconnect
+
+    // Main message loop
+    let result = loop {
+        // Check for stall
+        if last_message_time.elapsed() > stall_timeout {
+            eprintln!("⚠️  No messages for {:?}, connection may be stalled", stall_timeout);
+            break Err(anyhow!("Connection stalled"));
+        }
+
+        // Wait for next message with timeout
+        let msg_result = tokio::time::timeout(
+            Duration::from_secs(60),
+            read.next()
+        ).await;
+
+        match msg_result {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                last_message_time = std::time::Instant::now();
+
+                if let Ok(notification) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if is_initialize_bonding_curve(&notification) {
+                        if let Some(signature) = extract_signature(&notification) {
+                            *detected += 1;
+
+                            println!("\n🔔 TOKEN #{}", detected);
+                            println!("   Sig: {}", signature);
+
+                            match ultra_fast_buy(config, &signature, *detected, tracker).await {
+                                Ok(_) => {
+                                    println!("✅ DONE!");
+                                    if config.one_shot_mode {
+                                        println!("\n🛑 ONE-SHOT MODE: Stopping bot!");
+                                        if let Some(t) = tracker {
+                                            t.print_summary();
+                                        }
+                                        break Ok(());
                                     }
-                                    break;
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("❌ Failed: {}", e);
+                                Err(e) => {
+                                    eprintln!("❌ Failed: {}", e);
+                                }
                             }
                         }
                     }
                 }
             }
+            Ok(Some(Ok(WsMessage::Ping(_)))) => {
+                // Auto-handled by tokio-tungstenite
+            }
+            Ok(Some(Ok(WsMessage::Pong(_)))) => {
+                // Keep-alive response
+            }
+            Ok(Some(Ok(WsMessage::Close(frame)))) => {
+                println!("⚠️  Server closed connection: {:?}", frame);
+                break Err(anyhow!("WebSocket closed by server"));
+            }
+            Ok(Some(Err(e))) => {
+                eprintln!("❌ Message error: {}", e);
+                break Err(anyhow!("WebSocket message error: {}", e));
+            }
+            Ok(None) => {
+                // Stream ended
+                break Err(anyhow!("WebSocket stream ended"));
+            }
+            Err(_) => {
+                // Timeout - no message in 60s, but that's ok if not stalled
+                continue;
+            }
+            _ => {}
         }
-    }
+    };
 
-    Ok(())
+    // Stop ping task
+    let _ = ping_tx.send(()).await;
+    ping_task.abort();
+
+    result
 }
 
 async fn ultra_fast_buy(
@@ -251,43 +373,36 @@ async fn ultra_fast_buy(
     let (accounts, mint) = PumpBuyAccounts::from_initialize_tx(&config.rpc, init_signature).await?;
     println!("   🪙 {}", mint);
 
+    let creator_count = match check_creator_token_count_das(&accounts.creator).await {
+        Ok(count) => count,
+        Err(e) => {
+            println!("      ⚠️  Creator check failed: {}", e);
+            999
+        }
+    };
+
+    if creator_count > config.max_dev_tokens as u32 && creator_count < 999 {
+        return Err(anyhow!("SKIP: Dev has {} tokens (max {})", creator_count, config.max_dev_tokens));
+    }
+
     let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
     let dev_buy_usd = dev_buy_sol * config.sol_price_usd;
+    println!("   💰 Dev buy: {} SOL (${:.0})", dev_buy_sol, dev_buy_usd);
 
-    println!("   💰 Dev: {:.2} SOL (${:.0})", dev_buy_sol, dev_buy_usd);
-
-    let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
-    let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
-
-    if dev_buy_sol < min_sol {
-        return Err(anyhow!("SKIP: Dev buy {:.2} SOL < min {:.2} SOL", dev_buy_sol, min_sol));
-    }
-    if dev_buy_sol > max_sol {
-        return Err(anyhow!("SKIP: Dev buy {:.2} SOL > max {:.2} SOL", dev_buy_sol, max_sol));
+    if dev_buy_usd < config.min_dev_buy_usd || dev_buy_usd > config.max_dev_buy_usd {
+        return Err(anyhow!("SKIP: Dev buy ${:.0} outside range ${}-${}",
+                          dev_buy_usd, config.min_dev_buy_usd, config.max_dev_buy_usd));
     }
 
-    println!("   ✅ Dev buy in range!");
-
-    let creator_count = check_creator_token_count_das(&accounts.creator).await.unwrap_or(0);
-    println!("   👤 Creator tokens: {}", creator_count);
-
-    if creator_count as usize > config.max_dev_tokens {
-        return Err(anyhow!("SKIP: Creator has {} tokens (max {})", creator_count, config.max_dev_tokens));
-    }
-
-    let mint_str = mint.to_string();
     let require_socials = config.require_socials;
     let require_twitter = config.require_twitter;
     let min_socials = config.min_socials_count;
 
     let social_task = if require_socials || require_twitter || min_socials > 0 {
+        let mint_str = mint.to_string();
         Some(tokio::spawn(async move {
             let max_attempts = 3;
-            let mut attempts = 0;
-
-            loop {
-                attempts += 1;
-
+            for attempts in 1..=max_attempts {
                 match check_token_socials(&mint_str).await {
                     Ok(socials) => {
                         println!("   📱 {} social(s) (attempt {})", socials.count(), attempts);
@@ -323,6 +438,7 @@ async fn ultra_fast_buy(
                     }
                 }
             }
+            unreachable!()
         }))
     } else {
         None
@@ -378,7 +494,6 @@ async fn ultra_fast_buy(
 
     let tx_sig = tx.signatures[0];
 
-    // Get socials result if enabled
     let socials_result = if let Some(task) = social_task {
         match task.await {
             Ok(Ok(s)) => {
@@ -468,7 +583,6 @@ async fn ultra_fast_buy(
 
     println!("   🔗 https://solscan.io/tx/{}", tx_sig);
 
-    // ✅ TRACK IF ENABLED
     if let (Ok(()), Some(tracker)) = (&result, tracker) {
         let buy = TokenBuy {
             token_number,
