@@ -1,5 +1,8 @@
 mod global;
 pub use global::*;
 
-mod tracker;  // ← ADD
-pub use tracker::*;  // ← ADD
+mod tracker;
+pub use tracker::*;
+
+mod seen_tokens;  // ← NEW: Duplicate prevention
+pub use seen_tokens::*;
