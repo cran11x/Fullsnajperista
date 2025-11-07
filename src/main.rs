@@ -381,7 +381,12 @@ async fn ultra_fast_buy(
         }
     };
 
-    if creator_count > config.max_dev_tokens as u32 && creator_count < 999 {
+    // ⚠️ Skip if DAS check failed (999 = can't verify)
+    if creator_count == 999 {
+        return Err(anyhow!("SKIP: Can't verify creator (DAS API failed)"));
+    }
+
+    if creator_count > config.max_dev_tokens as u32 {
         return Err(anyhow!("SKIP: Dev has {} tokens (max {})", creator_count, config.max_dev_tokens));
     }
 
