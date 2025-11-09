@@ -1,4 +1,4 @@
-// tracker.rs - TOKEN BUY TRACKING & STATISTICS
+// tracker.rs - TOKEN BUY TRACKING & STATISTICS (WITH MC TRACKING)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,11 @@ pub struct TokenBuy {
     pub telegram: Option<String>,
     pub creator_token_count: u32,
     pub detection_method: String, // "instruction" or "balance_fallback"
+
+    // 🆕 NEW: Market cap tracking - PRE and POST buy
+    pub mc_at_detection_usd: Option<f64>,  // MC when first detected
+    pub mc_at_entry_usd: Option<f64>,      // MC after TX confirmed (real entry)
+    pub token_price_sol: Option<f64>,      // Token price in SOL at detection
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +36,11 @@ pub struct TrackerStats {
     pub session_start: DateTime<Utc>,
     pub last_buy: DateTime<Utc>,
     pub buys: Vec<TokenBuy>,
+
+    // 🆕 NEW: MC statistics
+    pub avg_mc_usd: f64,
+    pub min_mc_usd: f64,
+    pub max_mc_usd: f64,
 }
 
 pub struct TokenTracker {
@@ -51,7 +61,7 @@ impl TokenTracker {
         // Create CSV header if file doesn't exist
         if !Path::new(&csv_path).exists() {
             let mut file = File::create(&csv_path)?;
-            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod")?;
+            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
         }
 
         Ok(Self {
@@ -61,6 +71,9 @@ impl TokenTracker {
                 session_start,
                 last_buy: session_start,
                 buys: Vec::new(),
+                avg_mc_usd: 0.0,
+                min_mc_usd: f64::MAX,
+                max_mc_usd: 0.0,
             },
             csv_path,
             json_path,
@@ -72,6 +85,21 @@ impl TokenTracker {
         self.stats.total_buys += 1;
         self.stats.total_sol_spent += buy.our_buy_sol;
         self.stats.last_buy = buy.timestamp;
+
+        // Update MC stats (using entry MC as that's the real execution price)
+        if let Some(mc_usd) = buy.mc_at_entry_usd {
+            self.stats.min_mc_usd = self.stats.min_mc_usd.min(mc_usd);
+            self.stats.max_mc_usd = self.stats.max_mc_usd.max(mc_usd);
+
+            // Recalculate average
+            let total_mc: f64 = self.stats.buys.iter()
+                .filter_map(|b| b.mc_at_entry_usd)
+                .sum::<f64>() + mc_usd;
+            let count_with_mc = self.stats.buys.iter()
+                .filter(|b| b.mc_at_entry_usd.is_some())
+                .count() + 1;
+            self.stats.avg_mc_usd = total_mc / count_with_mc as f64;
+        }
 
         // Append to CSV
         self.append_to_csv(&buy)?;
@@ -93,7 +121,7 @@ impl TokenTracker {
 
         writeln!(
             file,
-            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}",
             buy.token_number,
             buy.mint,
             buy.signature,
@@ -107,6 +135,9 @@ impl TokenTracker {
             buy.telegram.as_deref().unwrap_or(""),
             buy.creator_token_count,
             buy.detection_method,
+            buy.mc_at_detection_usd.map(|v| format!("{:.0}", v)).unwrap_or_default(),
+            buy.mc_at_entry_usd.map(|v| format!("{:.0}", v)).unwrap_or_default(),
+            buy.token_price_sol.map(|v| format!("{:.8}", v)).unwrap_or_default(),
         )?;
 
         Ok(())
@@ -138,6 +169,16 @@ impl TokenTracker {
                  } else {
                      0.0
                  });
+
+        // MC statistics
+        if self.stats.max_mc_usd > 0.0 {
+            println!("║                                                      ║");
+            println!("║ 📊 MARKET CAP STATISTICS:                           ║");
+            println!("║   Average MC:      ${:>10.0}                      ║", self.stats.avg_mc_usd);
+            println!("║   Min MC:          ${:>10.0}                      ║", self.stats.min_mc_usd);
+            println!("║   Max MC:          ${:>10.0}                      ║", self.stats.max_mc_usd);
+        }
+
         println!("║                                                      ║");
         println!("║ CSV saved:  {:43} ║", &self.csv_path);
         println!("║ JSON saved: {:43} ║", &self.json_path);
@@ -147,10 +188,16 @@ impl TokenTracker {
     /// Print periodic stats (every N buys)
     pub fn print_periodic_stats(&self) {
         if self.stats.total_buys % 10 == 0 {
-            println!("\n📊 STATS: {} buys | {:.4} SOL spent | Avg: {:.4} SOL/buy\n",
-                     self.stats.total_buys,
-                     self.stats.total_sol_spent,
-                     self.stats.total_sol_spent / self.stats.total_buys as f64);
+            let mut msg = format!("\n📊 STATS: {} buys | {:.4} SOL spent | Avg: {:.4} SOL/buy",
+                                  self.stats.total_buys,
+                                  self.stats.total_sol_spent,
+                                  self.stats.total_sol_spent / self.stats.total_buys as f64);
+
+            if self.stats.avg_mc_usd > 0.0 {
+                msg.push_str(&format!(" | Avg MC: ${:.0}", self.stats.avg_mc_usd));
+            }
+
+            println!("{}\n", msg);
         }
     }
 
@@ -176,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_buy_recording() {
+    fn test_buy_recording_with_mc() {
         let mut tracker = TokenTracker::new().unwrap();
 
         let buy = TokenBuy {
@@ -193,10 +240,13 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
+            mc_at_detection_usd: Some(4800.0),
+            mc_at_entry_usd: Some(5000.0),
+            token_price_sol: Some(0.00005),
         };
 
         assert!(tracker.record_buy(buy).is_ok());
         assert_eq!(tracker.total_buys(), 1);
-        assert_eq!(tracker.get_stats().total_sol_spent, 0.1);
+        assert_eq!(tracker.get_stats().avg_mc_usd, 5000.0);
     }
 }

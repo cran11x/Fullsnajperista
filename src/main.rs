@@ -1,4 +1,4 @@
-// main.rs - WITH DUPLICATE PROTECTION
+// main.rs - WITH DUPLICATE PROTECTION & MC TRACKING
 
 mod detection;
 mod buy;
@@ -26,7 +26,7 @@ use futures_util::{StreamExt, SinkExt};
 use rand::seq::SliceRandom;
 use chrono::Utc;
 use std::time::Duration;
-use std::sync::Arc;  // ← ADD
+use std::sync::Arc;
 
 use detection::PumpBuyAccounts;
 use buy::build_buy_instruction;
@@ -34,7 +34,7 @@ use jito::send_jito_bundle;
 use helius::send_helius_transaction;
 use socials::{check_token_socials, Socials};
 use das_check::check_creator_token_count_das;
-use crate::accounts::{TokenBuy, TokenTracker, SeenTokens};  // ← ADD SeenTokens
+use crate::accounts::{TokenBuy, TokenTracker, SeenTokens, fetch_bonding_curve_mc, BondingCurveAccount};  // ← ADD MC imports
 
 const RPC_URL: &str = "https://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
 const WSS_URL: &str = "wss://mainnet.helius-rpc.com/?api-key=7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04";
@@ -87,15 +87,15 @@ impl BotConfig {
             sol_amount: 15_000_000,
             priority_fee: 11_000_000,
             compute_units: 200_000,
-            one_shot_mode: false,
+            one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,
             jito_tip: 1_500_000,
             require_socials: false,
             require_twitter: false,
             min_socials_count: 0,
-            min_dev_buy_usd: 600.0,
+            min_dev_buy_usd: 300.0,
             max_dev_buy_usd: 1200.0,
-            sol_price_usd: 122.0,
+            sol_price_usd: 162.0,
             max_dev_tokens: 10,
         }
     }
@@ -105,7 +105,7 @@ impl BotConfig {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    println!("⚡ ULTRA FAST HELIUS SNIPER v2.0 (AUTO-RECONNECT + DUPLICATE PROTECTION)");
+    println!("⚡ ULTRA FAST HELIUS SNIPER v2.0 (AUTO-RECONNECT + DUPLICATE PROTECTION + MC TRACKING)");
     println!("{}", "=".repeat(60));
 
     let wallet = load_wallet()?;
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
     let mut tracker = if ENABLE_TRACKER {
         match TokenTracker::new() {
             Ok(t) => {
-                println!("✅ Tracker enabled");
+                println!("✅ Tracker enabled (with MC tracking)");
                 Some(t)
             }
             Err(e) => {
@@ -150,9 +150,9 @@ async fn main() -> Result<()> {
     };
     println!("   Mode: {}", mode_str);
     println!("   Tip: {} SOL", config.jito_tip as f64 / 1e9);
-    println!("   Tracker: {}", if ENABLE_TRACKER { "✅ ON" } else { "❌ OFF" });
+    println!("   Tracker: {}", if ENABLE_TRACKER { "✅ ON (with MC)" } else { "❌ OFF" });
     println!("   Auto-Reconnect: ✅ ENABLED");
-    println!("   Duplicate Protection: 🛡️  ENABLED");  // ← NEW
+    println!("   Duplicate Protection: 🛡️  ENABLED");
 
     if config.one_shot_mode {
         println!("\n🛑 ONE-SHOT MODE: Bot will stop after first successful buy!");
@@ -193,7 +193,7 @@ async fn main() -> Result<()> {
 async fn listen_for_new_tokens(
     config: BotConfig,
     mut tracker: Option<TokenTracker>,
-    seen_tokens: Arc<SeenTokens>,  // ← ADD
+    seen_tokens: Arc<SeenTokens>,
 ) -> Result<()> {
     let mut detected = 0;
     let mut reconnect_count = 0;
@@ -243,7 +243,7 @@ async fn listen_websocket_once(
     config: &BotConfig,
     tracker: &mut Option<TokenTracker>,
     detected: &mut u32,
-    seen_tokens: Arc<SeenTokens>,  // ← ADD
+    seen_tokens: Arc<SeenTokens>,
 ) -> Result<()> {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
 
@@ -302,7 +302,7 @@ async fn listen_websocket_once(
             // ✅✅✅ DUPLICATE CHECK - MOST IMPORTANT PART! ✅✅✅
             if !seen_tokens.check_and_mark(&mint) {
                 println!("   ⏭️  SKIPPING: Already processed this token!");
-                continue;  // Skip this token completely
+                continue;
             }
 
             println!("   ✨ FIRST TIME seeing this token - processing...");
@@ -346,7 +346,7 @@ async fn process_and_buy(
 ) -> Result<()> {
     let mint = accounts.mint;
     let dev_buy_lamports = accounts.dev_buy_sol;
-    let dev_buy_sol = dev_buy_lamports as f64 / 1e9;  // Convert to SOL
+    let dev_buy_sol = dev_buy_lamports as f64 / 1e9;
 
     let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
     let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
@@ -373,6 +373,25 @@ async fn process_and_buy(
             0
         }
     };
+
+    // 🆕 FETCH MARKET CAP
+    println!("   📊 Fetching market cap...");
+    let (curve, mc_sol, mc_usd) = match fetch_bonding_curve_mc(
+        &config.rpc,
+        &accounts.bonding_curve,
+        config.sol_price_usd,
+    ).await {
+        Ok(data) => {
+            println!("   💰 MC: {:.2} SOL (${:.0})", data.1, data.2);
+            data
+        }
+        Err(e) => {
+            println!("   ⚠️  Could not fetch MC: {}", e);
+            (BondingCurveAccount::default(), 0.0, 0.0)
+        }
+    };
+
+    let token_price_sol = curve.get_token_price_sol();
 
     let require_socials = config.require_socials;
     let require_twitter = config.require_twitter;
@@ -563,13 +582,47 @@ async fn process_and_buy(
 
     println!("   🔗 https://solscan.io/tx/{}", tx_sig);
 
+    // 🆕 FETCH MC AFTER BUY (wait 200ms for TX to settle)
+    let (mc_entry_usd, token_price_entry) = if result.is_ok() {
+        println!("   ⏳ Waiting 5  0ms for TX settlement...");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        println!("   📊 Fetching entry MC...");
+        match fetch_bonding_curve_mc(
+            &config.rpc,
+            &accounts.bonding_curve,
+            config.sol_price_usd,
+        ).await {
+            Ok((curve_post, _, mc_usd_post)) => {
+                let price_post = curve_post.get_token_price_sol();
+                println!("   💰 Entry MC: ${:.0}", mc_usd_post);
+
+                // Show slippage if both MCs exist
+                if mc_usd > 0.0 && mc_usd_post > 0.0 {
+                    let slippage = ((mc_usd_post - mc_usd) / mc_usd * 100.0).abs();
+                    println!("   📈 MC Change: ${:.0} → ${:.0} ({:.1}% slippage)",
+                             mc_usd, mc_usd_post, slippage);
+                }
+
+                (Some(mc_usd_post), if price_post > 0.0 { Some(price_post) } else { None })
+            }
+            Err(e) => {
+                println!("   ⚠️  Could not fetch entry MC: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    // 🆕 RECORD BUY WITH PRE AND POST MC DATA
     if let (Ok(()), Some(tracker)) = (&result, tracker) {
         let buy = TokenBuy {
             token_number,
             mint: mint.to_string(),
             signature: init_signature.to_string(),
             creator: accounts.creator.to_string(),
-            dev_buy_sol,  // Already converted to f64 SOL
+            dev_buy_sol,
             our_buy_sol: config.sol_amount as f64 / 1e9,
             timestamp: Utc::now(),
             has_socials: socials_result.as_ref().map(|s| s.has_any()).unwrap_or(false),
@@ -582,6 +635,10 @@ async fn process_and_buy(
             } else {
                 "balance_fallback".to_string()
             },
+            // 🆕 PRE and POST MC tracking
+            mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
+            mc_at_entry_usd: mc_entry_usd,
+            token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
         };
 
         if let Err(e) = tracker.record_buy(buy) {
