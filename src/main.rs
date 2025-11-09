@@ -93,7 +93,7 @@ impl BotConfig {
             require_socials: false,
             require_twitter: false,
             min_socials_count: 0,
-            min_dev_buy_usd: 300.0,
+            min_dev_buy_usd: 500.0,
             max_dev_buy_usd: 1200.0,
             sol_price_usd: 162.0,
             max_dev_tokens: 10,
