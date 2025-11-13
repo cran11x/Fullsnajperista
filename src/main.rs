@@ -69,6 +69,7 @@ struct BotConfig {
     min_dev_buy_usd: f64,
     max_dev_buy_usd: f64,
     sol_price_usd: f64,
+    min_dev_tokens: usize,
     max_dev_tokens: usize,
 }
 
@@ -96,6 +97,7 @@ impl BotConfig {
             min_dev_buy_usd: 500.0,
             max_dev_buy_usd: 1200.0,
             sol_price_usd: 162.0,
+            min_dev_tokens: 6,
             max_dev_tokens: 10,
         }
     }
@@ -178,7 +180,7 @@ async fn main() -> Result<()> {
              config.min_dev_buy_usd as u32,
              config.max_dev_buy_usd as u32,
              config.sol_price_usd as u32);
-    println!("   ✓ Max dev tokens: {}", config.max_dev_tokens);
+    println!("   ✓ Dev tokens range: {}-{}", config.min_dev_tokens, config.max_dev_tokens);
     println!("   ✓ SOL Range: {:.2}-{:.2} SOL", min_sol, max_sol);
 
     println!("\n📡 Starting WebSocket listener (will auto-reconnect on disconnect)...");
@@ -361,6 +363,10 @@ async fn process_and_buy(
     println!("   🔍 Checking creator tokens...");
     let creator_count = match check_creator_token_count_das(&accounts.creator).await {
         Ok(count) => {
+            if count < config.min_dev_tokens as u32 {
+                return Err(anyhow!("SKIP: Creator has only {} tokens (min: {})",
+                                   count, config.min_dev_tokens));
+            }
             if count > config.max_dev_tokens as u32 {
                 return Err(anyhow!("SKIP: Creator has {} tokens (max: {})",
                                    count, config.max_dev_tokens));
