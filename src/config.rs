@@ -579,9 +579,15 @@ mod tests {
     fn test_target_mint_address_loading() {
         setup_test_env();
         
+        // Ensure HELIUS_API_KEY is set for test
+        if env::var("HELIUS_API_KEY").is_err() {
+            env::set_var("HELIUS_API_KEY", "test_api_key_for_testing");
+        }
+        
         // Test without target mint (should be None)
+        env::remove_var("TARGET_MINT_ADDRESS");
         let config = Config::from_env();
-        assert!(config.is_ok());
+        assert!(config.is_ok(), "Config should load without TARGET_MINT_ADDRESS");
         let config = config.unwrap();
         assert!(config.target_mint_address.is_none());
         
@@ -589,7 +595,7 @@ mod tests {
         let test_mint = "So11111111111111111111111111111111111111112"; // Valid Solana pubkey format
         env::set_var("TARGET_MINT_ADDRESS", test_mint);
         let config = Config::from_env();
-        assert!(config.is_ok());
+        assert!(config.is_ok(), "Config should load with valid TARGET_MINT_ADDRESS");
         let config = config.unwrap();
         assert!(config.target_mint_address.is_some());
         assert_eq!(config.target_mint_address.unwrap().to_string(), test_mint);
@@ -597,7 +603,7 @@ mod tests {
         // Test with empty string (should be None)
         env::set_var("TARGET_MINT_ADDRESS", "");
         let config = Config::from_env();
-        assert!(config.is_ok());
+        assert!(config.is_ok(), "Config should load with empty TARGET_MINT_ADDRESS");
         let config = config.unwrap();
         assert!(config.target_mint_address.is_none());
         
@@ -605,6 +611,7 @@ mod tests {
         env::set_var("TARGET_MINT_ADDRESS", "invalid_pubkey");
         let config = Config::from_env();
         // Config should still load, but target_mint_address should be None
+        assert!(config.is_ok(), "Config should load even with invalid TARGET_MINT_ADDRESS");
         if let Ok(cfg) = config {
             assert!(cfg.target_mint_address.is_none());
         }

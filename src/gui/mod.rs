@@ -35,6 +35,7 @@ pub struct GuiApp {
     // UI state
     selected_tab: usize,
     auto_scroll_feed: bool,
+    feed_state: tabs::feed::FeedState,
     session_start: chrono::DateTime<Utc>,
 }
 
@@ -79,6 +80,14 @@ impl GuiApp {
             wallet_address,
             selected_tab: 0,
             auto_scroll_feed: true,
+            feed_state: tabs::feed::FeedState {
+                filter_detected: true,
+                filter_filtered: true,
+                filter_bought: true,
+                filter_error: true,
+                filter_info: true,
+                ..Default::default()
+            },
             session_start: Utc::now(),
         }
     }
@@ -186,7 +195,8 @@ impl eframe::App for GuiApp {
                     (0, "📊", "Dashboard"),
                     (1, "💰", "Recent Buys"),
                     (2, "🔴", "Live Feed"),
-                    (3, "⚙️", "Settings"),
+                    (3, "⏭️", "Filtered"),
+                    (4, "⚙️", "Settings"),
                 ];
                 
                 for (idx, icon, label) in tabs.iter() {
@@ -224,8 +234,9 @@ impl eframe::App for GuiApp {
                 match self.selected_tab {
                     0 => tabs::dashboard::render(ui, &self.metrics),
                     1 => tabs::buys::render(ui, &self.tracker),
-                    2 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed),
-                    3 => tabs::settings::render(ui, &self.config, &self.control_tx),
+                    2 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
+                    3 => tabs::filtered::render(ui, &self.event_log),
+                    4 => tabs::settings::render(ui, &self.config, &self.control_tx),
                     _ => {}
                 }
             });

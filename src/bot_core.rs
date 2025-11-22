@@ -123,6 +123,7 @@ pub async fn run_bot(
         // Connect to WebSocket
         match listen_websocket_once(
             &current_config,
+            &config, // Pass live config reference for target_mint_address
             &wallet,
             &rpc,
             &tracker,
@@ -160,7 +161,8 @@ pub async fn run_bot(
 }
 
 async fn listen_websocket_once(
-    config: &Config, // Note: This is a snapshot, not a live reference
+    config: &Config, // Note: This is a snapshot for WebSocket URL, but we'll read live config for target_mint
+    config_arc: &Arc<std::sync::RwLock<Config>>, // Live config reference for target_mint_address
     wallet: &Keypair,
     rpc: &RpcClient,
     tracker: &Arc<std::sync::RwLock<Option<TokenTracker>>>,
@@ -372,8 +374,16 @@ async fn listen_websocket_once(
             let mint = mint_pubkey.to_string();
             
             // Check if target mint is set - if so, only process that specific token
-            if let Some(target_mint) = config.target_mint_address {
+            // ✅ FIXED: Read config fresh each time to get latest target_mint_address
+            let current_target_mint = {
+                let config_guard = config_arc.read().unwrap();
+                config_guard.target_mint_address
+            };
+            
+            if let Some(target_mint) = current_target_mint {
+                println!("      🎯 Target mint check: detected={}, target={}", mint_pubkey, target_mint);
                 if mint_pubkey != target_mint {
+                    println!("      ❌ Token {} does not match target {}", mint_pubkey, target_mint);
                     let _ = event_tx.send(TokenEvent::Filtered {
                         mint: mint.clone(),
                         reason: format!("Not target token (waiting for: {})", target_mint),
@@ -381,11 +391,15 @@ async fn listen_websocket_once(
                     });
                     continue;
                 } else {
+                    println!("      ✅ Target token MATCH! {}", mint);
                     let _ = event_tx.send(TokenEvent::Info {
                         message: format!("🎯 Target token detected! {}", mint),
                         timestamp: Utc::now(),
                     });
                 }
+            } else {
+                // No target mint set - process all tokens
+                println!("      ℹ️  No target mint set - processing all tokens");
             }
             
             // Send detection event

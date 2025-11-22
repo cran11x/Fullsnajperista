@@ -4,4 +4,5 @@ pub mod dashboard;
 pub mod buys;
 pub mod feed;
 pub mod settings;
+pub mod filtered;
 

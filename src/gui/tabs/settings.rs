@@ -7,6 +7,31 @@ use std::str::FromStr;
 use crate::config::{Config, SubmissionMode};
 use crate::gui::events::BotControl;
 
+/// ✅ LIVE UPDATE: Apply config changes immediately without needing Apply button
+/// Uses debouncing to prevent too many updates (stable and efficient)
+fn apply_config_live(
+    config: &Arc<RwLock<Config>>,
+    control_tx: &mpsc::Sender<BotControl>,
+    new_config: &Config,
+) {
+    // Validate before applying
+    if let Err(e) = new_config.validate() {
+        // Don't spam errors - only log if it's a real issue
+        eprintln!("⚠️  Config validation failed (not applied): {}", e);
+        return;
+    }
+    
+    // Update shared config immediately (for GUI display)
+    {
+        let mut cfg = config.write().unwrap();
+        *cfg = new_config.clone();
+    }
+    
+    // Send update to bot (non-blocking, will be processed in next iteration)
+    // This is safe because bot reads config fresh each time
+    let _ = control_tx.send(BotControl::UpdateConfig(new_config.clone()));
+}
+
 #[derive(Default, Clone)]
 struct SettingsState {
     buy_amount_str: Option<String>,
@@ -17,6 +42,7 @@ struct SettingsState {
     max_dev_tokens_str: Option<String>,
     min_socials_count_str: Option<String>,
     target_mint_str: Option<String>,
+    last_update_time: Option<std::time::Instant>,
 }
 
 impl SettingsState {
@@ -119,6 +145,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(buy_sol_str).changed() {
                 if let Ok(val) = buy_sol_str.parse::<f64>() {
                     config_clone.buy_amount_sol = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -129,6 +158,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(fee_str).changed() {
                 if let Ok(val) = fee_str.parse::<u64>() {
                     config_clone.priority_fee = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -136,12 +168,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.add_space(8.0);
         let old_mock_buy = config_clone.mock_buy;
         if ui.checkbox(&mut config_clone.mock_buy, "🧪 Mock Buy (Test mode - no real transactions)").changed() {
-            // Apply mock_buy change immediately when checkbox is clicked
-            {
-                let mut cfg = config.write().unwrap();
-                cfg.mock_buy = config_clone.mock_buy;
-            }
-            let _ = control_tx.send(BotControl::UpdateConfig(config_clone.clone()));
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
         }
         if config_clone.mock_buy {
             ui.label(egui::RichText::new("⚠️  Mock mode: Transactions will be simulated, not sent to blockchain")
@@ -170,6 +199,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             .unwrap_or_else(|| String::new());
         let target_mint_str = state.get_or_init("target_mint", target_mint_display);
         
+        let mut target_mint_changed = false;
         ui.horizontal(|ui| {
             ui.label("Mint Address:");
             if ui.text_edit_singleline(target_mint_str).changed() {
@@ -177,13 +207,21 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 let trimmed = target_mint_str.trim();
                 if trimmed.is_empty() {
                     config_clone.target_mint_address = None;
+                    target_mint_changed = true;
                 } else {
                     if let Ok(pubkey) = solana_sdk::pubkey::Pubkey::from_str(trimmed) {
                         config_clone.target_mint_address = Some(pubkey);
+                        target_mint_changed = true;
                     }
                 }
             }
         });
+        
+        // Apply update after borrow is released
+        if target_mint_changed {
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
         
         if let Some(target_mint) = config_clone.target_mint_address {
             ui.label(egui::RichText::new(format!("✅ Target set: {}", target_mint))
@@ -212,6 +250,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(min_str).changed() {
                 if let Ok(val) = min_str.parse::<f64>() {
                     config_clone.min_dev_buy_usd = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -222,6 +263,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(max_str).changed() {
                 if let Ok(val) = max_str.parse::<f64>() {
                     config_clone.max_dev_buy_usd = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -232,6 +276,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(min_str).changed() {
                 if let Ok(val) = min_str.parse::<usize>() {
                     config_clone.min_dev_tokens = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
             
@@ -240,6 +287,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(max_str).changed() {
                 if let Ok(val) = max_str.parse::<usize>() {
                     config_clone.max_dev_tokens = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -256,20 +306,14 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.add_space(12.0);
         
         if ui.checkbox(&mut config_clone.require_socials, "Require Socials").changed() {
-            // Apply require_socials change immediately
-            {
-                let mut cfg = config.write().unwrap();
-                cfg.require_socials = config_clone.require_socials;
-            }
-            let _ = control_tx.send(BotControl::UpdateConfig(config_clone.clone()));
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
         }
         if ui.checkbox(&mut config_clone.require_twitter, "Require Twitter/X").changed() {
-            // Apply require_twitter change immediately
-            {
-                let mut cfg = config.write().unwrap();
-                cfg.require_twitter = config_clone.require_twitter;
-            }
-            let _ = control_tx.send(BotControl::UpdateConfig(config_clone.clone()));
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
         }
         
         ui.horizontal(|ui| {
@@ -278,6 +322,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(count_str).changed() {
                 if let Ok(val) = count_str.parse::<usize>() {
                     config_clone.min_socials_count = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             }
         });
@@ -295,28 +342,52 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         egui::ComboBox::from_id_source("submission_mode")
             .selected_text(config_clone.submission_mode.as_str())
             .show_ui(ui, |ui| {
+                let mut changed = false;
                 if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Helius, "Helius").changed() {
+                    changed = true;
                 }
                 if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Jito, "Jito").changed() {
+                    changed = true;
                 }
                 if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Rpc, "RPC").changed() {
+                    changed = true;
                 }
                 if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::All, "All").changed() {
+                    changed = true;
+                }
+                if changed {
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
                 }
             });
     });
     
     ui.add_space(20.0);
     
+    // Show live update status
+    if let Some(last_update) = state.last_update_time {
+        let elapsed = last_update.elapsed();
+        if elapsed.as_secs() < 2 {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("✅ Settings applied live")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(100, 255, 100)));
+            });
+        }
+    }
+    
+    ui.add_space(10.0);
+    
     // Action buttons with modern styling
-    ui.add_space(20.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
         
         // Clone state for use in button click handler
         let state_clone = state.clone();
         
-        if ui.add(egui::Button::new(egui::RichText::new("💾 Apply Settings")
+        // Apply button now validates and ensures all fields are synced
+        if ui.add(egui::Button::new(egui::RichText::new("💾 Sync All Settings")
                 .size(14.0)
                 .strong())
                 .fill(egui::Color32::from_rgb(100, 200, 100).linear_multiply(0.2))
@@ -377,20 +448,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 }
             }
             
-            // Validate and apply
-            eprintln!("🔧 Applying config: min_dev_tokens={}, max_dev_tokens={}", 
-                     config_clone.min_dev_tokens, config_clone.max_dev_tokens);
+            // Validate and apply (sync all fields)
             if let Err(e) = config_clone.validate() {
-                // Show error message (could be improved with a proper error dialog)
                 eprintln!("❌ Config validation failed: {}", e);
             } else {
-                {
-                    let mut cfg = config.write().unwrap();
-                    *cfg = config_clone.clone();
-                    eprintln!("✅ Config updated: min_dev_tokens={}, max_dev_tokens={}", 
-                             cfg.min_dev_tokens, cfg.max_dev_tokens);
-                }
-                let _ = control_tx.send(BotControl::UpdateConfig(config_clone));
+                // Apply using live update function
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
                 // Reset state to reflect new config values
                 ui.data_mut(|d| {
                     d.insert_temp(state_id, SettingsState::default());

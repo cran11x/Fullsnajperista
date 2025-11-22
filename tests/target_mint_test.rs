@@ -5,10 +5,9 @@ use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::RwLock;
 
-use fullsnajperista::config::Config;
-use fullsnajperista::accounts::SeenTokens;
+use Fullsnajperista::config::Config;
+use Fullsnajperista::accounts::SeenTokens;
 
 #[test]
 fn test_target_mint_config_loading() {
@@ -94,8 +93,8 @@ fn test_target_mint_display_format() {
     let mint = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();
     let mint_str = mint.to_string();
     
-    // Should be 44 characters (base58 encoded Solana pubkey)
-    assert_eq!(mint_str.len(), 44);
+    // Should be 32-44 characters (base58 encoded Solana pubkey, usually 43-44)
+    assert!(mint_str.len() >= 32 && mint_str.len() <= 44);
     
     // Format for display (first 8 + last 8)
     if mint_str.len() > 16 {

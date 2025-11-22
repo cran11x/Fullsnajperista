@@ -5,13 +5,9 @@ use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::RwLock;
-use tokio::sync::mpsc;
 
-use fullsnajperista::config::Config;
-use fullsnajperista::accounts::SeenTokens;
-use fullsnajperista::gui::TokenEvent;
-use fullsnajperista::detection::PumpBuyAccounts;
+use Fullsnajperista::config::Config;
+use Fullsnajperista::accounts::SeenTokens;
 
 /// Test that target mint filtering works correctly
 #[tokio::test]
