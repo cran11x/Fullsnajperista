@@ -1,6 +1,7 @@
 //! Global account for the Pump.fun Solana Program
 //!
 //! This module contains the definition for the global configuration account.
+#![allow(unused, dead_code, unused_comparisons)]
 //!
 //! # Global Account
 //!
@@ -244,5 +245,99 @@ mod tests {
         let price: u64 = global.get_initial_buy_price(u64::MAX - 1000);
         assert!(price > 0);
         assert!(price <= global.initial_real_token_reserves);
+    }
+
+    #[test]
+    fn test_get_initial_buy_price_edge_cases() {
+        // Test with zero virtual reserves - formula will handle division by zero
+        let mut global = get_global();
+        global.initial_virtual_sol_reserves = 0;
+        global.initial_virtual_token_reserves = 1000;
+        let price = global.get_initial_buy_price(100);
+        // When virtual SOL is 0, the formula: n = 0 * 1000 = 0, i = 0 + 100 = 100, r = 0/100 + 1 = 1, s = 1000 - 1 = 999
+        // But it's capped by real_token_reserves
+        assert!(price <= global.initial_real_token_reserves);
+
+        // Test with very small amounts
+        let global = get_global();
+        let price = global.get_initial_buy_price(1);
+        assert!(price >= 0);
+        assert!(price <= global.initial_real_token_reserves);
+
+        // Test with exactly real_token_reserves amount
+        let mut global = get_global();
+        global.initial_real_token_reserves = 1000;
+        let price = global.get_initial_buy_price(1000000); // Large amount
+        // Price should be capped at real_token_reserves (may be slightly less due to formula)
+        assert!(price <= 1000, "Price should be <= real_token_reserves, got {}", price);
+        assert!(price >= 999, "Price should be close to real_token_reserves, got {}", price);
+
+        // Test with equal virtual reserves
+        let mut global = get_global();
+        global.initial_virtual_sol_reserves = 1000;
+        global.initial_virtual_token_reserves = 1000;
+        global.initial_real_token_reserves = 500;
+        let price = global.get_initial_buy_price(100);
+        assert!(price > 0);
+        assert!(price <= global.initial_real_token_reserves);
+    }
+
+    #[test]
+    fn test_get_initial_buy_price_precision() {
+        let global = get_global();
+        
+        // Test with small increments
+        let price1 = global.get_initial_buy_price(100);
+        let price2 = global.get_initial_buy_price(101);
+        
+        // Price should increase with larger SOL amount
+        assert!(price2 >= price1);
+        
+        // Test with larger increments
+        let price3 = global.get_initial_buy_price(200);
+        assert!(price3 >= price2);
+    }
+
+    #[test]
+    fn test_global_account_new() {
+        let authority = Pubkey::new_unique();
+        let fee_recipient = Pubkey::new_unique();
+        let withdraw_authority = Pubkey::new_unique();
+        let set_creator_authority = Pubkey::new_unique();
+        let fee_recipients = [Pubkey::new_unique(); 7];
+
+        let global = GlobalAccount::new(
+            1,
+            true,
+            authority,
+            fee_recipient,
+            1000,
+            2000,
+            500,
+            10000,
+            250,
+            withdraw_authority,
+            true,
+            100,
+            50,
+            fee_recipients,
+            set_creator_authority,
+        );
+
+        assert_eq!(global.discriminator, 1);
+        assert!(global.initialized);
+        assert_eq!(global.authority, authority);
+        assert_eq!(global.fee_recipient, fee_recipient);
+        assert_eq!(global.initial_virtual_token_reserves, 1000);
+        assert_eq!(global.initial_virtual_sol_reserves, 2000);
+        assert_eq!(global.initial_real_token_reserves, 500);
+        assert_eq!(global.token_total_supply, 10000);
+        assert_eq!(global.fee_basis_points, 250);
+        assert_eq!(global.withdraw_authority, withdraw_authority);
+        assert!(global.enable_migrate);
+        assert_eq!(global.pool_migration_fee, 100);
+        assert_eq!(global.creator_fee_basis_points, 50);
+        assert_eq!(global.fee_recipients, fee_recipients);
+        assert_eq!(global.set_creator_authority, set_creator_authority);
     }
 }

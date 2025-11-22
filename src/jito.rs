@@ -1,4 +1,5 @@
 // jito.rs - ULTRA FAST BUNDLE SUBMISSION
+#![allow(unused_imports)]
 
 use anyhow::{anyhow, Result};
 use solana_sdk::{
@@ -10,27 +11,7 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use rand::seq::SliceRandom;
-
-// Jito tip accounts (rotacija za load balancing)
-const JITO_TIP_ACCOUNTS: [&str; 8] = [
-    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
-    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
-    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
-    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
-    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
-    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
-    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
-    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
-];
-
-const JITO_ENDPOINTS: [&str; 4] = [
-    "https://ny.mainnet.block-engine.jito.wtf",
-    "https://mainnet.block-engine.jito.wtf",
-    "https://frankfurt.mainnet.block-engine.jito.wtf",
-    "https://amsterdam.mainnet.block-engine.jito.wtf",
-
-
-];
+use crate::constants::{JITO_TIP_ACCOUNTS, JITO_ENDPOINTS};
 
 pub struct JitoClient {
     http_client: reqwest::Client,
@@ -44,10 +25,7 @@ impl JitoClient {
         let endpoint = JITO_ENDPOINTS.choose(&mut rng).unwrap().to_string();
 
         Self {
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap(),
+            http_client: crate::utils::get_shared_http_client().clone(),
             endpoint,
         }
     }
@@ -71,8 +49,9 @@ impl JitoClient {
         ];
 
         // 3. Šalji na Jito
+        let url = format!("{}/api/v1/bundles", self.endpoint);
         let response = self.http_client
-            .post(format!("{}/api/v1/bundles", self.endpoint))
+            .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -81,21 +60,29 @@ impl JitoClient {
                 "params": [bundle]
             }))
             .send()
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("Network error sending bundle to {}: {}", url, e))?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Jito bundle failed: {}", error_text));
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await
+                .unwrap_or_else(|_| format!("HTTP {}", status));
+            return Err(anyhow::anyhow!("Jito bundle failed ({}): {}", status, error_text));
         }
 
-        let result: serde_json::Value = response.json().await?;
+        let result: serde_json::Value = response.json().await
+            .map_err(|e| anyhow::anyhow!("Failed to parse Jito response: {}", e))?;
 
         if let Some(bundle_id) = result["result"].as_str() {
             Ok(bundle_id.to_string())
         } else if let Some(error) = result["error"].as_object() {
-            Err(anyhow!("Jito error: {:?}", error))
+            let error_code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+            let error_msg = error.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            Err(anyhow::anyhow!("Jito error (code {}): {}", error_code, error_msg))
         } else {
-            Err(anyhow!("Unexpected Jito response: {:?}", result))
+            Err(anyhow::anyhow!("Unexpected Jito response format: {:?}", result))
         }
     }
 
@@ -169,5 +156,175 @@ mod tests {
         assert!(JITO_TIP_ACCOUNTS.iter().any(|&acc| {
             Pubkey::from_str(acc).unwrap() == tip
         }));
+    }
+
+    #[test]
+    fn test_create_tip_transaction() {
+        use solana_sdk::signature::Keypair;
+        use solana_sdk::hash::Hash;
+
+        let wallet = Keypair::new();
+        let tip_account = Pubkey::from_str(JITO_TIP_ACCOUNTS[0]).unwrap();
+        let recent_blockhash = Hash::default();
+        let tip_lamports = 1_500_000;
+
+        let client = JitoClient::new();
+        let tip_tx = client.create_tip_transaction(&wallet, &tip_account, tip_lamports, recent_blockhash);
+
+        assert!(tip_tx.is_ok());
+        let tx = tip_tx.unwrap();
+        assert_eq!(tx.signatures.len(), 1);
+    }
+
+    #[test]
+    fn test_serialize_transaction() {
+        use solana_sdk::{
+            signature::{Keypair, Signer},
+            pubkey::Pubkey,
+            system_instruction,
+            message::v0,
+            transaction::VersionedTransaction,
+            hash::Hash,
+        };
+
+        let wallet = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let recent_blockhash = Hash::default();
+
+        let ix = system_instruction::transfer(&wallet.pubkey(), &recipient, 1000);
+        let msg = v0::Message::try_compile(
+            &wallet.pubkey(),
+            &[ix],
+            &[],
+            recent_blockhash,
+        ).unwrap();
+
+        let tx = VersionedTransaction::try_new(
+            solana_sdk::message::VersionedMessage::V0(msg),
+            &[&wallet],
+        ).unwrap();
+
+        let serialized = JitoClient::serialize_transaction(&tx);
+        assert!(serialized.is_ok());
+        
+        let serialized_str = serialized.unwrap();
+        assert!(!serialized_str.is_empty());
+        // Base58 encoded string should be longer than raw bytes
+        assert!(serialized_str.len() > 100);
+    }
+
+    #[tokio::test]
+    async fn test_send_bundle_mock() {
+        use mockito::Server;
+        let mut server = Server::new_async().await;
+        use solana_sdk::{
+            signature::Keypair,
+            system_instruction,
+            message::v0,
+            transaction::VersionedTransaction,
+            hash::Hash,
+        };
+
+        let _server = Server::new_async().await;
+        let wallet = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let recent_blockhash = Hash::default();
+
+        // Create a test transaction
+        let ix = system_instruction::transfer(&wallet.pubkey(), &recipient, 1000);
+        let msg = v0::Message::try_compile(
+            &wallet.pubkey(),
+            &[ix],
+            &[],
+            recent_blockhash,
+        ).unwrap();
+
+        let buy_tx = VersionedTransaction::try_new(
+            solana_sdk::message::VersionedMessage::V0(msg),
+            &[&wallet],
+        ).unwrap();
+
+        // Mock successful bundle submission
+        let mock = server.mock("POST", "/api/v1/bundles")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"test-bundle-id-123"}"#)
+            .create();
+
+        // Create client with mock endpoint (base URL only, send_bundle adds /api/v1/bundles)
+        let mut client = JitoClient::new();
+        client.endpoint = server.url();
+
+        let result = client.send_bundle(
+            &buy_tx,
+            1_500_000,
+            &wallet,
+            recent_blockhash,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "test-bundle-id-123");
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_send_bundle_error_handling() {
+        use mockito::Server;
+        use solana_sdk::{
+            signature::{Keypair, Signer},
+            pubkey::Pubkey,
+            system_instruction,
+            message::v0,
+            transaction::VersionedTransaction,
+            hash::Hash,
+        };
+        
+        let mut server = Server::new_async().await;
+
+        let _server = Server::new_async().await;
+        let wallet = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let recent_blockhash = Hash::default();
+
+        let ix = system_instruction::transfer(&wallet.pubkey(), &recipient, 1000);
+        let msg = v0::Message::try_compile(
+            &wallet.pubkey(),
+            &[ix],
+            &[],
+            recent_blockhash,
+        ).unwrap();
+
+        let buy_tx = VersionedTransaction::try_new(
+            solana_sdk::message::VersionedMessage::V0(msg),
+            &[&wallet],
+        ).unwrap();
+
+        // Mock error response
+        let mock = server.mock("POST", "/api/v1/bundles")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}"#)
+            .create();
+
+        let mut client = JitoClient::new();
+        client.endpoint = server.url();
+
+        let result = client.send_bundle(
+            &buy_tx,
+            1_500_000,
+            &wallet,
+            recent_blockhash,
+        ).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Jito bundle failed"));
+        mock.assert();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_jito_bundle_submission() {
+        // Integration test - requires real Jito endpoint and valid transaction
+        // This should be run manually with proper setup
     }
 }

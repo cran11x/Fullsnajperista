@@ -1,4 +1,5 @@
 // bonding_curve.rs - BONDING CURVE ACCOUNT & MC CALCULATION (WITH RETRY)
+#![allow(unused_imports, dead_code)]
 
 use anyhow::Result;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -67,7 +68,8 @@ impl BondingCurveAccount {
         if self.virtual_token_reserves == 0 {
             return 0.0;
         }
-        (self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64) / 1e9
+        // Price per token in SOL (not in lamports)
+        self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64
     }
 
     /// Display bonding curve state
@@ -193,8 +195,133 @@ mod tests {
             complete: false,
         };
 
-        // Price = 50 / 1000 = 0.05 SOL per token
+        // Price = 50 / 1000 = 0.05 SOL per token (in SOL, not lamports)
         let price = curve.get_token_price_sol();
-        assert!((price - 0.05).abs() < 0.0001);
+        assert!((price - 0.05).abs() < 0.0001, "Expected 0.05 but got {}", price);
+    }
+
+    #[test]
+    fn test_mc_calculation_edge_cases() {
+        // Test with zero virtual token reserves
+        let curve = BondingCurveAccount {
+            discriminator: 1,
+            virtual_token_reserves: 0,
+            virtual_sol_reserves: 50_000_000_000,
+            real_token_reserves: 500_000_000_000,
+            real_sol_reserves: 25_000_000_000,
+            token_total_supply: 1_000_000_000_000_000,
+            complete: false,
+        };
+
+        let mc_sol = curve.calculate_mc_sol();
+        assert_eq!(mc_sol, 0.0);
+
+        let mc_usd = curve.calculate_mc_usd(100.0);
+        assert_eq!(mc_usd, 0.0);
+
+        let price = curve.get_token_price_sol();
+        assert_eq!(price, 0.0);
+
+        // Test with very small reserves
+        let curve = BondingCurveAccount {
+            discriminator: 1,
+            virtual_token_reserves: 1,
+            virtual_sol_reserves: 1,
+            real_token_reserves: 1,
+            real_sol_reserves: 1,
+            token_total_supply: 1_000_000_000_000_000,
+            complete: false,
+        };
+
+        let mc_sol = curve.calculate_mc_sol();
+        assert!(mc_sol > 0.0);
+        assert!(mc_sol.is_finite());
+
+        // Test with zero total supply
+        let curve = BondingCurveAccount {
+            discriminator: 1,
+            virtual_token_reserves: 1_000_000_000_000,
+            virtual_sol_reserves: 50_000_000_000,
+            real_token_reserves: 500_000_000_000,
+            real_sol_reserves: 25_000_000_000,
+            token_total_supply: 0,
+            complete: false,
+        };
+
+        let mc_sol = curve.calculate_mc_sol();
+        assert_eq!(mc_sol, 0.0);
+    }
+
+    #[test]
+    fn test_token_price_calculation() {
+        // Test various price scenarios
+        let test_cases = vec![
+            (1_000_000_000_000, 10_000_000_000, 0.01), // 10 SOL / 1000 tokens = 0.01 SOL per token
+            (1_000_000_000_000, 100_000_000_000, 0.1), // 100 SOL / 1000 tokens = 0.1 SOL per token
+            (500_000_000_000, 25_000_000_000, 0.05),   // 25 SOL / 500 tokens = 0.05 SOL per token
+        ];
+
+        for (token_reserves, sol_reserves, expected_price) in test_cases {
+            let curve = BondingCurveAccount {
+                discriminator: 1,
+                virtual_token_reserves: token_reserves,
+                virtual_sol_reserves: sol_reserves,
+                real_token_reserves: token_reserves / 2,
+                real_sol_reserves: sol_reserves / 2,
+                token_total_supply: 1_000_000_000_000_000,
+                complete: false,
+            };
+
+            let price = curve.get_token_price_sol();
+            assert!((price - expected_price).abs() < 0.000001, 
+                "Expected price {} but got {} for reserves {} / {}", 
+                expected_price, price, sol_reserves, token_reserves);
+        }
+    }
+
+    #[test]
+    fn test_mc_with_different_sol_prices() {
+        let curve = BondingCurveAccount {
+            discriminator: 1,
+            virtual_token_reserves: 1_000_000_000_000,
+            virtual_sol_reserves: 30_000_000_000, // 30 SOL
+            real_token_reserves: 500_000_000_000,
+            real_sol_reserves: 15_000_000_000,
+            token_total_supply: 1_000_000_000_000_000, // 1M tokens
+            complete: false,
+        };
+
+        // MC = 30,000 SOL
+        let mc_sol = curve.calculate_mc_sol();
+        assert!((mc_sol - 30_000.0).abs() < 0.1);
+
+        // Test with different SOL prices
+        assert!((curve.calculate_mc_usd(100.0) - 3_000_000.0).abs() < 100.0);
+        assert!((curve.calculate_mc_usd(200.0) - 6_000_000.0).abs() < 100.0);
+        assert!((curve.calculate_mc_usd(50.0) - 1_500_000.0).abs() < 100.0);
+    }
+
+    #[test]
+    fn test_display_method() {
+        let curve = BondingCurveAccount {
+            discriminator: 1,
+            virtual_token_reserves: 1_000_000_000_000,
+            virtual_sol_reserves: 30_000_000_000,
+            real_token_reserves: 500_000_000_000,
+            real_sol_reserves: 15_000_000_000,
+            token_total_supply: 1_000_000_000_000_000,
+            complete: false,
+        };
+
+        // Just verify it doesn't panic
+        curve.display(162.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fetch_bonding_curve_with_mock_rpc() {
+        // Integration test - would require mock RPC client
+        // This would test the actual fetch_bonding_curve_mc function
+        // with a mock RPC that returns known bonding curve data
     }
 }
