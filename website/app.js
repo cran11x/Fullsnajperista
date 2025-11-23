@@ -21,6 +21,7 @@ const appState = {
         computeUnits: 200000,
         jitoTip: 0.0015,
         solPrice: 162.0,
+        targetMintAddress: null, // null = no target, string = target mint address
         minDevBuy: 500.0,
         maxDevBuy: 1200.0,
         minDevTokens: 6,
@@ -88,6 +89,12 @@ function setupEventListeners() {
         input.addEventListener('change', () => {
             updateSettingsFromUI();
         });
+    });
+
+    // Target mint - live validation and update
+    const targetMintInput = document.getElementById('targetMint');
+    targetMintInput.addEventListener('input', () => {
+        validateAndUpdateTargetMint();
     });
 }
 
@@ -268,6 +275,21 @@ function handleTokenEvent(data) {
 }
 
 function processToken(token) {
+    // Check target mint first (if set)
+    if (appState.settings.targetMintAddress) {
+        if (token.mint !== appState.settings.targetMintAddress) {
+            // Not the target token - filter it out
+            token.status = 'filtered';
+            addActivity(`Token filtered: Not target mint (waiting for: ${shortenAddress(appState.settings.targetMintAddress)})`, 'info');
+            appState.stats.filtered++;
+            updateStats();
+            return; // Don't add to feed or process further
+        } else {
+            // Target token detected!
+            addActivity(`🎯 Target token detected! ${shortenAddress(token.mint)}`, 'success');
+        }
+    }
+    
     appState.stats.detected++;
     appState.feed.unshift(token);
     
@@ -454,6 +476,68 @@ function togglePrivateKey() {
     }
 }
 
+function validateAndUpdateTargetMint() {
+    const input = document.getElementById('targetMint');
+    const statusDiv = document.getElementById('targetMintStatus');
+    const statusText = document.getElementById('targetMintStatusText');
+    const value = input.value.trim();
+    
+    if (value === '') {
+        // Empty - clear target
+        appState.settings.targetMintAddress = null;
+        statusDiv.style.display = 'none';
+        input.style.borderColor = '';
+        addActivity('Target mint cleared - bot will process all tokens');
+        return;
+    }
+    
+    // Validate Solana pubkey (basic check - 32-44 characters, base58)
+    if (value.length < 32 || value.length > 44) {
+        statusDiv.style.display = 'block';
+        statusDiv.className = 'target-mint-status error';
+        statusText.textContent = 'Invalid length (must be 32-44 characters)';
+        input.style.borderColor = 'var(--error)';
+        return;
+    }
+    
+    // Try to validate as Solana pubkey using web3.js if available
+    if (typeof solanaWeb3 !== 'undefined') {
+        try {
+            const pubkey = new solanaWeb3.PublicKey(value);
+            // Valid pubkey
+            appState.settings.targetMintAddress = value;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'target-mint-status success';
+            statusText.textContent = `Target set: ${shortenAddress(value)}`;
+            input.style.borderColor = 'var(--success)';
+            addActivity(`🎯 Target mint set: ${shortenAddress(value)}`, 'success');
+        } catch (err) {
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'target-mint-status error';
+            statusText.textContent = 'Invalid Solana address format';
+            input.style.borderColor = 'var(--error)';
+            return;
+        }
+    } else {
+        // Fallback: basic validation
+        const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+        if (base58Regex.test(value)) {
+            appState.settings.targetMintAddress = value;
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'target-mint-status success';
+            statusText.textContent = `Target set: ${shortenAddress(value)}`;
+            input.style.borderColor = 'var(--success)';
+            addActivity(`🎯 Target mint set: ${shortenAddress(value)}`, 'success');
+        } else {
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'target-mint-status error';
+            statusText.textContent = 'Invalid format (must be base58)';
+            input.style.borderColor = 'var(--error)';
+            return;
+        }
+    }
+}
+
 function updateSettingsFromUI() {
     appState.settings.privateKey = document.getElementById('privateKey').value;
     appState.settings.heliusApiKey = document.getElementById('heliusApiKey').value;
@@ -464,6 +548,7 @@ function updateSettingsFromUI() {
     appState.settings.computeUnits = parseInt(document.getElementById('computeUnits').value) || 200000;
     appState.settings.jitoTip = parseFloat(document.getElementById('jitoTip').value) || 0.0015;
     appState.settings.solPrice = parseFloat(document.getElementById('solPrice').value) || 162.0;
+    // targetMintAddress is updated via validateAndUpdateTargetMint() on input
     appState.settings.minDevBuy = parseFloat(document.getElementById('minDevBuy').value) || 500.0;
     appState.settings.maxDevBuy = parseFloat(document.getElementById('maxDevBuy').value) || 1200.0;
     appState.settings.minDevTokens = parseInt(document.getElementById('minDevTokens').value) || 6;
@@ -515,6 +600,11 @@ function loadSettings() {
     document.getElementById('computeUnits').value = appState.settings.computeUnits;
     document.getElementById('jitoTip').value = appState.settings.jitoTip;
     document.getElementById('solPrice').value = appState.settings.solPrice;
+    document.getElementById('targetMint').value = appState.settings.targetMintAddress || '';
+    if (appState.settings.targetMintAddress) {
+        // Trigger validation to show status
+        setTimeout(() => validateAndUpdateTargetMint(), 100);
+    }
     document.getElementById('minDevBuy').value = appState.settings.minDevBuy;
     document.getElementById('maxDevBuy').value = appState.settings.maxDevBuy;
     document.getElementById('minDevTokens').value = appState.settings.minDevTokens;
@@ -540,6 +630,7 @@ function resetSettings() {
             computeUnits: 200000,
             jitoTip: 0.0015,
             solPrice: 162.0,
+            targetMintAddress: null,
             minDevBuy: 500.0,
             maxDevBuy: 1200.0,
             minDevTokens: 6,
