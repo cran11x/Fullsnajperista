@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pump.fun Sniper Bot - Web UI</title>
+    <link rel="stylesheet" href="app.css">
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+    <script src="https://unpkg.com/@solana/wallet-adapter-base@latest/lib/index.iife.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <span class="logo">🎯</span>
+                <h1>Fullsnajperista</h1>
+            </div>
+            <div class="header-right">
+                <div class="wallet-status" id="walletStatus">
+                    <button class="btn-connect" id="connectWallet">Connect Wallet</button>
+                    <div class="wallet-info" id="walletInfo" style="display: none;">
+                        <span class="wallet-address" id="walletAddress"></span>
+                        <span class="wallet-balance" id="walletBalance">0 SOL</span>
+                    </div>
+                </div>
+                <button class="btn-control" id="startStopBtn">
+                    <span id="startStopText">Start Bot</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="app-main">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+                <button class="tab-btn" data-tab="feed">📡 Feed</button>
+                <button class="tab-btn" data-tab="buys">💰 Buys</button>
+                <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+            </div>
+
+            <!-- Dashboard Tab -->
+            <div class="tab-content active" id="dashboard">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Tokens Detected</div>
+                        <div class="stat-value" id="statDetected">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Tokens Bought</div>
+                        <div class="stat-value" id="statBought">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Tokens Filtered</div>
+                        <div class="stat-value" id="statFiltered">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Success Rate</div>
+                        <div class="stat-value" id="statSuccessRate">0%</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Spent</div>
+                        <div class="stat-value" id="statSpent">0 SOL</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Bot Status</div>
+                        <div class="stat-value" id="statStatus">
+                            <span class="status-badge stopped">Stopped</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-section">
+                    <h3>Recent Activity</h3>
+                    <div class="activity-log" id="activityLog">
+                        <div class="activity-item">
+                            <span class="activity-time">--:--:--</span>
+                            <span class="activity-message">Waiting for activity...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feed Tab -->
+            <div class="tab-content" id="feed">
+                <div class="feed-controls">
+                    <input type="text" class="search-input" id="feedSearch" placeholder="Search tokens...">
+                    <select class="filter-select" id="feedFilter">
+                        <option value="all">All Tokens</option>
+                        <option value="detected">Detected</option>
+                        <option value="bought">Bought</option>
+                        <option value="filtered">Filtered</option>
+                    </select>
+                </div>
+                <div class="feed-list" id="feedList">
+                    <div class="feed-empty">No tokens detected yet. Start the bot to begin monitoring.</div>
+                </div>
+            </div>
+
+            <!-- Buys Tab -->
+            <div class="tab-content" id="buys">
+                <div class="buys-header">
+                    <h3>Purchase History</h3>
+                    <button class="btn-clear" id="clearBuys">Clear History</button>
+                </div>
+                <div class="buys-list" id="buysList">
+                    <div class="buys-empty">No purchases yet.</div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div class="tab-content" id="settings">
+                <div class="settings-grid">
+                    <!-- Wallet Configuration -->
+                    <div class="settings-section">
+                        <h3>🔑 Wallet Configuration</h3>
+                        <div class="setting-item">
+                            <label>Private Key (Base58)</label>
+                            <input type="password" class="setting-input" id="privateKey" placeholder="Enter private key">
+                            <button class="btn-toggle" id="togglePrivateKey">Show</button>
+                        </div>
+                        <div class="setting-item">
+                            <label>Wallet Address</label>
+                            <input type="text" class="setting-input" id="walletAddressInput" readonly>
+                        </div>
+                    </div>
+
+                    <!-- API Configuration -->
+                    <div class="settings-section">
+                        <h3>🌐 API Configuration</h3>
+                        <div class="setting-item">
+                            <label>Helius API Key</label>
+                            <input type="text" class="setting-input" id="heliusApiKey" placeholder="Enter Helius API key">
+                        </div>
+                        <div class="setting-item">
+                            <label>RPC URL (optional)</label>
+                            <input type="text" class="setting-input" id="rpcUrl" placeholder="https://mainnet.helius-rpc.com/?api-key=">
+                        </div>
+                        <div class="setting-item">
+                            <label>WebSocket URL (optional)</label>
+                            <input type="text" class="setting-input" id="wssUrl" placeholder="wss://mainnet.helius-rpc.com/?api-key=">
+                        </div>
+                    </div>
+
+                    <!-- Trading Settings -->
+                    <div class="settings-section">
+                        <h3>💹 Trading Settings</h3>
+                        <div class="setting-item">
+                            <label>Buy Amount (SOL)</label>
+                            <input type="number" class="setting-input" id="buyAmount" value="0.015" step="0.001">
+                        </div>
+                        <div class="setting-item">
+                            <label>Priority Fee (lamports)</label>
+                            <input type="number" class="setting-input" id="priorityFee" value="11000000">
+                        </div>
+                        <div class="setting-item">
+                            <label>Compute Units</label>
+                            <input type="number" class="setting-input" id="computeUnits" value="200000">
+                        </div>
+                        <div class="setting-item">
+                            <label>Jito Tip (SOL)</label>
+                            <input type="number" class="setting-input" id="jitoTip" value="0.0015" step="0.0001">
+                        </div>
+                        <div class="setting-item">
+                            <label>SOL Price (USD)</label>
+                            <input type="number" class="setting-input" id="solPrice" value="162.0" step="0.1">
+                        </div>
+                    </div>
+
+                    <!-- Filter Settings -->
+                    <div class="settings-section">
+                        <h3>🔍 Filter Settings</h3>
+                        <div class="setting-item">
+                            <label>Min Dev Buy (USD)</label>
+                            <input type="number" class="setting-input" id="minDevBuy" value="500.0" step="10">
+                        </div>
+                        <div class="setting-item">
+                            <label>Max Dev Buy (USD)</label>
+                            <input type="number" class="setting-input" id="maxDevBuy" value="1200.0" step="10">
+                        </div>
+                        <div class="setting-item">
+                            <label>Min Dev Tokens</label>
+                            <input type="number" class="setting-input" id="minDevTokens" value="6">
+                        </div>
+                        <div class="setting-item">
+                            <label>Max Dev Tokens</label>
+                            <input type="number" class="setting-input" id="maxDevTokens" value="20">
+                        </div>
+                        <div class="setting-item">
+                            <label>Min Socials Count</label>
+                            <input type="number" class="setting-input" id="minSocialsCount" value="0">
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="requireSocials">
+                                Require Socials
+                            </label>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="requireTwitter">
+                                Require Twitter
+                            </label>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="oneShotMode" checked>
+                                One Shot Mode
+                            </label>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label>
+                                <input type="checkbox" id="enableTracker">
+                                Enable Tracker
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Submission Mode -->
+                    <div class="settings-section">
+                        <h3>📤 Submission Mode</h3>
+                        <div class="setting-item">
+                            <label>Mode</label>
+                            <select class="setting-input" id="submissionMode">
+                                <option value="helius">Helius</option>
+                                <option value="jito">Jito</option>
+                                <option value="rpc">RPC</option>
+                                <option value="all">All</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button class="btn-primary" id="saveSettings">Save Settings</button>
+                    <button class="btn-secondary" id="resetSettings">Reset to Defaults</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
