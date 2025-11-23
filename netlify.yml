@@ -1,9 +1,13 @@
-static_sites:
-  - name: closelook-mail
-    buildCommand: npm install && npm run build
-    publishPath: dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+# Netlify configuration for Fullsnajperista website
+
+# For static site deployment
+publish: website
+build:
+  command: echo "No build needed - static site"
+
+# Redirect all routes to index.html (for SPA-like behavior)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
 
