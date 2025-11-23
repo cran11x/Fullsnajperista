@@ -1,13 +1,20 @@
-# Netlify configuration for Fullsnajperista website
+# Netlify configuration
 
-# For static site deployment
-publish: website
-build:
-  command: echo "No build needed - static site"
+# Fullsnajperista website
+static_sites:
+  - name: fullsnajperista
+    buildCommand: echo "No build needed - static site"
+    publishPath: website
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
 
-# Redirect all routes to index.html (for SPA-like behavior)
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
+  # Other projects
+  - name: closelook-mail
+    buildCommand: npm install && npm run build
+    publishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
