@@ -1,8 +1,7 @@
 // mock_buy_integration_test.rs - Integration tests for mock buy functionality with mock servers
 
 use Fullsnajperista::config::Config;
-use solana_sdk::{signature::Keypair, pubkey::Pubkey};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_mock_buy_config_update() {

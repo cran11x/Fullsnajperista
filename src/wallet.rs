@@ -125,3 +125,85 @@ pub fn try_load_wallet_address() -> Result<String> {
     Err(anyhow!("SOLANA_PRIVATE_KEY not set"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::signature::Signer;
+
+    #[test]
+    fn test_load_wallet_from_key_valid() {
+        // Generate a test keypair
+        let test_keypair = Keypair::new();
+        let private_key_base58 = bs58::encode(test_keypair.to_bytes()).into_string();
+        
+        // Test loading from key
+        let loaded = load_wallet_from_key(&private_key_base58);
+        assert!(loaded.is_ok(), "Should load valid keypair");
+        
+        let loaded_keypair = loaded.unwrap();
+        assert_eq!(
+            Signer::pubkey(&loaded_keypair),
+            Signer::pubkey(&test_keypair),
+            "Loaded keypair should match original"
+        );
+    }
+
+    #[test]
+    fn test_load_wallet_from_key_invalid() {
+        // Test with invalid base58
+        let result = load_wallet_from_key("!!!INVALID_BASE58!!!");
+        assert!(result.is_err(), "Should fail on invalid base58");
+        
+        // Test with empty string
+        let result = load_wallet_from_key("");
+        assert!(result.is_err(), "Should fail on empty string");
+        
+        // Test with too short key
+        let result = load_wallet_from_key("12345");
+        assert!(result.is_err(), "Should fail on too short key");
+    }
+
+    #[test]
+    fn test_get_wallet_address_from_key() {
+        // Generate a test keypair
+        let test_keypair = Keypair::new();
+        let private_key_base58 = bs58::encode(test_keypair.to_bytes()).into_string();
+        let expected_address = Signer::pubkey(&test_keypair).to_string();
+        
+        // Test getting address from key
+        let result = get_wallet_address_from_key(&private_key_base58);
+        assert!(result.is_ok(), "Should get address from valid key");
+        assert_eq!(result.unwrap(), expected_address, "Address should match");
+    }
+
+    #[test]
+    fn test_get_wallet_address_from_key_invalid() {
+        // Test with invalid key
+        let result = get_wallet_address_from_key("!!!INVALID!!!");
+        assert!(result.is_err(), "Should fail on invalid key");
+    }
+}
+
+/// Load wallet from a private key string (for UI input)
+pub fn load_wallet_from_key(private_key_base58: &str) -> Result<Keypair> {
+    let trimmed = private_key_base58.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Private key is empty"));
+    }
+    
+    let bytes = bs58::decode(trimmed)
+        .into_vec()
+        .map_err(|e| anyhow!("Invalid Base58 encoding: {}", e))?;
+
+    let keypair = Keypair::from_bytes(&bytes)
+        .map_err(|e| anyhow!("Invalid keypair bytes: {}", e))?;
+
+    Ok(keypair)
+}
+
+/// Get wallet address from private key string (for UI validation)
+pub fn get_wallet_address_from_key(private_key_base58: &str) -> Result<String> {
+    let keypair = load_wallet_from_key(private_key_base58)?;
+    Ok(keypair.pubkey().to_string())
+}
+

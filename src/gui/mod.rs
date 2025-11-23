@@ -31,6 +31,7 @@ pub struct GuiApp {
     bot_running: Arc<AtomicBool>,
     wallet_balance: Arc<RwLock<f64>>,
     wallet_address: String,
+    wallet_private_key: Arc<RwLock<Option<String>>>, // UI-entered private key
     
     // UI state
     selected_tab: usize,
@@ -58,6 +59,7 @@ impl GuiApp {
         let bot_handle = Arc::new(RwLock::new(None));
         let bot_running = Arc::new(AtomicBool::new(false));
         let wallet_balance = Arc::new(RwLock::new(0.0));
+        let wallet_private_key = Arc::new(RwLock::new(None));
         
         // Ensure .env is loaded before trying to read wallet
         dotenv::dotenv().ok();
@@ -78,6 +80,7 @@ impl GuiApp {
             bot_running,
             wallet_balance,
             wallet_address,
+            wallet_private_key,
             selected_tab: 0,
             auto_scroll_feed: true,
             feed_state: tabs::feed::FeedState {
@@ -168,10 +171,21 @@ impl eframe::App for GuiApp {
                 });
                 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Update wallet address from UI private key if available
+                    let wallet_address_display = {
+                        let ui_key = self.wallet_private_key.read().unwrap();
+                        if let Some(ref key) = *ui_key {
+                            crate::wallet::get_wallet_address_from_key(key)
+                                .unwrap_or_else(|_| self.wallet_address.clone())
+                        } else {
+                            self.wallet_address.clone()
+                        }
+                    };
+                    
                     components::render_control_panel(
                         ui,
                         &self.bot_running,
-                        &self.wallet_address,
+                        &wallet_address_display,
                         &self.wallet_balance,
                         &self.metrics,
                         &self.config,
@@ -236,7 +250,7 @@ impl eframe::App for GuiApp {
                     1 => tabs::buys::render(ui, &self.tracker),
                     2 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
                     3 => tabs::filtered::render(ui, &self.event_log),
-                    4 => tabs::settings::render(ui, &self.config, &self.control_tx),
+                    4 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
                     _ => {}
                 }
             });
@@ -346,21 +360,41 @@ impl GuiApp {
             }
         }
         
-        // Load wallet
-        let wallet = match crate::wallet::load_wallet() {
-            Ok(w) => w,
-            Err(e) => {
-                // Add more detailed error message
-                let error_msg = format!("Failed to load wallet: {}. Make sure .env file exists in: {:?}", 
-                    e,
-                    std::env::current_dir().unwrap_or_default()
-                );
-                self.add_event(TokenEvent::Error {
-                    message: error_msg,
-                    timestamp: Utc::now(),
-                });
-                self.bot_running.store(false, Ordering::Relaxed);
-                return;
+        // Load wallet - try UI private key first, then .env
+        let wallet = {
+            // Check if private key is set in UI
+            let ui_key = self.wallet_private_key.read().unwrap();
+            if let Some(ref private_key) = *ui_key {
+                // Try to load from UI-entered key
+                match crate::wallet::load_wallet_from_key(private_key) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        let error_msg = format!("Invalid private key in UI: {}", e);
+                        self.add_event(TokenEvent::Error {
+                            message: error_msg,
+                            timestamp: Utc::now(),
+                        });
+                        self.bot_running.store(false, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            } else {
+                // Fall back to .env file
+                match crate::wallet::load_wallet() {
+                    Ok(w) => w,
+                    Err(e) => {
+                        let error_msg = format!("Failed to load wallet: {}. Enter private key in Settings or make sure .env file exists in: {:?}", 
+                            e,
+                            std::env::current_dir().unwrap_or_default()
+                        );
+                        self.add_event(TokenEvent::Error {
+                            message: error_msg,
+                            timestamp: Utc::now(),
+                        });
+                        self.bot_running.store(false, Ordering::Relaxed);
+                        return;
+                    }
+                }
             }
         };
         

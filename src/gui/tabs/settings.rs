@@ -42,6 +42,16 @@ struct SettingsState {
     max_dev_tokens_str: Option<String>,
     min_socials_count_str: Option<String>,
     target_mint_str: Option<String>,
+    private_key_str: Option<String>,
+    show_private_key: bool,
+    private_key_error: Option<String>,
+    // Nova polja za API i advanced settings
+    helius_api_key_str: Option<String>,
+    rpc_url_str: Option<String>,
+    wss_url_str: Option<String>,
+    sol_price_str: Option<String>,
+    compute_units_str: Option<String>,
+    jito_tip_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -96,6 +106,48 @@ impl SettingsState {
                 }
                 self.target_mint_str.as_mut().unwrap()
             }
+            "private_key" => {
+                if self.private_key_str.is_none() {
+                    self.private_key_str = Some(default);
+                }
+                self.private_key_str.as_mut().unwrap()
+            }
+            "helius_api_key" => {
+                if self.helius_api_key_str.is_none() {
+                    self.helius_api_key_str = Some(default);
+                }
+                self.helius_api_key_str.as_mut().unwrap()
+            }
+            "rpc_url" => {
+                if self.rpc_url_str.is_none() {
+                    self.rpc_url_str = Some(default);
+                }
+                self.rpc_url_str.as_mut().unwrap()
+            }
+            "wss_url" => {
+                if self.wss_url_str.is_none() {
+                    self.wss_url_str = Some(default);
+                }
+                self.wss_url_str.as_mut().unwrap()
+            }
+            "sol_price" => {
+                if self.sol_price_str.is_none() {
+                    self.sol_price_str = Some(default);
+                }
+                self.sol_price_str.as_mut().unwrap()
+            }
+            "compute_units" => {
+                if self.compute_units_str.is_none() {
+                    self.compute_units_str = Some(default);
+                }
+                self.compute_units_str.as_mut().unwrap()
+            }
+            "jito_tip" => {
+                if self.jito_tip_str.is_none() {
+                    self.jito_tip_str = Some(default);
+                }
+                self.jito_tip_str.as_mut().unwrap()
+            }
             _ => panic!("Unknown field id: {}", id),
         }
     }
@@ -105,7 +157,7 @@ impl SettingsState {
     }
 }
 
-pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc::Sender<BotControl>) {
+pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc::Sender<BotControl>, wallet_private_key: &Arc<RwLock<Option<String>>>) {
     ui.vertical_centered(|ui| {
         ui.add_space(8.0);
         ui.label(egui::RichText::new("⚙️  Settings")
@@ -131,9 +183,171 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     let mut config_clone = current_config.clone();
     
+    // Wallet Private Key Section (at the top for visibility)
+    ui.group(|ui| {
+        ui.set_min_height(120.0);
+        ui.heading(egui::RichText::new("🔐 Wallet Configuration")
+            .size(16.0)
+            .color(egui::Color32::from_rgb(255, 200, 100)));
+        ui.add_space(12.0);
+        
+        ui.label(egui::RichText::new("Enter your Solana wallet private key (base58 format)")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(150, 150, 160)));
+        ui.add_space(8.0);
+        
+        // Get current private key from state
+        let current_ui_key = {
+            let key = wallet_private_key.read().unwrap();
+            key.clone()
+        };
+        
+        let private_key_display = state.private_key_str.clone()
+            .or_else(|| current_ui_key.clone())
+            .unwrap_or_else(|| String::new());
+        
+        // Initialize if needed (before borrowing)
+        if state.private_key_str.is_none() {
+            state.private_key_str = Some(private_key_display.clone());
+        }
+        
+        // Copy values to avoid borrowing issues during UI rendering
+        let show_private_key = state.show_private_key;
+        let mut private_key_str = state.private_key_str.as_ref().unwrap().clone();
+        let mut key_changed = false;
+        let mut toggle_show = false;
+        
+        // Password input with show/hide toggle
+        ui.horizontal(|ui| {
+            ui.label("Private Key:");
+            let mut password_input = egui::TextEdit::singleline(&mut private_key_str)
+                .password(!show_private_key)
+                .desired_width(400.0);
+            
+            if ui.add(password_input).changed() {
+                key_changed = true;
+            }
+            
+            // Show/Hide toggle button
+            if ui.button(if show_private_key { "👁️ Hide" } else { "👁️ Show" }).clicked() {
+                toggle_show = true;
+            }
+        });
+        
+        // Update state after UI borrow is released
+        if let Some(ref mut key_str) = state.private_key_str {
+            *key_str = private_key_str.clone();
+        }
+        
+        if toggle_show {
+            state.show_private_key = !show_private_key;
+        }
+        
+        if key_changed {
+            let trimmed = private_key_str.trim();
+            if trimmed.is_empty() {
+                // Clear key if empty
+                if let Ok(mut key) = wallet_private_key.write() {
+                    *key = None;
+                }
+                state.private_key_error = None;
+            } else {
+                // Validate key
+                match crate::wallet::get_wallet_address_from_key(trimmed) {
+                    Ok(_address) => {
+                        // Valid key - save it
+                        if let Ok(mut key) = wallet_private_key.write() {
+                            *key = Some(trimmed.to_string());
+                        }
+                        state.private_key_error = None;
+                    }
+                    Err(e) => {
+                        state.private_key_error = Some(format!("Invalid key: {}", e));
+                    }
+                }
+            }
+        }
+        
+        // Show error or success message
+        let display_error = state.private_key_error.clone();
+        let trimmed_key = private_key_str.trim();
+        
+        if let Some(ref error) = display_error {
+            ui.label(egui::RichText::new(format!("❌ {}", error))
+                .size(11.0)
+                .color(egui::Color32::from_rgb(255, 100, 100)));
+        } else if !trimmed_key.is_empty() {
+            if let Ok(address) = crate::wallet::get_wallet_address_from_key(trimmed_key) {
+                ui.label(egui::RichText::new(format!("✅ Wallet: {}", address))
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(100, 255, 100)));
+            }
+        } else {
+            ui.label(egui::RichText::new("ℹ️  Enter private key or use .env file")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(150, 150, 160)));
+        }
+        
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("⚠️  Keep your private key secure! It's stored in memory only.")
+            .size(10.0)
+            .color(egui::Color32::from_rgb(255, 200, 100)));
+    });
+    
+    ui.add_space(10.0);
+    
+    // API Configuration Section
+    ui.group(|ui| {
+        ui.set_min_height(150.0);
+        ui.heading(egui::RichText::new("🔑 API Configuration")
+            .size(16.0)
+            .color(egui::Color32::from_rgb(255, 150, 100)));
+        ui.add_space(12.0);
+        
+        ui.label(egui::RichText::new("Required: Helius API Key. Optional: Custom RPC/WebSocket URLs")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(150, 150, 160)));
+        ui.add_space(8.0);
+        
+        // HELIUS_API_KEY (required)
+        ui.horizontal(|ui| {
+            ui.label("Helius API Key:");
+            let api_key_str = state.get_or_init("helius_api_key", config_clone.helius_api_key.clone());
+            if ui.text_edit_singleline(api_key_str).changed() {
+                config_clone.helius_api_key = api_key_str.trim().to_string();
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        // RPC_URL (optional)
+        ui.horizontal(|ui| {
+            ui.label("RPC URL (optional):");
+            let rpc_str = state.get_or_init("rpc_url", config_clone.rpc_url.clone());
+            if ui.text_edit_singleline(rpc_str).changed() {
+                config_clone.rpc_url = rpc_str.trim().to_string();
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        // WSS_URL (optional)
+        ui.horizontal(|ui| {
+            ui.label("WebSocket URL (optional):");
+            let wss_str = state.get_or_init("wss_url", config_clone.wss_url.clone());
+            if ui.text_edit_singleline(wss_str).changed() {
+                config_clone.wss_url = wss_str.trim().to_string();
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+    });
+    
+    ui.add_space(10.0);
+    
     // Basic settings with better styling
     ui.group(|ui| {
-        ui.set_min_height(100.0);
+        ui.set_min_height(280.0);
         ui.heading(egui::RichText::new("💰 Trading Settings")
             .size(16.0)
             .color(egui::Color32::from_rgb(255, 215, 100)));
@@ -145,7 +359,18 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(buy_sol_str).changed() {
                 if let Ok(val) = buy_sol_str.parse::<f64>() {
                     config_clone.buy_amount_sol = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        
+        ui.horizontal(|ui| {
+            ui.label("SOL Price (USD):");
+            let sol_price_str = state.get_or_init("sol_price", config_clone.sol_price_usd.to_string());
+            if ui.text_edit_singleline(sol_price_str).changed() {
+                if let Ok(val) = sol_price_str.parse::<f64>() {
+                    config_clone.sol_price_usd = val;
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
                 }
@@ -158,7 +383,31 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if ui.text_edit_singleline(fee_str).changed() {
                 if let Ok(val) = fee_str.parse::<u64>() {
                     config_clone.priority_fee = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        
+        ui.horizontal(|ui| {
+            ui.label("Compute Units:");
+            let compute_str = state.get_or_init("compute_units", config_clone.compute_units.to_string());
+            if ui.text_edit_singleline(compute_str).changed() {
+                if let Ok(val) = compute_str.parse::<u32>() {
+                    config_clone.compute_units = val;
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        
+        ui.horizontal(|ui| {
+            ui.label("Jito Tip (SOL):");
+            let jito_tip_sol = (config_clone.jito_tip as f64) / 1e9;
+            let jito_str = state.get_or_init("jito_tip", jito_tip_sol.to_string());
+            if ui.text_edit_singleline(jito_str).changed() {
+                if let Ok(val) = jito_str.parse::<f64>() {
+                    config_clone.jito_tip = (val * 1e9) as u64;
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
                 }
@@ -166,9 +415,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.add_space(8.0);
-        let old_mock_buy = config_clone.mock_buy;
         if ui.checkbox(&mut config_clone.mock_buy, "🧪 Mock Buy (Test mode - no real transactions)").changed() {
-            // ✅ LIVE UPDATE: Apply immediately
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
@@ -176,6 +423,18 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new("⚠️  Mock mode: Transactions will be simulated, not sent to blockchain")
                 .size(11.0)
                 .color(egui::Color32::from_rgb(255, 200, 100)));
+        }
+        
+        ui.add_space(4.0);
+        if ui.checkbox(&mut config_clone.one_shot_mode, "One Shot Mode").changed() {
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
+        
+        ui.add_space(4.0);
+        if ui.checkbox(&mut config_clone.enable_tracker, "Enable Tracker").changed() {
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
         }
     });
     
@@ -445,6 +704,30 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     if let Ok(pubkey) = solana_sdk::pubkey::Pubkey::from_str(trimmed) {
                         config_clone.target_mint_address = Some(pubkey);
                     }
+                }
+            }
+            if let Some(helius_api_key_str) = &state_clone.helius_api_key_str {
+                config_clone.helius_api_key = helius_api_key_str.trim().to_string();
+            }
+            if let Some(rpc_url_str) = &state_clone.rpc_url_str {
+                config_clone.rpc_url = rpc_url_str.trim().to_string();
+            }
+            if let Some(wss_url_str) = &state_clone.wss_url_str {
+                config_clone.wss_url = wss_url_str.trim().to_string();
+            }
+            if let Some(sol_price_str) = &state_clone.sol_price_str {
+                if let Ok(val) = sol_price_str.parse::<f64>() {
+                    config_clone.sol_price_usd = val;
+                }
+            }
+            if let Some(compute_units_str) = &state_clone.compute_units_str {
+                if let Ok(val) = compute_units_str.parse::<u32>() {
+                    config_clone.compute_units = val;
+                }
+            }
+            if let Some(jito_tip_str) = &state_clone.jito_tip_str {
+                if let Ok(val) = jito_tip_str.parse::<f64>() {
+                    config_clone.jito_tip = (val * 1e9) as u64;
                 }
             }
             
