@@ -145,29 +145,32 @@ impl eframe::App for GuiApp {
         // Handle control messages
         self.handle_control_messages();
         
-        // Top bar with controls - modern header
+        // Top bar with controls - premium modern header
         egui::TopBottomPanel::top("top_panel")
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(22, 22, 28))
-                .inner_margin(egui::Margin::same(16.0))
-                .outer_margin(egui::Margin::same(0.0)))
+                .fill(egui::Color32::from_rgb(16, 18, 24))
+                .inner_margin(egui::Margin::same(20.0))
+                .outer_margin(egui::Margin::same(0.0))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 40, 55))))
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.set_height(50.0);
+                ui.set_height(60.0);
                 
-                // Logo/Title section
+                // Logo/Title section with enhanced styling
                 ui.vertical(|ui| {
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("⚡").size(24.0));
+                        ui.label(egui::RichText::new("⚡").size(28.0));
+                        ui.add_space(8.0);
                         ui.label(egui::RichText::new("Pump.fun Sniper Bot")
-                            .size(20.0)
+                            .size(22.0)
                             .strong()
-                            .color(egui::Color32::from_rgb(100, 200, 255)));
+                            .color(egui::Color32::from_rgb(120, 220, 255)));
                     });
+                    ui.add_space(2.0);
                     ui.label(egui::RichText::new("Professional Token Sniping Platform")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(150, 150, 160)));
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
                 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -195,15 +198,15 @@ impl eframe::App for GuiApp {
             });
         });
         
-        // Main content area with tabs
+        // Main content area with tabs - premium styling
         egui::CentralPanel::default()
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(24, 24, 30))
-                .inner_margin(egui::Margin::same(16.0)))
+                .fill(egui::Color32::from_rgb(20, 22, 28))
+                .inner_margin(egui::Margin::same(20.0)))
             .show(ctx, |ui| {
-            // Modern tab bar
+            // Premium modern tab bar with enhanced hover effects
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
                 
                 let tabs = [
                     (0, "📊", "Dashboard"),
@@ -216,33 +219,46 @@ impl eframe::App for GuiApp {
                 for (idx, icon, label) in tabs.iter() {
                     let is_selected = self.selected_tab == *idx;
                     let bg_color = if is_selected {
-                        egui::Color32::from_rgb(100, 150, 255).linear_multiply(0.3)
+                        egui::Color32::from_rgb(80, 140, 255).linear_multiply(0.25)
                     } else {
-                        egui::Color32::TRANSPARENT
+                        egui::Color32::from_rgb(30, 35, 45).linear_multiply(0.6)
                     };
                     let border_color = if is_selected {
-                        egui::Color32::from_rgb(100, 150, 255)
+                        egui::Color32::from_rgb(100, 180, 255)
                     } else {
-                        egui::Color32::TRANSPARENT
+                        egui::Color32::from_rgb(50, 55, 70)
+                    };
+                    let text_color = if is_selected {
+                        egui::Color32::from_rgb(220, 240, 255)
+                    } else {
+                        egui::Color32::from_rgb(170, 180, 195)
                     };
                     
-                    if ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
-                            .size(14.0)
-                            .color(if is_selected {
-                                egui::Color32::from_rgb(200, 220, 255)
-                            } else {
-                                egui::Color32::from_rgb(160, 160, 170)
-                            }))
+                    let button_response = ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
+                            .size(15.0)
+                            .strong()
+                            .color(text_color))
                             .fill(bg_color)
-                            .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 0.0 }, border_color))
-                            .min_size(egui::vec2(130.0, 36.0)))
-                            .clicked() {
+                            .stroke(egui::Stroke::new(if is_selected { 2.5 } else { 1.0 }, border_color))
+                            .min_size(egui::vec2(140.0, 40.0))
+                            .rounding(egui::Rounding::same(8.0)));
+                    
+                    // Enhanced hover effect
+                    if button_response.hovered() && !is_selected {
+                        ui.painter().rect_filled(
+                            button_response.rect,
+                            8.0,
+                            egui::Color32::from_rgb(45, 55, 70).linear_multiply(0.8),
+                        );
+                    }
+                    
+                    if button_response.clicked() {
                         self.selected_tab = *idx;
                     }
                 }
             });
             
-            ui.add_space(12.0);
+            ui.add_space(16.0);
             
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match self.selected_tab {
@@ -261,61 +277,61 @@ impl eframe::App for GuiApp {
 fn setup_egui_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     
-    // Modern dark theme with vibrant accents
+    // Premium modern dark theme with enhanced color palette
     style.visuals = egui::Visuals::dark();
     style.visuals.dark_mode = true;
-    style.visuals.override_text_color = Some(egui::Color32::from_rgb(230, 230, 235));
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(18, 18, 22);
-    style.visuals.panel_fill = egui::Color32::from_rgb(22, 22, 28);
-    style.visuals.window_fill = egui::Color32::from_rgb(24, 24, 30);
-    style.visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 50));
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(235, 240, 245));
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
+    style.visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
+    style.visuals.window_fill = egui::Color32::from_rgb(20, 22, 28);
+    style.visuals.window_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(35, 40, 50));
     
-    // Widget colors with gradient feel
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(32, 32, 40);
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 50, 60));
-    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 210));
+    // Enhanced widget colors with professional gradient feel
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(28, 32, 42);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 50, 65));
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 215, 225));
     
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(45, 45, 58);
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(70, 130, 220));
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(40, 48, 62);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 240));
     
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(55, 55, 72);
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 150, 255));
-    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(50, 60, 80);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(100, 180, 255));
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
     
-    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(65, 65, 85);
+    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(60, 70, 90);
     
-    // Selection and highlights
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(100, 150, 255).linear_multiply(0.4);
-    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 150, 255));
+    // Enhanced selection and highlights
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(100, 180, 255).linear_multiply(0.35);
+    style.visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 200, 255));
     
-    // Better spacing for modern feel
-    style.spacing.item_spacing = egui::vec2(12.0, 8.0);
-    style.spacing.window_margin = egui::Margin::same(12.0);
-    style.spacing.button_padding = egui::vec2(16.0, 8.0);
-    style.spacing.menu_margin = egui::Margin::same(8.0);
-    style.spacing.indent = 20.0;
+    // Premium spacing for professional feel
+    style.spacing.item_spacing = egui::vec2(14.0, 10.0);
+    style.spacing.window_margin = egui::Margin::same(16.0);
+    style.spacing.button_padding = egui::vec2(18.0, 10.0);
+    style.spacing.menu_margin = egui::Margin::same(10.0);
+    style.spacing.indent = 24.0;
     
-    // Modern typography
+    // Enhanced typography with better readability
     style.text_styles.insert(
         egui::TextStyle::Heading,
-        egui::FontId::new(26.0, egui::FontFamily::Proportional),
+        egui::FontId::new(28.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Body,
-        egui::FontId::new(14.5, egui::FontFamily::Proportional),
+        egui::FontId::new(15.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        egui::FontId::new(14.5, egui::FontFamily::Proportional),
+        egui::FontId::new(15.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Small,
-        egui::FontId::new(12.0, egui::FontFamily::Proportional),
+        egui::FontId::new(12.5, egui::FontFamily::Proportional),
     );
     
-    // Interactive elements
-    style.interaction.resize_grab_radius_side = 6.0;
-    style.interaction.resize_grab_radius_corner = 10.0;
+    // Enhanced interactive elements
+    style.interaction.resize_grab_radius_side = 7.0;
+    style.interaction.resize_grab_radius_corner = 12.0;
     
     ctx.set_style(style);
 }

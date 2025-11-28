@@ -17,32 +17,41 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     ui.horizontal(|ui| {
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("⏭️  Filtered Tokens")
-                .size(22.0)
+                .size(26.0)
                 .strong()
-                .color(egui::Color32::from_rgb(255, 170, 100)));
+                .color(egui::Color32::from_rgb(255, 190, 120)));
             ui.label(egui::RichText::new("All detected tokens that were not bought with reasons")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(150, 150, 160)));
+                .size(13.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("🗑️  Clear")
-                    .size(13.0))
-                    .min_size(egui::vec2(80.0, 30.0)))
-                    .clicked() {
+            let clear_response = ui.add(egui::Button::new(egui::RichText::new("🗑️  Clear")
+                    .size(14.0)
+                    .strong())
+                    .fill(egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.2))
+                    .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 100, 100)))
+                    .min_size(egui::vec2(90.0, 34.0))
+                    .rounding(egui::Rounding::same(6.0)));
+            if clear_response.clicked() {
                 // Clear only filtered tokens from log
                 if let Ok(mut log) = event_log.write() {
                     log.retain(|e| !matches!(e, TokenEvent::Filtered { .. }));
                 }
             }
-            if ui.add(egui::Button::new(egui::RichText::new("💾 Export CSV")
-                    .size(13.0))
-                    .min_size(egui::vec2(100.0, 30.0)))
-                    .clicked() {
+            ui.add_space(8.0);
+            let export_response = ui.add(egui::Button::new(egui::RichText::new("💾 Export CSV")
+                    .size(14.0)
+                    .strong())
+                    .fill(egui::Color32::from_rgb(100, 200, 255).linear_multiply(0.2))
+                    .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 200, 255)))
+                    .min_size(egui::vec2(120.0, 34.0))
+                    .rounding(egui::Rounding::same(6.0)));
+            if export_response.clicked() {
                 export_to_csv(event_log);
             }
         });
     });
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     
     let log = event_log.read().unwrap();
     
@@ -63,26 +72,26 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     
     if filtered_tokens.is_empty() {
         ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
+            ui.add_space(60.0);
             ui.label(egui::RichText::new("No filtered tokens yet")
-                .size(16.0)
-                .color(egui::Color32::from_rgb(150, 150, 160)));
+                .size(18.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
             ui.label(egui::RichText::new("Filtered tokens will appear here when detected")
-                .size(12.0)
-                .color(egui::Color32::from_rgb(120, 120, 140)));
+                .size(13.0)
+                .color(egui::Color32::from_rgb(130, 140, 155)));
         });
         return;
     }
     
-    // Summary
+    // Enhanced summary with premium styling
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("Total Filtered: {}", filtered_tokens.len()))
-            .size(14.0)
+            .size(16.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 170, 100)));
-        ui.add_space(20.0);
+            .color(egui::Color32::from_rgb(255, 190, 120)));
+        ui.add_space(24.0);
         
-        // Count by reason
+        // Enhanced count by reason
         use std::collections::HashMap;
         let mut reason_counts: HashMap<&str, usize> = HashMap::new();
         for token in &filtered_tokens {
@@ -91,64 +100,65 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
         
         for (reason, count) in reason_counts.iter() {
             ui.label(egui::RichText::new(format!("{}: {}", reason, count))
-                .size(12.0)
-                .color(egui::Color32::from_rgb(200, 200, 220)));
-            ui.add_space(10.0);
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(12.0);
         }
     });
     
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     
     // Table with filtered tokens
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Table header with better spacing for full addresses
+            // Enhanced table header with premium styling
             ui.horizontal(|ui| {
-                ui.set_min_height(30.0);
-                ui.set_width(80.0); // Time column
+                ui.set_min_height(36.0);
+                ui.set_width(90.0); // Time column
                 ui.label(egui::RichText::new("Time")
-                    .size(12.0)
+                    .size(14.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(180, 180, 200)));
-                ui.add_space(10.0);
-                ui.set_width(450.0); // Mint Address column - wider for full address
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(12.0);
+                ui.set_width(460.0); // Mint Address column - wider for full address
                 ui.label(egui::RichText::new("Mint Address (Full)")
-                    .size(12.0)
+                    .size(14.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(180, 180, 200)));
-                ui.add_space(10.0);
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(12.0);
                 ui.label(egui::RichText::new("Reason")
-                    .size(12.0)
+                    .size(14.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(180, 180, 200)));
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             
-            // Show tokens in reverse order (newest first)
+            // Enhanced tokens display with premium styling
             for token in filtered_tokens.iter().rev() {
                 ui.horizontal(|ui| {
-                    ui.set_min_height(24.0);
+                    ui.set_min_height(30.0);
                     
-                    // Time column
-                    ui.set_width(80.0);
+                    // Enhanced time column
+                    ui.set_width(90.0);
                     ui.label(egui::RichText::new(
                         token.timestamp.format("%H:%M:%S").to_string()
                     )
-                    .size(11.0)
+                    .size(12.0)
                     .monospace()
-                    .color(egui::Color32::from_rgb(140, 140, 160)));
+                    .color(egui::Color32::from_rgb(150, 170, 190)));
                     
-                    ui.add_space(10.0);
+                    ui.add_space(12.0);
                     
-                    // Mint address column - FULL address, clickable to copy
-                    ui.set_width(450.0);
+                    // Enhanced mint address column - FULL address, clickable to copy
+                    ui.set_width(460.0);
                     let mint_response = ui.selectable_label(false, egui::RichText::new(&token.mint)
-                        .size(11.0)
+                        .size(12.0)
                         .monospace()
-                        .color(egui::Color32::from_rgb(200, 220, 255)));
+                        .color(egui::Color32::from_rgb(210, 230, 255)));
                     
                     if mint_response.clicked() {
                         ui.output_mut(|o| {
@@ -156,29 +166,30 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
                         });
                     }
                     
-                    ui.add_space(10.0);
+                    ui.add_space(12.0);
                     
-                    // Reason column - flexible width
+                    // Enhanced reason column with better color coding
                     let reason_color = if token.reason.contains("target") {
-                        egui::Color32::from_rgb(255, 200, 100)
+                        egui::Color32::from_rgb(255, 210, 110)
                     } else if token.reason.contains("Duplicate") {
-                        egui::Color32::from_rgb(200, 200, 200)
+                        egui::Color32::from_rgb(210, 220, 230)
                     } else if token.reason.contains("Dev buy") {
-                        egui::Color32::from_rgb(255, 150, 100)
+                        egui::Color32::from_rgb(255, 160, 110)
                     } else if token.reason.contains("Social") {
-                        egui::Color32::from_rgb(255, 180, 120)
+                        egui::Color32::from_rgb(255, 190, 130)
                     } else if token.reason.contains("Creator") {
-                        egui::Color32::from_rgb(255, 160, 100)
+                        egui::Color32::from_rgb(255, 170, 110)
                     } else {
-                        egui::Color32::from_rgb(255, 170, 100)
+                        egui::Color32::from_rgb(255, 180, 120)
                     };
                     
                     ui.label(egui::RichText::new(&token.reason)
-                        .size(11.0)
+                        .size(12.0)
+                        .strong()
                         .color(reason_color));
                 });
                 
-                ui.add_space(2.0);
+                ui.add_space(4.0);
             }
         });
 }

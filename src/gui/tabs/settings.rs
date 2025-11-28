@@ -188,16 +188,16 @@ impl SettingsState {
 
 pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc::Sender<BotControl>, wallet_private_key: &Arc<RwLock<Option<String>>>) {
     ui.vertical_centered(|ui| {
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         ui.label(egui::RichText::new("⚙️  Settings")
-            .size(22.0)
+            .size(26.0)
             .strong()
-            .color(egui::Color32::from_rgb(200, 200, 220)));
+            .color(egui::Color32::from_rgb(220, 230, 245)));
         ui.label(egui::RichText::new("Configure bot parameters and filters")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 150, 160)));
+            .size(13.0)
+            .color(egui::Color32::from_rgb(160, 170, 185)));
     });
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     let current_config = {
         let cfg = config.read().unwrap();
@@ -212,18 +212,19 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     let mut config_clone = current_config.clone();
     
-    // Wallet Private Key Section (at the top for visibility)
+    // Enhanced Wallet Private Key Section with premium styling
     ui.group(|ui| {
-        ui.set_min_height(120.0);
+        ui.set_min_height(140.0);
         ui.heading(egui::RichText::new("🔐 Wallet Configuration")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 200, 100)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 210, 110)));
+        ui.add_space(14.0);
         
         ui.label(egui::RichText::new("Enter your Solana wallet private key (base58 format)")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 150, 160)));
-        ui.add_space(8.0);
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(10.0);
         
         // Get current private key from state
         let current_ui_key = {
@@ -246,19 +247,30 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         let mut key_changed = false;
         let mut toggle_show = false;
         
-        // Password input with show/hide toggle
+        // Enhanced password input with show/hide toggle
         ui.horizontal(|ui| {
-            ui.label("Private Key:");
-            let mut password_input = egui::TextEdit::singleline(&mut private_key_str)
+            ui.label(egui::RichText::new("Private Key:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let password_response = ui.add(egui::TextEdit::singleline(&mut private_key_str)
                 .password(!show_private_key)
-                .desired_width(400.0);
+                .desired_width(450.0));
             
-            if ui.add(password_input).changed() {
+            if password_response.changed() {
                 key_changed = true;
             }
             
-            // Show/Hide toggle button
-            if ui.button(if show_private_key { "👁️ Hide" } else { "👁️ Show" }).clicked() {
+            ui.add_space(8.0);
+            // Enhanced Show/Hide toggle button
+            let toggle_response = ui.add(egui::Button::new(egui::RichText::new(if show_private_key { "👁️ Hide" } else { "👁️ Show" })
+                    .size(13.0))
+                    .fill(egui::Color32::from_rgb(100, 200, 255).linear_multiply(0.2))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 200, 255)))
+                    .min_size(egui::vec2(90.0, 32.0))
+                    .rounding(egui::Rounding::same(5.0)));
+            if toggle_response.clicked() {
                 toggle_show = true;
             }
         });
@@ -303,68 +315,89 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         
         if let Some(ref error) = display_error {
             ui.label(egui::RichText::new(format!("❌ {}", error))
-                .size(11.0)
-                .color(egui::Color32::from_rgb(255, 100, 100)));
+                .size(12.0)
+                .strong()
+                .color(egui::Color32::from_rgb(255, 120, 120)));
         } else if !trimmed_key.is_empty() {
             if let Ok(address) = crate::wallet::get_wallet_address_from_key(trimmed_key) {
                 ui.label(egui::RichText::new(format!("✅ Wallet: {}", address))
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(100, 255, 100)));
+                    .size(12.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(100, 255, 160)));
             }
         } else {
             ui.label(egui::RichText::new("ℹ️  Enter private key or use .env file")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(150, 150, 160)));
+                .size(12.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
         }
         
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.label(egui::RichText::new("⚠️  Keep your private key secure! It's stored in memory only.")
-            .size(10.0)
-            .color(egui::Color32::from_rgb(255, 200, 100)));
+            .size(11.0)
+            .color(egui::Color32::from_rgb(255, 210, 110)));
     });
     
     ui.add_space(10.0);
     
-    // API Configuration Section
+    // Enhanced API Configuration Section
     ui.group(|ui| {
-        ui.set_min_height(150.0);
+        ui.set_min_height(170.0);
         ui.heading(egui::RichText::new("🔑 API Configuration")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 150, 100)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 160, 110)));
+        ui.add_space(14.0);
         
         ui.label(egui::RichText::new("Required: Helius API Key. Optional: Custom RPC/WebSocket URLs")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 150, 160)));
-        ui.add_space(8.0);
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(10.0);
         
-        // HELIUS_API_KEY (required)
+        // Enhanced HELIUS_API_KEY (required)
         ui.horizontal(|ui| {
-            ui.label("Helius API Key:");
+            ui.label(egui::RichText::new("Helius API Key:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let api_key_str = state.get_or_init("helius_api_key", config_clone.helius_api_key.clone());
-            if ui.text_edit_singleline(api_key_str).changed() {
+            if ui.add(egui::TextEdit::singleline(api_key_str)
+                    .desired_width(450.0))
+                    .changed() {
                 config_clone.helius_api_key = api_key_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
                 state.last_update_time = Some(std::time::Instant::now());
             }
         });
         
-        // RPC_URL (optional)
+        // Enhanced RPC_URL (optional)
         ui.horizontal(|ui| {
-            ui.label("RPC URL (optional):");
+            ui.label(egui::RichText::new("RPC URL (optional):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let rpc_str = state.get_or_init("rpc_url", config_clone.rpc_url.clone());
-            if ui.text_edit_singleline(rpc_str).changed() {
+            if ui.add(egui::TextEdit::singleline(rpc_str)
+                    .desired_width(450.0))
+                    .changed() {
                 config_clone.rpc_url = rpc_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
                 state.last_update_time = Some(std::time::Instant::now());
             }
         });
         
-        // WSS_URL (optional)
+        // Enhanced WSS_URL (optional)
         ui.horizontal(|ui| {
-            ui.label("WebSocket URL (optional):");
+            ui.label(egui::RichText::new("WebSocket URL (optional):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let wss_str = state.get_or_init("wss_url", config_clone.wss_url.clone());
-            if ui.text_edit_singleline(wss_str).changed() {
+            if ui.add(egui::TextEdit::singleline(wss_str)
+                    .desired_width(450.0))
+                    .changed() {
                 config_clone.wss_url = wss_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
                 state.last_update_time = Some(std::time::Instant::now());
@@ -374,18 +407,25 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(10.0);
     
-    // Basic settings with better styling
+    // Enhanced basic settings with premium styling
     ui.group(|ui| {
-        ui.set_min_height(280.0);
+        ui.set_min_height(300.0);
         ui.heading(egui::RichText::new("💰 Trading Settings")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 215, 100)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 220, 0)));
+        ui.add_space(14.0);
         
         ui.horizontal(|ui| {
-            ui.label("Buy Amount (SOL):");
+            ui.label(egui::RichText::new("Buy Amount (SOL):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let buy_sol_str = state.get_or_init("buy_amount", config_clone.buy_amount_sol.to_string());
-            if ui.text_edit_singleline(buy_sol_str).changed() {
+            if ui.add(egui::TextEdit::singleline(buy_sol_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = buy_sol_str.parse::<f64>() {
                     config_clone.buy_amount_sol = val;
                     apply_config_live(&config, &control_tx, &config_clone);
@@ -395,9 +435,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("SOL Price (USD):");
+            ui.label(egui::RichText::new("SOL Price (USD):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let sol_price_str = state.get_or_init("sol_price", config_clone.sol_price_usd.to_string());
-            if ui.text_edit_singleline(sol_price_str).changed() {
+            if ui.add(egui::TextEdit::singleline(sol_price_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = sol_price_str.parse::<f64>() {
                     config_clone.sol_price_usd = val;
                     apply_config_live(&config, &control_tx, &config_clone);
@@ -407,9 +453,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("Priority Fee (micro-lamports):");
+            ui.label(egui::RichText::new("Priority Fee (micro-lamports):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let fee_str = state.get_or_init("priority_fee", config_clone.priority_fee.to_string());
-            if ui.text_edit_singleline(fee_str).changed() {
+            if ui.add(egui::TextEdit::singleline(fee_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = fee_str.parse::<u64>() {
                     config_clone.priority_fee = val;
                     apply_config_live(&config, &control_tx, &config_clone);
@@ -419,9 +471,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("Compute Units:");
+            ui.label(egui::RichText::new("Compute Units:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let compute_str = state.get_or_init("compute_units", config_clone.compute_units.to_string());
-            if ui.text_edit_singleline(compute_str).changed() {
+            if ui.add(egui::TextEdit::singleline(compute_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = compute_str.parse::<u32>() {
                     config_clone.compute_units = val;
                     apply_config_live(&config, &control_tx, &config_clone);
@@ -431,10 +489,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("Jito Tip (SOL):");
+            ui.label(egui::RichText::new("Jito Tip (SOL):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let jito_tip_sol = (config_clone.jito_tip as f64) / 1e9;
             let jito_str = state.get_or_init("jito_tip", jito_tip_sol.to_string());
-            if ui.text_edit_singleline(jito_str).changed() {
+            if ui.add(egui::TextEdit::singleline(jito_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = jito_str.parse::<f64>() {
                     config_clone.jito_tip = (val * 1e9) as u64;
                     apply_config_live(&config, &control_tx, &config_clone);
@@ -443,25 +507,28 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             }
         });
         
-        ui.add_space(8.0);
-        if ui.checkbox(&mut config_clone.mock_buy, "🧪 Mock Buy (Test mode - no real transactions)").changed() {
+        ui.add_space(10.0);
+        if ui.checkbox(&mut config_clone.mock_buy, egui::RichText::new("🧪 Mock Buy (Test mode - no real transactions)")
+                .size(13.0)).changed() {
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
         if config_clone.mock_buy {
             ui.label(egui::RichText::new("⚠️  Mock mode: Transactions will be simulated, not sent to blockchain")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(255, 200, 100)));
+                .size(12.0)
+                .color(egui::Color32::from_rgb(255, 210, 110)));
         }
         
-        ui.add_space(4.0);
-        if ui.checkbox(&mut config_clone.one_shot_mode, "One Shot Mode").changed() {
+        ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.one_shot_mode, egui::RichText::new("One Shot Mode")
+                .size(13.0)).changed() {
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
         
-        ui.add_space(4.0);
-        if ui.checkbox(&mut config_clone.enable_tracker, "Enable Tracker").changed() {
+        ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.enable_tracker, egui::RichText::new("Enable Tracker")
+                .size(13.0)).changed() {
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
@@ -469,18 +536,19 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(10.0);
     
-    // Auto-Sell Settings
+    // Enhanced Auto-Sell Settings
     ui.group(|ui| {
-        ui.set_min_height(200.0);
+        ui.set_min_height(220.0);
         ui.heading(egui::RichText::new("💰 Auto-Sell Settings")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 215, 0)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 220, 0)));
+        ui.add_space(14.0);
         
         ui.label(egui::RichText::new("Automatically sell positions when conditions are met")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 150, 160)));
-        ui.add_space(8.0);
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(10.0);
         
         // Enable Auto-Sell checkbox
         if ui.checkbox(&mut config_clone.enable_auto_sell, "Enable Auto-Sell").changed() {
@@ -491,11 +559,17 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         if config_clone.enable_auto_sell {
             ui.add_space(8.0);
             
-            // Stop Loss Percent
+            // Enhanced Stop Loss Percent
             ui.horizontal(|ui| {
-                ui.label("Stop Loss (%):");
+                ui.label(egui::RichText::new("Stop Loss (%):")
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
                 let stop_loss_str = state.get_or_init("stop_loss_percent", config_clone.stop_loss_percent.to_string());
-                if ui.text_edit_singleline(stop_loss_str).changed() {
+                if ui.add(egui::TextEdit::singleline(stop_loss_str)
+                        .desired_width(150.0))
+                        .changed() {
                     if let Ok(val) = stop_loss_str.parse::<f64>() {
                         if val >= 0.0 && val <= 100.0 {
                             config_clone.stop_loss_percent = val;
@@ -504,16 +578,23 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     }
                 }
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new("(Sell when MC drops by this % from entry)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(150, 150, 160)));
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
-            // Take Profit MC
+            // Enhanced Take Profit MC
             ui.horizontal(|ui| {
-                ui.label("Take Profit MC (USD):");
+                ui.label(egui::RichText::new("Take Profit MC (USD):")
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
                 let take_profit_str = state.get_or_init("take_profit_mc", config_clone.take_profit_mc_usd.to_string());
-                if ui.text_edit_singleline(take_profit_str).changed() {
+                if ui.add(egui::TextEdit::singleline(take_profit_str)
+                        .desired_width(150.0))
+                        .changed() {
                     if let Ok(val) = take_profit_str.parse::<f64>() {
                         if val > 0.0 {
                             config_clone.take_profit_mc_usd = val;
@@ -522,16 +603,23 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     }
                 }
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new("(Sell when MC reaches this value)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(150, 150, 160)));
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
-            // Sell Percent
+            // Enhanced Sell Percent
             ui.horizontal(|ui| {
-                ui.label("Sell Percent (%):");
+                ui.label(egui::RichText::new("Sell Percent (%):")
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
                 let sell_percent_str = state.get_or_init("sell_percent", config_clone.sell_percent.to_string());
-                if ui.text_edit_singleline(sell_percent_str).changed() {
+                if ui.add(egui::TextEdit::singleline(sell_percent_str)
+                        .desired_width(150.0))
+                        .changed() {
                     if let Ok(val) = sell_percent_str.parse::<f64>() {
                         if val > 0.0 && val <= 100.0 {
                             config_clone.sell_percent = val;
@@ -540,16 +628,23 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     }
                 }
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new("(% of position to sell)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(150, 150, 160)));
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
-            // Monitor Interval
+            // Enhanced Monitor Interval
             ui.horizontal(|ui| {
-                ui.label("Monitor Interval (sec):");
+                ui.label(egui::RichText::new("Monitor Interval (sec):")
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
                 let monitor_str = state.get_or_init("monitor_interval", config_clone.monitor_interval_sec.to_string());
-                if ui.text_edit_singleline(monitor_str).changed() {
+                if ui.add(egui::TextEdit::singleline(monitor_str)
+                        .desired_width(150.0))
+                        .changed() {
                     if let Ok(val) = monitor_str.parse::<u64>() {
                         if val > 0 {
                             config_clone.monitor_interval_sec = val;
@@ -558,43 +653,46 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     }
                 }
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new("(How often to check positions)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(150, 150, 160)));
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
-            ui.add_space(8.0);
+            ui.add_space(10.0);
             ui.label(egui::RichText::new("ℹ️  Auto-sell will trigger when:")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(150, 200, 255)));
+                .size(12.0)
+                .strong()
+                .color(egui::Color32::from_rgb(160, 210, 255)));
             ui.label(egui::RichText::new(format!("  • Market cap drops {}% from entry (Stop Loss)", config_clone.stop_loss_percent))
-                .size(10.0)
-                .color(egui::Color32::from_rgb(200, 200, 220)));
-            ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
-                .size(10.0)
-                .color(egui::Color32::from_rgb(200, 200, 220)));
-        } else {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("⚠️  Auto-sell is disabled")
                 .size(11.0)
-                .color(egui::Color32::from_rgb(255, 200, 100)));
+                .color(egui::Color32::from_rgb(210, 220, 235)));
+            ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
+                .size(11.0)
+                .color(egui::Color32::from_rgb(210, 220, 235)));
+        } else {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("⚠️  Auto-sell is disabled")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(255, 210, 110)));
         }
     });
     
     ui.add_space(10.0);
     
-    // Target mint address (single token mode)
+    // Enhanced Target mint address (single token mode)
     ui.group(|ui| {
-        ui.set_min_height(100.0);
+        ui.set_min_height(120.0);
         ui.heading(egui::RichText::new("🎯 Target Token (Optional)")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 150, 200)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 160, 210)));
+        ui.add_space(14.0);
         
         ui.label(egui::RichText::new("If set, bot will only buy this specific token when detected")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 150, 160)));
-        ui.add_space(8.0);
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(10.0);
         
         let target_mint_display = config_clone.target_mint_address
             .map(|p| p.to_string())
@@ -603,8 +701,14 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         
         let mut target_mint_changed = false;
         ui.horizontal(|ui| {
-            ui.label("Mint Address:");
-            if ui.text_edit_singleline(target_mint_str).changed() {
+            ui.label(egui::RichText::new("Mint Address:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            if ui.add(egui::TextEdit::singleline(target_mint_str)
+                    .desired_width(450.0))
+                    .changed() {
                 // Parse and update config immediately
                 let trimmed = target_mint_str.trim();
                 if trimmed.is_empty() {
@@ -627,29 +731,37 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         
         if let Some(target_mint) = config_clone.target_mint_address {
             ui.label(egui::RichText::new(format!("✅ Target set: {}", target_mint))
-                .size(11.0)
-                .color(egui::Color32::from_rgb(100, 255, 150)));
+                .size(12.0)
+                .strong()
+                .color(egui::Color32::from_rgb(100, 255, 160)));
         } else {
             ui.label(egui::RichText::new("ℹ️  No target set - will buy all matching tokens")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(150, 150, 160)));
+                .size(12.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
         }
     });
     
     ui.add_space(10.0);
     
-    // Dev buy filter
+    // Enhanced Dev buy filter
     ui.group(|ui| {
-        ui.set_min_height(120.0);
+        ui.set_min_height(140.0);
         ui.heading(egui::RichText::new("🔍 Dev Buy Filter")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(100, 180, 255)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(120, 200, 255)));
+        ui.add_space(14.0);
         
         ui.horizontal(|ui| {
-            ui.label("Min Dev Buy (USD):");
+            ui.label(egui::RichText::new("Min Dev Buy (USD):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let min_str = state.get_or_init("min_dev_buy", config_clone.min_dev_buy_usd.to_string());
-            if ui.text_edit_singleline(min_str).changed() {
+            if ui.add(egui::TextEdit::singleline(min_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = min_str.parse::<f64>() {
                     config_clone.min_dev_buy_usd = val;
                     // ✅ LIVE UPDATE: Apply immediately
@@ -660,9 +772,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("Max Dev Buy (USD):");
+            ui.label(egui::RichText::new("Max Dev Buy (USD):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let max_str = state.get_or_init("max_dev_buy", config_clone.max_dev_buy_usd.to_string());
-            if ui.text_edit_singleline(max_str).changed() {
+            if ui.add(egui::TextEdit::singleline(max_str)
+                    .desired_width(200.0))
+                    .changed() {
                 if let Ok(val) = max_str.parse::<f64>() {
                     config_clone.max_dev_buy_usd = val;
                     // ✅ LIVE UPDATE: Apply immediately
@@ -673,9 +791,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label("Min Dev Tokens:");
+            ui.label(egui::RichText::new("Min Dev Tokens:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let min_str = state.get_or_init("min_dev_tokens", config_clone.min_dev_tokens.to_string());
-            if ui.text_edit_singleline(min_str).changed() {
+            if ui.add(egui::TextEdit::singleline(min_str)
+                    .desired_width(150.0))
+                    .changed() {
                 if let Ok(val) = min_str.parse::<usize>() {
                     config_clone.min_dev_tokens = val;
                     // ✅ LIVE UPDATE: Apply immediately
@@ -684,9 +808,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 }
             }
             
-            ui.label("Max Dev Tokens:");
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("Max Dev Tokens:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let max_str = state.get_or_init("max_dev_tokens", config_clone.max_dev_tokens.to_string());
-            if ui.text_edit_singleline(max_str).changed() {
+            if ui.add(egui::TextEdit::singleline(max_str)
+                    .desired_width(150.0))
+                    .changed() {
                 if let Ok(val) = max_str.parse::<usize>() {
                     config_clone.max_dev_tokens = val;
                     // ✅ LIVE UPDATE: Apply immediately
@@ -699,29 +830,40 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(10.0);
     
-    // Social filters
+    // Enhanced Social filters
     ui.group(|ui| {
-        ui.set_min_height(100.0);
+        ui.set_min_height(120.0);
         ui.heading(egui::RichText::new("📱 Social Filters")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(100, 255, 180)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(100, 255, 190)));
+        ui.add_space(14.0);
         
-        if ui.checkbox(&mut config_clone.require_socials, "Require Socials").changed() {
+        if ui.checkbox(&mut config_clone.require_socials, egui::RichText::new("Require Socials")
+                .size(13.0)).changed() {
             // ✅ LIVE UPDATE: Apply immediately
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
-        if ui.checkbox(&mut config_clone.require_twitter, "Require Twitter/X").changed() {
+        ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.require_twitter, egui::RichText::new("Require Twitter/X")
+                .size(13.0)).changed() {
             // ✅ LIVE UPDATE: Apply immediately
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
+        ui.add_space(8.0);
         
         ui.horizontal(|ui| {
-            ui.label("Min Socials Count:");
+            ui.label(egui::RichText::new("Min Socials Count:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
             let count_str = state.get_or_init("min_socials_count", config_clone.min_socials_count.to_string());
-            if ui.text_edit_singleline(count_str).changed() {
+            if ui.add(egui::TextEdit::singleline(count_str)
+                    .desired_width(150.0))
+                    .changed() {
                 if let Ok(val) = count_str.parse::<usize>() {
                     config_clone.min_socials_count = val;
                     // ✅ LIVE UPDATE: Apply immediately
@@ -734,13 +876,14 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(10.0);
     
-    // Submission mode
+    // Enhanced Submission mode
     ui.group(|ui| {
-        ui.set_min_height(80.0);
+        ui.set_min_height(100.0);
         ui.heading(egui::RichText::new("🚀 Submission Mode")
-            .size(16.0)
-            .color(egui::Color32::from_rgb(255, 150, 100)));
-        ui.add_space(12.0);
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 160, 110)));
+        ui.add_space(14.0);
         egui::ComboBox::from_id_source("submission_mode")
             .selected_text(config_clone.submission_mode.as_str())
             .show_ui(ui, |ui| {
@@ -767,35 +910,38 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(20.0);
     
-    // Show live update status
+    // Enhanced live update status
     if let Some(last_update) = state.last_update_time {
         let elapsed = last_update.elapsed();
         if elapsed.as_secs() < 2 {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("✅ Settings applied live")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(100, 255, 100)));
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(100, 255, 160)));
             });
         }
     }
     
-    ui.add_space(10.0);
+    ui.add_space(16.0);
     
-    // Action buttons with modern styling
+    // Enhanced action buttons with premium styling
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
+        ui.spacing_mut().item_spacing = egui::vec2(14.0, 0.0);
         
         // Clone state for use in button click handler
         let state_clone = state.clone();
         
-        // Apply button now validates and ensures all fields are synced
-        if ui.add(egui::Button::new(egui::RichText::new("💾 Sync All Settings")
-                .size(14.0)
+        // Enhanced Apply button now validates and ensures all fields are synced
+        let sync_response = ui.add(egui::Button::new(egui::RichText::new("💾 Sync All Settings")
+                .size(15.0)
                 .strong())
-                .fill(egui::Color32::from_rgb(100, 200, 100).linear_multiply(0.2))
-                .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 200, 100)))
-                .min_size(egui::vec2(150.0, 36.0)))
-                .clicked() {
+                .fill(egui::Color32::from_rgb(100, 220, 120).linear_multiply(0.25))
+                .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 220, 120)))
+                .min_size(egui::vec2(170.0, 40.0))
+                .rounding(egui::Rounding::same(8.0)));
+        
+        if sync_response.clicked() {
             // Parse all values from state strings before applying
             // This ensures all values are up-to-date even if user didn't click out of field
             if let Some(buy_amount_str) = &state_clone.buy_amount_str {
@@ -916,12 +1062,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             }
         }
         
-        if ui.add(egui::Button::new(egui::RichText::new("🔄 Reset to Defaults")
-                .size(14.0))
-                .fill(egui::Color32::from_rgb(200, 150, 100).linear_multiply(0.2))
-                .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 150, 100)))
-                .min_size(egui::vec2(150.0, 36.0)))
-                .clicked() {
+        let reset_response = ui.add(egui::Button::new(egui::RichText::new("🔄 Reset to Defaults")
+                .size(15.0)
+                .strong())
+                .fill(egui::Color32::from_rgb(220, 160, 110).linear_multiply(0.25))
+                .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(220, 160, 110)))
+                .min_size(egui::vec2(170.0, 40.0))
+                .rounding(egui::Rounding::same(8.0)));
+        
+        if reset_response.clicked() {
             let default_config = Config::default();
             {
                 let mut cfg = config.write().unwrap();

@@ -18,62 +18,84 @@ pub struct FeedState {
 }
 
 pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, auto_scroll: &mut bool, state: &mut FeedState) {
-    // Header
+    // Enhanced header with premium styling
     ui.horizontal(|ui| {
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("🔴 Live Feed")
-                .size(22.0)
+                .size(26.0)
                 .strong()
-                .color(egui::Color32::from_rgb(255, 100, 100)));
+                .color(egui::Color32::from_rgb(255, 120, 120)));
             ui.label(egui::RichText::new("Real-time token detection and trading events")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(150, 150, 160)));
+                .size(13.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("🗑️  Clear")
-                    .size(13.0))
-                    .min_size(egui::vec2(80.0, 30.0)))
-                    .clicked() {
+            let clear_response = ui.add(egui::Button::new(egui::RichText::new("🗑️  Clear")
+                    .size(14.0)
+                    .strong())
+                    .fill(egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.2))
+                    .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 100, 100)))
+                    .min_size(egui::vec2(90.0, 34.0))
+                    .rounding(egui::Rounding::same(6.0)));
+            if clear_response.clicked() {
                 if let Ok(mut log) = event_log.write() {
                     log.clear();
                 }
             }
-            ui.checkbox(auto_scroll, "Auto-scroll");
+            ui.add_space(8.0);
+            ui.checkbox(auto_scroll, egui::RichText::new("Auto-scroll")
+                .size(13.0));
         });
     });
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     
-    // Filters and options
+    // Enhanced filters and options with premium styling
     ui.group(|ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Filters:").size(12.0).strong());
-            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Filters:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(12.0);
             
-            ui.checkbox(&mut state.filter_detected, "🔍 Detected");
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.filter_filtered, "⏭️ Filtered");
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.filter_bought, "✅ Bought");
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.filter_sold, "💰 Sold");
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.filter_error, "❌ Error");
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.filter_info, "ℹ️ Info");
+            ui.checkbox(&mut state.filter_detected, egui::RichText::new("🔍 Detected")
+                .size(13.0));
+            ui.add_space(6.0);
+            ui.checkbox(&mut state.filter_filtered, egui::RichText::new("⏭️ Filtered")
+                .size(13.0));
+            ui.add_space(6.0);
+            ui.checkbox(&mut state.filter_bought, egui::RichText::new("✅ Bought")
+                .size(13.0));
+            ui.add_space(6.0);
+            ui.checkbox(&mut state.filter_sold, egui::RichText::new("💰 Sold")
+                .size(13.0));
+            ui.add_space(6.0);
+            ui.checkbox(&mut state.filter_error, egui::RichText::new("❌ Error")
+                .size(13.0));
+            ui.add_space(6.0);
+            ui.checkbox(&mut state.filter_info, egui::RichText::new("ℹ️ Info")
+                .size(13.0));
             
-            ui.add_space(20.0);
+            ui.add_space(24.0);
             
-            ui.checkbox(&mut state.show_full_addresses, "Show Full Addresses");
+            ui.checkbox(&mut state.show_full_addresses, egui::RichText::new("Show Full Addresses")
+                .size(13.0));
         });
         
-        ui.add_space(4.0);
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("🔍 Search:").size(12.0));
-            ui.add_space(4.0);
-            ui.text_edit_singleline(&mut state.search_text);
+            ui.label(egui::RichText::new("🔍 Search:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            ui.add(egui::TextEdit::singleline(&mut state.search_text)
+                .desired_width(300.0));
             if !state.search_text.is_empty() {
-                ui.add_space(4.0);
-                if ui.small_button("✕").clicked() {
+                ui.add_space(6.0);
+                if ui.button(egui::RichText::new("✕")
+                        .size(12.0))
+                        .clicked() {
                     state.search_text.clear();
                 }
             }
@@ -100,32 +122,40 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
         counts
     };
     
-    // Summary stats
+    // Enhanced summary stats with premium styling
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Total: {}", log.len())).size(12.0).strong());
-        ui.add_space(10.0);
+        ui.label(egui::RichText::new(format!("Total: {}", log.len()))
+            .size(14.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)));
+        ui.add_space(14.0);
         ui.label(egui::RichText::new(format!("🔍 {}", detected_count))
-            .size(11.0)
-            .color(egui::Color32::from_rgb(100, 180, 255)));
-        ui.add_space(8.0);
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(120, 200, 255)));
+        ui.add_space(10.0);
         ui.label(egui::RichText::new(format!("⏭️ {}", filtered_count))
-            .size(11.0)
-            .color(egui::Color32::from_rgb(255, 170, 100)));
-        ui.add_space(8.0);
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 190, 120)));
+        ui.add_space(10.0);
         ui.label(egui::RichText::new(format!("✅ {}", bought_count))
-            .size(11.0)
-            .color(egui::Color32::from_rgb(0, 255, 120)));
-        ui.add_space(8.0);
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(0, 255, 140)));
+        ui.add_space(10.0);
         ui.label(egui::RichText::new(format!("💰 {}", sold_count))
-            .size(11.0)
-            .color(egui::Color32::from_rgb(255, 215, 0)));
-        ui.add_space(8.0);
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 220, 0)));
+        ui.add_space(10.0);
         ui.label(egui::RichText::new(format!("❌ {}", error_count))
-            .size(11.0)
-            .color(egui::Color32::from_rgb(255, 100, 100)));
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 120, 120)));
     });
     
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     
     // Filter and search events
     let events_to_show: Vec<_> = log.iter().rev().take(500).filter(|event| {
@@ -163,69 +193,69 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
             
             if events_to_show.is_empty() {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(50.0);
+                    ui.add_space(60.0);
                     ui.label(egui::RichText::new("No events match filters")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(150, 150, 160)));
+                        .size(16.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
                 return;
             }
             
             for event in events_to_show {
-                    let (color, icon, _bg_color) = match event {
+                    let (color, icon, bg_color) = match event {
                     TokenEvent::Detected { .. } => (
-                        egui::Color32::from_rgb(100, 180, 255),
+                        egui::Color32::from_rgb(120, 200, 255),
                         "🔍",
-                        egui::Color32::from_rgb(100, 180, 255).linear_multiply(0.1)
+                        egui::Color32::from_rgb(120, 200, 255).linear_multiply(0.12)
                     ),
                     TokenEvent::Filtered { .. } => (
-                        egui::Color32::from_rgb(255, 170, 100),
+                        egui::Color32::from_rgb(255, 190, 120),
                         "⏭️",
-                        egui::Color32::from_rgb(255, 170, 100).linear_multiply(0.1)
+                        egui::Color32::from_rgb(255, 190, 120).linear_multiply(0.12)
                     ),
                     TokenEvent::Bought { .. } => (
-                        egui::Color32::from_rgb(0, 255, 120),
+                        egui::Color32::from_rgb(0, 255, 140),
                         "✅",
-                        egui::Color32::from_rgb(0, 255, 120).linear_multiply(0.1)
+                        egui::Color32::from_rgb(0, 255, 140).linear_multiply(0.12)
                     ),
                     TokenEvent::Sold { .. } => (
-                        egui::Color32::from_rgb(255, 215, 0),
+                        egui::Color32::from_rgb(255, 220, 0),
                         "💰",
-                        egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.1)
+                        egui::Color32::from_rgb(255, 220, 0).linear_multiply(0.12)
                     ),
                     TokenEvent::Error { .. } => (
-                        egui::Color32::from_rgb(255, 100, 100),
+                        egui::Color32::from_rgb(255, 120, 120),
                         "❌",
-                        egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.1)
+                        egui::Color32::from_rgb(255, 120, 120).linear_multiply(0.12)
                     ),
                     TokenEvent::Info { .. } => (
-                        egui::Color32::from_rgb(180, 180, 200),
+                        egui::Color32::from_rgb(190, 200, 220),
                         "ℹ️",
-                        egui::Color32::from_rgb(180, 180, 200).linear_multiply(0.05)
+                        egui::Color32::from_rgb(190, 200, 220).linear_multiply(0.08)
                     ),
                 };
                 
-                ui.group(|ui| {
-                    ui.set_min_height(32.0);
+                let group_response = ui.group(|ui| {
+                    ui.set_min_height(38.0);
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(egui::RichText::new(icon).size(18.0));
                             ui.add_space(8.0);
-                            ui.label(egui::RichText::new(icon).size(16.0));
-                            ui.add_space(6.0);
                             
-                            // Time
+                            // Enhanced time display
                             ui.label(egui::RichText::new(
                                 event.timestamp().format("%H:%M:%S").to_string()
                             )
-                            .size(10.0)
+                            .size(11.0)
                             .monospace()
-                            .color(egui::Color32::from_rgb(140, 140, 160)));
+                            .color(egui::Color32::from_rgb(150, 160, 180)));
                             
-                            ui.add_space(10.0);
+                            ui.add_space(12.0);
                             
                             // Event content with better formatting
                             match event {
@@ -236,7 +266,8 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                         format_address(mint)
                                     };
                                     let mint_label = ui.selectable_label(false, egui::RichText::new(format!("Detected: {}", mint_display))
-                                        .size(12.0)
+                                        .size(13.0)
+                                        .strong()
                                         .color(color));
                                     if mint_label.clicked() {
                                         ui.output_mut(|o| {
@@ -252,17 +283,18 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                     };
                                     ui.horizontal(|ui| {
                                         let mint_label = ui.selectable_label(false, egui::RichText::new(format!("Filtered: {}", mint_display))
-                                            .size(12.0)
+                                            .size(13.0)
+                                            .strong()
                                             .color(color));
                                         if mint_label.clicked() {
                                             ui.output_mut(|o| {
                                                 o.copied_text = mint.clone();
                                             });
                                         }
-                                        ui.add_space(8.0);
+                                        ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("- {}", reason))
-                                            .size(11.0)
-                                            .color(egui::Color32::from_rgb(200, 200, 220)));
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(210, 215, 230)));
                                     });
                                 },
                                 TokenEvent::Bought { mint, signature, mc, .. } => {
@@ -278,7 +310,8 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                     };
                                     ui.horizontal(|ui| {
                                         let mint_label = ui.selectable_label(false, egui::RichText::new(format!("Bought: {}", mint_display))
-                                            .size(12.0)
+                                            .size(13.0)
+                                            .strong()
                                             .color(color));
                                         if mint_label.clicked() {
                                             ui.output_mut(|o| {
@@ -286,16 +319,17 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                             });
                                         }
                                         if let Some(mc_val) = mc {
-                                            ui.add_space(8.0);
+                                            ui.add_space(10.0);
                                             ui.label(egui::RichText::new(format!("MC: ${:.0}", mc_val))
-                                                .size(11.0)
-                                                .color(egui::Color32::from_rgb(100, 255, 150)));
+                                                .size(12.0)
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(100, 255, 160)));
                                         }
-                                        ui.add_space(8.0);
+                                        ui.add_space(10.0);
                                         let sig_label = ui.selectable_label(false, egui::RichText::new(format!("Sig: {}", sig_display))
-                                            .size(11.0)
+                                            .size(12.0)
                                             .monospace()
-                                            .color(egui::Color32::from_rgb(150, 200, 255)));
+                                            .color(egui::Color32::from_rgb(160, 210, 255)));
                                         if sig_label.clicked() {
                                             ui.output_mut(|o| {
                                                 o.copied_text = signature.clone();
@@ -316,33 +350,35 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                     };
                                     ui.horizontal(|ui| {
                                         let mint_label = ui.selectable_label(false, egui::RichText::new(format!("Sold: {}", mint_display))
-                                            .size(12.0)
+                                            .size(13.0)
+                                            .strong()
                                             .color(color));
                                         if mint_label.clicked() {
                                             ui.output_mut(|o| {
                                                 o.copied_text = mint.clone();
                                             });
                                         }
-                                        ui.add_space(8.0);
+                                        ui.add_space(10.0);
                                         ui.label(egui::RichText::new(format!("({})", reason))
-                                            .size(11.0)
-                                            .color(egui::Color32::from_rgb(200, 200, 220)));
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(210, 215, 230)));
                                         if let Some(pnl_val) = pnl {
-                                            ui.add_space(8.0);
+                                            ui.add_space(10.0);
                                             let pnl_color = if *pnl_val >= 0.0 {
-                                                egui::Color32::from_rgb(0, 255, 120)
+                                                egui::Color32::from_rgb(0, 255, 140)
                                             } else {
-                                                egui::Color32::from_rgb(255, 100, 100)
+                                                egui::Color32::from_rgb(255, 120, 120)
                                             };
                                             ui.label(egui::RichText::new(format!("PnL: {:.4} SOL", pnl_val))
-                                                .size(11.0)
+                                                .size(12.0)
+                                                .strong()
                                                 .color(pnl_color));
                                         }
-                                        ui.add_space(8.0);
+                                        ui.add_space(10.0);
                                         let sig_label = ui.selectable_label(false, egui::RichText::new(format!("Sig: {}", sig_display))
-                                            .size(11.0)
+                                            .size(12.0)
                                             .monospace()
-                                            .color(egui::Color32::from_rgb(150, 200, 255)));
+                                            .color(egui::Color32::from_rgb(160, 210, 255)));
                                         if sig_label.clicked() {
                                             ui.output_mut(|o| {
                                                 o.copied_text = signature.clone();
@@ -352,18 +388,26 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                 },
                                 TokenEvent::Error { message, .. } => {
                                     ui.label(egui::RichText::new(format!("Error: {}", message))
-                                        .size(12.0)
+                                        .size(13.0)
+                                        .strong()
                                         .color(color));
                                 },
                                 TokenEvent::Info { message, .. } => {
                                     ui.label(egui::RichText::new(message)
-                                        .size(12.0)
+                                        .size(13.0)
                                         .color(color));
                                 },
                             }
                         });
                     });
                 });
+                
+                // Enhanced background color effect
+                ui.painter().rect_filled(
+                    group_response.response.rect,
+                    6.0,
+                    bg_color,
+                );
             }
             
             // Scroll to bottom if auto-scroll enabled
