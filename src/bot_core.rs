@@ -32,6 +32,9 @@ use crate::config::Config;
 use crate::constants::PUMP_PROGRAM_ID;
 use crate::metrics::{SharedMetrics, FilterReason, SubmissionMethod, ErrorType};
 use crate::gui::{TokenEvent, BotControl};
+use crate::sell::build_sell_instruction;
+use spl_token::state::Account as TokenAccount;
+use solana_sdk::program_pack::Pack;
 
 pub async fn run_bot(
     config: Arc<std::sync::RwLock<Config>>,
@@ -64,6 +67,24 @@ pub async fn run_bot(
     
     // Pre-load global account
     crate::buy::preload_global(&rpc, &initial_config.global_account).await?;
+    
+    // Start position monitor as background task
+    let monitor_config = config.clone();
+    let monitor_wallet_bytes = wallet.to_bytes();
+    let monitor_wallet = Keypair::from_bytes(&monitor_wallet_bytes)?;
+    let monitor_rpc = initial_config.create_rpc_client();
+    let monitor_tracker = tracker.clone();
+    let monitor_event_tx = event_tx.clone();
+    
+    tokio::spawn(async move {
+        monitor_positions(
+            monitor_config,
+            monitor_wallet,
+            monitor_rpc,
+            monitor_tracker,
+            monitor_event_tx,
+        ).await;
+    });
     
     let mut detected = 0;
     let mut reconnect_count = 0;
@@ -667,6 +688,16 @@ async fn process_and_buy(
     let user_wallet = wallet.pubkey();
     let user_ata = get_associated_token_address(&user_wallet, &accounts.mint);
     
+    // Calculate token amount for tracking
+    let token_amount = {
+        use crate::buy::get_cached_global;
+        if let Ok(global) = get_cached_global() {
+            global.get_initial_buy_price(config.buy_amount_lamports())
+        } else {
+            0
+        }
+    };
+    
     let buy_ix = build_buy_instruction(
         rpc,
         &accounts,
@@ -761,6 +792,11 @@ async fn process_and_buy(
                             mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
                             mc_at_entry_usd: mc_entry_usd,
                             token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
+                            token_amount: if token_amount > 0 { Some(token_amount) } else { None },
+                            user_token_account: Some(user_ata.to_string()),
+                            bonding_curve: Some(accounts.bonding_curve.to_string()),
+                            sold: false,
+                            sell_signature: None,
                         };
                         
                         match tracker.record_buy(buy) {
@@ -962,6 +998,11 @@ async fn process_and_buy(
                     mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
                     mc_at_entry_usd: mc_entry_usd,
                     token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
+                    token_amount: if token_amount > 0 { Some(token_amount) } else { None },
+                    user_token_account: Some(user_ata.to_string()),
+                    bonding_curve: Some(accounts.bonding_curve.to_string()),
+                    sold: false,
+                    sell_signature: None,
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -974,5 +1015,311 @@ async fn process_and_buy(
     } else {
         Err(result.unwrap_err())
     }
+}
+
+/// Monitor active positions and trigger sells when conditions are met
+async fn monitor_positions(
+    config: Arc<std::sync::RwLock<Config>>,
+    wallet: Keypair,
+    rpc: RpcClient,
+    tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
+    event_tx: mpsc::UnboundedSender<TokenEvent>,
+) {
+    loop {
+        // Check if auto-sell is enabled
+        let enabled = {
+            let cfg = config.read().unwrap();
+            cfg.enable_auto_sell
+        };
+
+        if !enabled {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+
+        // Get config values
+        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd) = {
+            let cfg = config.read().unwrap();
+            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd)
+        };
+
+        // Get active positions
+        let active_positions = {
+            if let Ok(tracker_guard) = tracker.read() {
+                if let Some(tracker_ref) = tracker_guard.as_ref() {
+                    tracker_ref.get_active_positions()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+
+        if active_positions.is_empty() {
+            tokio::time::sleep(Duration::from_secs(monitor_interval)).await;
+            continue;
+        }
+
+        // Check each position
+        for position in active_positions {
+            // Skip if we don't have required data
+            let bonding_curve_str = match &position.bonding_curve {
+                Some(bc) => bc,
+                None => continue,
+            };
+
+            let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+
+            let entry_mc = match position.mc_at_entry_usd {
+                Some(mc) => mc,
+                None => continue,
+            };
+
+            // Fetch current MC
+            let current_mc_result = fetch_bonding_curve_mc(
+                &rpc,
+                &bonding_curve,
+                sol_price_usd,
+            ).await;
+
+            let current_mc = match current_mc_result {
+                Ok((_, _, mc_usd)) => mc_usd,
+                Err(e) => {
+                    eprintln!("Failed to fetch MC for {}: {}", position.mint, e);
+                    continue;
+                }
+            };
+
+            // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
+            let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
+            let should_sell_stop_loss = current_mc < stop_loss_threshold;
+
+            // Check take profit: current_mc >= take_profit_mc_usd
+            let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+
+            if should_sell_stop_loss || should_sell_take_profit {
+                let reason = if should_sell_stop_loss {
+                    "stop_loss"
+                } else {
+                    "take_profit"
+                };
+
+                println!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
+                         reason, position.mint, entry_mc, current_mc);
+
+                // Clone wallet for execute_sell
+                let wallet_bytes = wallet.to_bytes();
+                let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                    Ok(kp) => kp,
+                    Err(e) => {
+                        eprintln!("Failed to clone wallet: {}", e);
+                        continue;
+                    }
+                };
+
+                // Get config clone to avoid holding lock across await
+                let config_clone = {
+                    let cfg = config.read().unwrap();
+                    (*cfg).clone()
+                };
+
+                // Execute sell
+                match execute_sell(
+                    &config_clone,
+                    &wallet_clone,
+                    &rpc,
+                    &tracker,
+                    &position,
+                    reason,
+                    &event_tx,
+                ).await {
+                    Ok(sig) => {
+                        println!("✅ Auto-sell executed: {} - {}", position.mint, sig);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Auto-sell failed for {}: {}", position.mint, e);
+                    }
+                }
+            }
+        }
+
+        // Wait before next check
+        tokio::time::sleep(Duration::from_secs(monitor_interval)).await;
+    }
+}
+
+/// Execute sell transaction for a position
+async fn execute_sell(
+    config: &Config,
+    wallet: &Keypair,
+    rpc: &RpcClient,
+    tracker: &Arc<std::sync::RwLock<Option<TokenTracker>>>,
+    position: &TokenBuy,
+    reason: &str, // "stop_loss" or "take_profit"
+    event_tx: &mpsc::UnboundedSender<TokenEvent>,
+) -> Result<String> {
+    let mint = Pubkey::from_str(&position.mint)?;
+    let user_token_account = Pubkey::from_str(
+        position.user_token_account.as_ref()
+            .ok_or_else(|| anyhow!("User token account not found"))?
+    )?;
+    let bonding_curve = Pubkey::from_str(
+        position.bonding_curve.as_ref()
+            .ok_or_else(|| anyhow!("Bonding curve not found"))?
+    )?;
+
+    // Fetch token balance
+    let account_data = rpc.get_account_data(&user_token_account).await?;
+    let token_account = TokenAccount::unpack(&account_data)?;
+    let token_balance = token_account.amount;
+
+    if token_balance == 0 {
+        return Err(anyhow!("Token balance is 0"));
+    }
+
+    // Calculate sell amount based on sell_percent
+    let sell_amount = (token_balance as f64 * (config.sell_percent / 100.0)) as u64;
+    if sell_amount == 0 {
+        return Err(anyhow!("Sell amount is 0"));
+    }
+
+    // Reconstruct PumpBuyAccounts from position
+    let associated_bonding_curve = get_associated_token_address(
+        &bonding_curve,
+        &mint,
+    );
+    
+    let creator = Pubkey::from_str(&position.creator)?;
+    
+    let accounts = PumpBuyAccounts {
+        mint,
+        bonding_curve,
+        associated_bonding_curve,
+        creator_vault: creator, // Simplified - creator_vault is typically the creator
+        event_authority: config.event_authority,
+        global_volume: config.global_volume,
+        global: config.global_account,
+        fee_recipient: config.fee_recipient,
+        fee_config: config.fee_config,
+        fee_program: config.fee_program,
+        dev_buy_sol: 0,
+        creator,
+    };
+
+    let user_wallet = wallet.pubkey();
+
+    // Build sell instruction
+    let sell_ix = build_sell_instruction(
+        &accounts,
+        &user_wallet,
+        &user_token_account,
+        sell_amount,
+    ).await?;
+
+    // Build transaction
+    let recent_blockhash = rpc.get_latest_blockhash().await?;
+    let instructions = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
+        ComputeBudgetInstruction::set_compute_unit_price(config.priority_fee),
+        sell_ix,
+    ];
+
+    let msg = v0::Message::try_compile(
+        &user_wallet,
+        &instructions,
+        &[],
+        recent_blockhash,
+    )?;
+
+    let tx = VersionedTransaction::try_new(
+        VersionedMessage::V0(msg),
+        &[wallet],
+    )?;
+
+    // Send transaction using same submission mode as buy
+    let tx_sig = match config.submission_mode {
+        crate::config::SubmissionMode::Helius => {
+            send_helius_transaction(tx).await?
+        }
+        crate::config::SubmissionMode::Jito => {
+            let bundle_id = send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?;
+            return Ok(format!("Jito: {}", bundle_id));
+        }
+        crate::config::SubmissionMode::Rpc => {
+            rpc.send_transaction(&tx).await?.to_string()
+        }
+        crate::config::SubmissionMode::All => {
+            // Try all methods
+            let tx_helius = tx.clone();
+            let tx_jito = tx.clone();
+            let tx_rpc = tx.clone();
+            let wallet_bytes = wallet.to_bytes();
+            let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
+            let jito_tip = config.jito_tip;
+            let rpc_url = config.rpc_url.clone();
+
+            let helius_task = tokio::spawn(async move {
+                send_helius_transaction(tx_helius).await
+            });
+            let jito_task = tokio::spawn(async move {
+                send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await
+            });
+            let rpc_task = tokio::spawn(async move {
+                let rpc_client = RpcClient::new(rpc_url);
+                rpc_client.send_transaction(&tx_rpc).await
+            });
+
+            tokio::select! {
+                res = helius_task => {
+                    match res {
+                        Ok(Ok(sig)) => sig,
+                        _ => return Err(anyhow!("All submission methods failed")),
+                    }
+                }
+                res = jito_task => {
+                    match res {
+                        Ok(Ok(bundle_id)) => return Ok(format!("Jito: {}", bundle_id)),
+                        _ => return Err(anyhow!("All submission methods failed")),
+                    }
+                }
+                res = rpc_task => {
+                    match res {
+                        Ok(Ok(sig)) => sig.to_string(),
+                        _ => return Err(anyhow!("All submission methods failed")),
+                    }
+                }
+            }
+        }
+    };
+
+    let signature = tx_sig.to_string();
+
+    // Calculate PnL (simplified - would need current token price)
+    // For now, we'll set PnL to None as we'd need to fetch the actual SOL received from the sell
+    let pnl: Option<f64> = None;
+
+    // Update tracker
+    if let Ok(mut tracker_opt) = tracker.write() {
+        if let Some(tracker) = tracker_opt.as_mut() {
+            if let Err(e) = tracker.mark_as_sold(&position.mint, signature.clone()) {
+                eprintln!("Failed to mark position as sold: {}", e);
+            }
+        }
+    }
+
+    // Send event
+    let _ = event_tx.send(TokenEvent::Sold {
+        mint: position.mint.clone(),
+        signature: signature.clone(),
+        reason: reason.to_string(),
+        pnl,
+        timestamp: Utc::now(),
+    });
+
+    Ok(signature)
 }
 

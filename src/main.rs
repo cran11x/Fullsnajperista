@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod bot_core;
 pub mod buy;
+pub mod sell;
 pub mod config;
 pub mod constants;
 pub mod das_check;

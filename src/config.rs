@@ -38,6 +38,11 @@ pub struct Config {
     pub global_volume: Pubkey,
     pub fee_config: Pubkey,
     pub fee_program: Pubkey,
+    pub enable_auto_sell: bool,
+    pub stop_loss_percent: f64,
+    pub take_profit_mc_usd: f64,
+    pub sell_percent: f64,
+    pub monitor_interval_sec: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +224,32 @@ impl Config {
                 }
             });
 
+        // Auto-sell configuration
+        let enable_auto_sell = std::env::var("ENABLE_AUTO_SELL")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let stop_loss_percent = std::env::var("STOP_LOSS_PERCENT")
+            .unwrap_or_else(|_| "30.0".to_string())
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid STOP_LOSS_PERCENT"))?;
+
+        let take_profit_mc_usd = std::env::var("TAKE_PROFIT_MC_USD")
+            .unwrap_or_else(|_| "24000.0".to_string())
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_USD"))?;
+
+        let sell_percent = std::env::var("SELL_PERCENT")
+            .unwrap_or_else(|_| "100.0".to_string())
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid SELL_PERCENT"))?;
+
+        let monitor_interval_sec = std::env::var("MONITOR_INTERVAL_SEC")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse::<u64>()
+            .map_err(|_| anyhow!("Invalid MONITOR_INTERVAL_SEC"))?;
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -279,6 +310,11 @@ impl Config {
             global_volume,
             fee_config,
             fee_program,
+            enable_auto_sell,
+            stop_loss_percent,
+            take_profit_mc_usd,
+            sell_percent,
+            monitor_interval_sec,
         };
 
         config.validate()?;
@@ -305,6 +341,23 @@ impl Config {
 
         if self.compute_units == 0 {
             return Err(anyhow!("COMPUTE_UNITS must be > 0"));
+        }
+
+        // Validate auto-sell options
+        if self.stop_loss_percent < 0.0 || self.stop_loss_percent > 100.0 {
+            return Err(anyhow!("STOP_LOSS_PERCENT must be between 0 and 100"));
+        }
+
+        if self.take_profit_mc_usd <= 0.0 {
+            return Err(anyhow!("TAKE_PROFIT_MC_USD must be > 0"));
+        }
+
+        if self.sell_percent <= 0.0 || self.sell_percent > 100.0 {
+            return Err(anyhow!("SELL_PERCENT must be between 0 and 100"));
+        }
+
+        if self.monitor_interval_sec == 0 {
+            return Err(anyhow!("MONITOR_INTERVAL_SEC must be > 0"));
         }
 
         Ok(())
@@ -360,6 +413,11 @@ impl Default for Config {
             global_volume: Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y").unwrap(),
             fee_config: Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt").unwrap(),
             fee_program: Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ").unwrap(),
+            enable_auto_sell: false,
+            stop_loss_percent: 30.0,
+            take_profit_mc_usd: 24_000.0,
+            sell_percent: 100.0,
+            monitor_interval_sec: 5,
         }
     }
 }

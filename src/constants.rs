@@ -10,6 +10,9 @@ pub const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 /// Buy instruction discriminator
 pub const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 
+/// Sell instruction discriminator
+pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0x57, 0x77, 0x35, 0x8a, 0x92];
+
 /// Jito tip accounts for MEV protection
 pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
     "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
@@ -80,6 +83,11 @@ mod tests {
     #[test]
     fn test_buy_discriminator_length() {
         assert_eq!(BUY_DISCRIMINATOR.len(), 8);
+    }
+
+    #[test]
+    fn test_sell_discriminator_length() {
+        assert_eq!(SELL_DISCRIMINATOR.len(), 8);
     }
 
     #[test]

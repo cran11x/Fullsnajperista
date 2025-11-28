@@ -20,6 +20,13 @@ pub enum TokenEvent {
         mc: Option<f64>,
         timestamp: DateTime<Utc>,
     },
+    Sold {
+        mint: String,
+        signature: String,
+        reason: String,
+        pnl: Option<f64>,
+        timestamp: DateTime<Utc>,
+    },
     Error {
         message: String,
         timestamp: DateTime<Utc>,
@@ -51,6 +58,16 @@ impl TokenEvent {
                 let mc_str = mc.map(|m| format!(" (MC: ${:.0})", m)).unwrap_or_default();
                 format!("✅ Bought: {} {} - {}", format_address(&mint), mc_str, format_address(&signature))
             }
+            TokenEvent::Sold { mint, signature, reason, pnl, .. } => {
+                let pnl_str = pnl.map(|p| {
+                    if p >= 0.0 {
+                        format!(" (+{:.4} SOL)", p)
+                    } else {
+                        format!(" ({:.4} SOL)", p)
+                    }
+                }).unwrap_or_default();
+                format!("💰 Sold: {} ({}){} - {}", format_address(&mint), reason, pnl_str, format_address(&signature))
+            }
             TokenEvent::Error { message, .. } => {
                 format!("❌ Error: {}", message)
             }
@@ -65,6 +82,7 @@ impl TokenEvent {
             TokenEvent::Detected { timestamp, .. } => *timestamp,
             TokenEvent::Filtered { timestamp, .. } => *timestamp,
             TokenEvent::Bought { timestamp, .. } => *timestamp,
+            TokenEvent::Sold { timestamp, .. } => *timestamp,
             TokenEvent::Error { timestamp, .. } => *timestamp,
             TokenEvent::Info { timestamp, .. } => *timestamp,
         }

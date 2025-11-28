@@ -28,6 +28,13 @@ pub struct TokenBuy {
     pub mc_at_detection_usd: Option<f64>,  // MC when first detected
     pub mc_at_entry_usd: Option<f64>,      // MC after TX confirmed (real entry)
     pub token_price_sol: Option<f64>,      // Token price in SOL at detection
+
+    // 🆕 NEW: Position tracking for auto-sell
+    pub token_amount: Option<u64>,         // Amount of tokens bought
+    pub user_token_account: Option<String>, // Associated token account address
+    pub bonding_curve: Option<String>,      // Bonding curve address for monitoring
+    pub sold: bool,                         // Flag if position is sold
+    pub sell_signature: Option<String>,     // Sell transaction signature if sold
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,6 +238,27 @@ impl TokenTracker {
     pub fn total_buys(&self) -> u32 {
         self.stats.total_buys
     }
+
+    /// Get active positions (not sold)
+    pub fn get_active_positions(&self) -> Vec<TokenBuy> {
+        self.stats.buys.iter()
+            .filter(|buy| !buy.sold && buy.bonding_curve.is_some() && buy.user_token_account.is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// Mark a position as sold
+    pub fn mark_as_sold(&mut self, mint: &str, sell_signature: String) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.sold = true;
+            buy.sell_signature = Some(sell_signature);
+            // Save JSON after update
+            self.save_json()?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +292,11 @@ mod tests {
             mc_at_detection_usd: Some(4800.0),
             mc_at_entry_usd: Some(5000.0),
             token_price_sol: Some(0.00005),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -315,6 +348,11 @@ mod tests {
             mc_at_detection_usd: Some(4800.0),
             mc_at_entry_usd: Some(5000.0),
             token_price_sol: Some(0.00005),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -380,6 +418,11 @@ mod tests {
             mc_at_detection_usd: Some(4000.0),
             mc_at_entry_usd: Some(4500.0),
             token_price_sol: Some(0.00004),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         let buy2 = TokenBuy {
@@ -399,6 +442,11 @@ mod tests {
             mc_at_detection_usd: Some(6000.0),
             mc_at_entry_usd: Some(6500.0),
             token_price_sol: Some(0.00006),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -431,6 +479,11 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             token_price_sol: None,
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -462,6 +515,11 @@ mod tests {
             mc_at_detection_usd: Some(4800.0),
             mc_at_entry_usd: Some(5000.0),
             token_price_sol: Some(0.00005),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());

@@ -52,6 +52,11 @@ struct SettingsState {
     sol_price_str: Option<String>,
     compute_units_str: Option<String>,
     jito_tip_str: Option<String>,
+    // Auto-sell settings
+    stop_loss_percent_str: Option<String>,
+    take_profit_mc_str: Option<String>,
+    sell_percent_str: Option<String>,
+    monitor_interval_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -147,6 +152,30 @@ impl SettingsState {
                     self.jito_tip_str = Some(default);
                 }
                 self.jito_tip_str.as_mut().unwrap()
+            }
+            "stop_loss_percent" => {
+                if self.stop_loss_percent_str.is_none() {
+                    self.stop_loss_percent_str = Some(default);
+                }
+                self.stop_loss_percent_str.as_mut().unwrap()
+            }
+            "take_profit_mc" => {
+                if self.take_profit_mc_str.is_none() {
+                    self.take_profit_mc_str = Some(default);
+                }
+                self.take_profit_mc_str.as_mut().unwrap()
+            }
+            "sell_percent" => {
+                if self.sell_percent_str.is_none() {
+                    self.sell_percent_str = Some(default);
+                }
+                self.sell_percent_str.as_mut().unwrap()
+            }
+            "monitor_interval" => {
+                if self.monitor_interval_str.is_none() {
+                    self.monitor_interval_str = Some(default);
+                }
+                self.monitor_interval_str.as_mut().unwrap()
             }
             _ => panic!("Unknown field id: {}", id),
         }
@@ -440,6 +469,120 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(10.0);
     
+    // Auto-Sell Settings
+    ui.group(|ui| {
+        ui.set_min_height(200.0);
+        ui.heading(egui::RichText::new("💰 Auto-Sell Settings")
+            .size(16.0)
+            .color(egui::Color32::from_rgb(255, 215, 0)));
+        ui.add_space(12.0);
+        
+        ui.label(egui::RichText::new("Automatically sell positions when conditions are met")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(150, 150, 160)));
+        ui.add_space(8.0);
+        
+        // Enable Auto-Sell checkbox
+        if ui.checkbox(&mut config_clone.enable_auto_sell, "Enable Auto-Sell").changed() {
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
+        
+        if config_clone.enable_auto_sell {
+            ui.add_space(8.0);
+            
+            // Stop Loss Percent
+            ui.horizontal(|ui| {
+                ui.label("Stop Loss (%):");
+                let stop_loss_str = state.get_or_init("stop_loss_percent", config_clone.stop_loss_percent.to_string());
+                if ui.text_edit_singleline(stop_loss_str).changed() {
+                    if let Ok(val) = stop_loss_str.parse::<f64>() {
+                        if val >= 0.0 && val <= 100.0 {
+                            config_clone.stop_loss_percent = val;
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new("(Sell when MC drops by this % from entry)")
+                    .size(10.0)
+                    .color(egui::Color32::from_rgb(150, 150, 160)));
+            });
+            
+            // Take Profit MC
+            ui.horizontal(|ui| {
+                ui.label("Take Profit MC (USD):");
+                let take_profit_str = state.get_or_init("take_profit_mc", config_clone.take_profit_mc_usd.to_string());
+                if ui.text_edit_singleline(take_profit_str).changed() {
+                    if let Ok(val) = take_profit_str.parse::<f64>() {
+                        if val > 0.0 {
+                            config_clone.take_profit_mc_usd = val;
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new("(Sell when MC reaches this value)")
+                    .size(10.0)
+                    .color(egui::Color32::from_rgb(150, 150, 160)));
+            });
+            
+            // Sell Percent
+            ui.horizontal(|ui| {
+                ui.label("Sell Percent (%):");
+                let sell_percent_str = state.get_or_init("sell_percent", config_clone.sell_percent.to_string());
+                if ui.text_edit_singleline(sell_percent_str).changed() {
+                    if let Ok(val) = sell_percent_str.parse::<f64>() {
+                        if val > 0.0 && val <= 100.0 {
+                            config_clone.sell_percent = val;
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new("(% of position to sell)")
+                    .size(10.0)
+                    .color(egui::Color32::from_rgb(150, 150, 160)));
+            });
+            
+            // Monitor Interval
+            ui.horizontal(|ui| {
+                ui.label("Monitor Interval (sec):");
+                let monitor_str = state.get_or_init("monitor_interval", config_clone.monitor_interval_sec.to_string());
+                if ui.text_edit_singleline(monitor_str).changed() {
+                    if let Ok(val) = monitor_str.parse::<u64>() {
+                        if val > 0 {
+                            config_clone.monitor_interval_sec = val;
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new("(How often to check positions)")
+                    .size(10.0)
+                    .color(egui::Color32::from_rgb(150, 150, 160)));
+            });
+            
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("ℹ️  Auto-sell will trigger when:")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(150, 200, 255)));
+            ui.label(egui::RichText::new(format!("  • Market cap drops {}% from entry (Stop Loss)", config_clone.stop_loss_percent))
+                .size(10.0)
+                .color(egui::Color32::from_rgb(200, 200, 220)));
+            ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
+                .size(10.0)
+                .color(egui::Color32::from_rgb(200, 200, 220)));
+        } else {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("⚠️  Auto-sell is disabled")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(255, 200, 100)));
+        }
+    });
+    
+    ui.add_space(10.0);
+    
     // Target mint address (single token mode)
     ui.group(|ui| {
         ui.set_min_height(100.0);
@@ -728,6 +871,34 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if let Some(jito_tip_str) = &state_clone.jito_tip_str {
                 if let Ok(val) = jito_tip_str.parse::<f64>() {
                     config_clone.jito_tip = (val * 1e9) as u64;
+                }
+            }
+            if let Some(stop_loss_str) = &state_clone.stop_loss_percent_str {
+                if let Ok(val) = stop_loss_str.parse::<f64>() {
+                    if val >= 0.0 && val <= 100.0 {
+                        config_clone.stop_loss_percent = val;
+                    }
+                }
+            }
+            if let Some(take_profit_str) = &state_clone.take_profit_mc_str {
+                if let Ok(val) = take_profit_str.parse::<f64>() {
+                    if val > 0.0 {
+                        config_clone.take_profit_mc_usd = val;
+                    }
+                }
+            }
+            if let Some(sell_percent_str) = &state_clone.sell_percent_str {
+                if let Ok(val) = sell_percent_str.parse::<f64>() {
+                    if val > 0.0 && val <= 100.0 {
+                        config_clone.sell_percent = val;
+                    }
+                }
+            }
+            if let Some(monitor_interval_str) = &state_clone.monitor_interval_str {
+                if let Ok(val) = monitor_interval_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.monitor_interval_sec = val;
+                    }
                 }
             }
             
