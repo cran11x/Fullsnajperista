@@ -57,6 +57,10 @@ struct SettingsState {
     take_profit_mc_str: Option<String>,
     sell_percent_str: Option<String>,
     monitor_interval_str: Option<String>,
+    // Blacklist/Whitelist
+    blacklisted_tokens_str: Option<String>,
+    blacklisted_creators_str: Option<String>,
+    whitelisted_tokens_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -176,6 +180,24 @@ impl SettingsState {
                     self.monitor_interval_str = Some(default);
                 }
                 self.monitor_interval_str.as_mut().unwrap()
+            }
+            "blacklisted_tokens" => {
+                if self.blacklisted_tokens_str.is_none() {
+                    self.blacklisted_tokens_str = Some(default);
+                }
+                self.blacklisted_tokens_str.as_mut().unwrap()
+            }
+            "blacklisted_creators" => {
+                if self.blacklisted_creators_str.is_none() {
+                    self.blacklisted_creators_str = Some(default);
+                }
+                self.blacklisted_creators_str.as_mut().unwrap()
+            }
+            "whitelisted_tokens" => {
+                if self.whitelisted_tokens_str.is_none() {
+                    self.whitelisted_tokens_str = Some(default);
+                }
+                self.whitelisted_tokens_str.as_mut().unwrap()
             }
             _ => panic!("Unknown field id: {}", id),
         }
@@ -492,6 +514,22 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
+            let checkbox_response = ui.checkbox(&mut config_clone.enable_dynamic_priority_fee, 
+                egui::RichText::new("Enable Dynamic Priority Fee")
+                    .size(13.0)
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+            if config_clone.enable_dynamic_priority_fee {
+                ui.label(egui::RichText::new("(Fee calculated from network congestion)")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(180, 200, 220)));
+            }
+            if checkbox_response.changed() {
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Compute Units:")
                 .size(13.0)
                 .strong()
@@ -697,6 +735,134 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .size(12.0)
                 .color(egui::Color32::from_rgb(255, 210, 110)));
         }
+    });
+    
+    ui.add_space(10.0);
+    
+    // Blacklist/Whitelist Configuration
+    ui.group(|ui| {
+        ui.set_min_height(200.0);
+        ui.heading(egui::RichText::new("🚫 Blacklist / ✅ Whitelist")
+            .size(18.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 120, 120)));
+        ui.add_space(14.0);
+        
+        ui.label(egui::RichText::new("Enter comma-separated base58 addresses")
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(10.0);
+        
+        // Blacklisted Tokens
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Blacklisted Tokens:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let blacklist_tokens = config_clone.blacklisted_tokens.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let blacklist_str = state.get_or_init("blacklisted_tokens", blacklist_tokens);
+            let response = ui.add(egui::TextEdit::multiline(blacklist_str)
+                    .desired_width(450.0)
+                    .desired_rows(2));
+            if response.changed() {
+                let tokens: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = blacklist_str
+                    .split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            solana_sdk::pubkey::Pubkey::from_str(trimmed).ok()
+                        }
+                    })
+                    .collect();
+                config_clone.blacklisted_tokens = tokens;
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        ui.add_space(8.0);
+        
+        // Blacklisted Creators
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Blacklisted Creators:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let blacklist_creators = config_clone.blacklisted_creators.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let creators_str = state.get_or_init("blacklisted_creators", blacklist_creators);
+            let response = ui.add(egui::TextEdit::multiline(creators_str)
+                    .desired_width(450.0)
+                    .desired_rows(2));
+            if response.changed() {
+                let creators: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = creators_str
+                    .split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            solana_sdk::pubkey::Pubkey::from_str(trimmed).ok()
+                        }
+                    })
+                    .collect();
+                config_clone.blacklisted_creators = creators;
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        ui.add_space(8.0);
+        
+        // Whitelisted Tokens
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Whitelisted Tokens:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let whitelist_tokens = config_clone.whitelisted_tokens.as_ref()
+                .map(|set| set.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","))
+                .unwrap_or_else(|| String::new());
+            let whitelist_str = state.get_or_init("whitelisted_tokens", whitelist_tokens);
+            let response = ui.add(egui::TextEdit::multiline(whitelist_str)
+                    .desired_width(450.0)
+                    .desired_rows(2));
+            if response.changed() {
+                let tokens: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = whitelist_str
+                    .split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            solana_sdk::pubkey::Pubkey::from_str(trimmed).ok()
+                        }
+                    })
+                    .collect();
+                config_clone.whitelisted_tokens = if tokens.is_empty() {
+                    None
+                } else {
+                    Some(tokens)
+                };
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+        });
+        
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("ℹ️  Leave whitelist empty to allow all tokens")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(160, 170, 185)));
     });
     
     ui.add_space(10.0);

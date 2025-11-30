@@ -27,6 +27,7 @@ pub struct HealthMonitor {
     consecutive_ws_failures: u32,
     last_rpc_check: Option<Instant>,
     last_ws_check: Option<Instant>,
+    last_message_received: Option<Instant>,
 }
 
 impl HealthMonitor {
@@ -38,6 +39,7 @@ impl HealthMonitor {
             consecutive_ws_failures: 0,
             last_rpc_check: None,
             last_ws_check: None,
+            last_message_received: None,
         }
     }
 
@@ -117,6 +119,32 @@ impl HealthMonitor {
     /// Get time since last WS check
     pub fn time_since_ws_check(&self) -> Option<Duration> {
         self.last_ws_check.map(|t| t.elapsed())
+    }
+
+    /// Record that a message was received
+    pub fn record_message_received(&mut self) {
+        self.last_message_received = Some(Instant::now());
+    }
+
+    /// Check if WebSocket is receiving messages (no messages in X seconds = unhealthy)
+    pub fn check_message_activity(&mut self, max_silence_secs: u64) -> bool {
+        if let Some(last_msg) = self.last_message_received {
+            let silence = last_msg.elapsed();
+            if silence > Duration::from_secs(max_silence_secs) {
+                // No messages received in too long - connection might be dead
+                self.ws_status = HealthStatus::Unhealthy;
+                return false;
+            }
+        } else {
+            // Never received a message - might be initial connection
+            // Don't mark as unhealthy yet
+        }
+        true
+    }
+
+    /// Get time since last message received
+    pub fn time_since_last_message(&self) -> Option<Duration> {
+        self.last_message_received.map(|t| t.elapsed())
     }
 }
 

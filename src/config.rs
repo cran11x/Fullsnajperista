@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
+use std::collections::HashSet;
 
 use crate::constants::PUMP_PROGRAM_ID;
 
@@ -17,6 +18,7 @@ pub struct Config {
     pub sol_price_usd: f64,
     pub buy_amount_sol: f64,
     pub priority_fee: u64,
+    pub enable_dynamic_priority_fee: bool,
     pub compute_units: u32,
     pub one_shot_mode: bool,
     pub submission_mode: SubmissionMode,
@@ -43,6 +45,9 @@ pub struct Config {
     pub take_profit_mc_usd: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
+    pub blacklisted_tokens: HashSet<Pubkey>,
+    pub blacklisted_creators: HashSet<Pubkey>,
+    pub whitelisted_tokens: Option<HashSet<Pubkey>>, // None = svi dozvoljeni
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +253,60 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| anyhow!("Invalid MONITOR_INTERVAL_SEC"))?;
 
+        let enable_dynamic_priority_fee = std::env::var("ENABLE_DYNAMIC_PRIORITY_FEE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        // Parse blacklisted tokens (comma-separated base58 addresses)
+        let blacklisted_tokens = std::env::var("BLACKLISTED_TOKENS")
+            .unwrap_or_else(|_| String::new())
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Pubkey::from_str(trimmed).ok()
+                }
+            })
+            .collect();
+
+        // Parse blacklisted creators (comma-separated base58 addresses)
+        let blacklisted_creators = std::env::var("BLACKLISTED_CREATORS")
+            .unwrap_or_else(|_| String::new())
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Pubkey::from_str(trimmed).ok()
+                }
+            })
+            .collect();
+
+        // Parse whitelisted tokens (comma-separated base58 addresses, None = all allowed)
+        let whitelisted_tokens = std::env::var("WHITELISTED_TOKENS")
+            .ok()
+            .and_then(|s| {
+                let tokens: HashSet<Pubkey> = s.split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Pubkey::from_str(trimmed).ok()
+                        }
+                    })
+                    .collect();
+                if tokens.is_empty() {
+                    None
+                } else {
+                    Some(tokens)
+                }
+            });
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -287,6 +346,7 @@ impl Config {
             sol_price_usd,
             buy_amount_sol,
             priority_fee,
+            enable_dynamic_priority_fee,
             compute_units,
             one_shot_mode,
             submission_mode,
@@ -313,6 +373,9 @@ impl Config {
             take_profit_mc_usd,
             sell_percent,
             monitor_interval_sec,
+            blacklisted_tokens,
+            blacklisted_creators,
+            whitelisted_tokens,
         };
 
         config.validate()?;
@@ -379,6 +442,66 @@ impl Config {
     pub fn max_dev_buy_sol(&self) -> f64 {
         self.max_dev_buy_usd / self.sol_price_usd
     }
+
+    /// Calculate dynamic priority fee based on recent network fees
+    /// Returns the 75th percentile of recent prioritization fees, or falls back to configured fee
+    pub async fn calculate_dynamic_priority_fee(&self, _rpc: &RpcClient) -> Result<u64> {
+        use serde_json::json;
+        use crate::utils::get_shared_http_client;
+
+        // Use getRecentPrioritizationFees RPC method
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getRecentPrioritizationFees",
+            "params": []
+        });
+
+        let client = get_shared_http_client();
+        let response: serde_json::Value = client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Failed to fetch priority fees: {}", e))?
+            .json()
+            .await
+            .map_err(|e| anyhow!("Failed to parse priority fees response: {}", e))?;
+
+        // Parse response: { "result": [{ "prioritizationFee": 1234 }, ...] }
+        if let Some(result) = response["result"].as_array() {
+            if result.is_empty() {
+                // No recent fees, use configured fee
+                return Ok(self.priority_fee);
+            }
+
+            // Extract fees and calculate percentile
+            let mut fees: Vec<u64> = result
+                .iter()
+                .filter_map(|item| item["prioritizationFee"].as_u64())
+                .collect();
+
+            if fees.is_empty() {
+                return Ok(self.priority_fee);
+            }
+
+            // Sort fees
+            fees.sort();
+
+            // Calculate 75th percentile (or use max if we want to be more aggressive)
+            let percentile_index = (fees.len() as f64 * 0.75) as usize;
+            let calculated_fee = fees[percentile_index.min(fees.len() - 1)];
+
+            // Add 10% buffer to ensure transaction goes through
+            let fee_with_buffer = (calculated_fee as f64 * 1.1) as u64;
+
+            // Ensure minimum fee (at least the configured fee)
+            Ok(fee_with_buffer.max(self.priority_fee))
+        } else {
+            // Invalid response, use configured fee
+            Ok(self.priority_fee)
+        }
+    }
 }
 
 impl Default for Config {
@@ -390,6 +513,7 @@ impl Default for Config {
             sol_price_usd: 137.0,
             buy_amount_sol: 0.015,
             priority_fee: 11_000_000,
+            enable_dynamic_priority_fee: false,
             compute_units: 200_000,
             one_shot_mode: true,
             submission_mode: SubmissionMode::Helius,
@@ -416,6 +540,9 @@ impl Default for Config {
             take_profit_mc_usd: 24_000.0,
             sell_percent: 100.0,
             monitor_interval_sec: 5,
+            blacklisted_tokens: HashSet::new(),
+            blacklisted_creators: HashSet::new(),
+            whitelisted_tokens: None,
         }
     }
 }

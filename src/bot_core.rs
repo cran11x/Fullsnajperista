@@ -23,7 +23,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 use futures_util::{StreamExt, SinkExt};
 use rand::seq::SliceRandom;
 use chrono::Utc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -40,6 +40,7 @@ use crate::constants::PUMP_PROGRAM_ID;
 use crate::metrics::{SharedMetrics, FilterReason, SubmissionMethod, ErrorType};
 use crate::gui::{TokenEvent, BotControl};
 use crate::sell::build_sell_instruction;
+use crate::blockhash_cache::get_cached_blockhash;
 use spl_token::state::Account as TokenAccount;
 use solana_sdk::program_pack::Pack;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -135,12 +136,12 @@ pub async fn run_bot(
         
         reconnect_count += 1;
         
+        // Exponential backoff: 0s, 1s, 2s, 4s, 8s, 16s, max 60s
         let reconnect_delay = if reconnect_count == 1 {
             Duration::from_secs(0)
-        } else if reconnect_count < 5 {
-            Duration::from_secs(5)
         } else {
-            Duration::from_secs(15)
+            let delay_secs = (1u64 << (reconnect_count - 2)).min(60);
+            Duration::from_secs(delay_secs)
         };
         
         if reconnect_delay.as_secs() > 0 {
@@ -260,7 +261,24 @@ async fn listen_websocket_once(
     });
     
     let mut message_count = 0;
+    let mut last_health_check = Instant::now();
+    const HEALTH_CHECK_INTERVAL_SECS: u64 = 30; // Check every 30 seconds
+    const MAX_SILENCE_SECS: u64 = 60; // Reconnect if no messages for 60 seconds
+    
     loop {
+        // Periodic health check - verify we're still receiving messages
+        if last_health_check.elapsed() > Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS) {
+            let mut monitor = health_monitor.lock().unwrap();
+            if !monitor.check_message_activity(MAX_SILENCE_SECS) {
+                let _ = event_tx.send(TokenEvent::Error {
+                    message: format!("WebSocket connection appears dead (no messages for {}s), reconnecting...", MAX_SILENCE_SECS),
+                    timestamp: Utc::now(),
+                });
+                return Err(anyhow!("WebSocket connection unhealthy - no messages received"));
+            }
+            last_health_check = Instant::now();
+        }
+        
         // Check for Stop signal before waiting for WebSocket message
         if let Ok(control) = control_rx.try_recv() {
             if matches!(control, BotControl::Stop) {
@@ -296,6 +314,13 @@ async fn listen_websocket_once(
                         let msg = msg?;
         // Log every 100 messages to show activity
         message_count += 1;
+        
+        // Record message received for health monitoring
+        {
+            let mut monitor = health_monitor.lock().unwrap();
+            monitor.record_message_received();
+        }
+        
         if message_count % 100 == 0 {
             let _ = event_tx.send(TokenEvent::Info {
                 message: format!("Received {} WebSocket messages (still listening)...", message_count),
@@ -448,6 +473,44 @@ async fn listen_websocket_once(
                 });
                 continue;
             }
+            
+            // Blacklist/Whitelist check
+            {
+                let config_guard = config_arc.read().unwrap();
+                
+                // Check if token is blacklisted
+                if config_guard.blacklisted_tokens.contains(&mint_pubkey) {
+                    let _ = event_tx.send(TokenEvent::Filtered {
+                        mint: mint.clone(),
+                        reason: "Token is blacklisted".to_string(),
+                        timestamp: Utc::now(),
+                    });
+                    continue;
+                }
+                
+                // Check if creator is blacklisted
+                if config_guard.blacklisted_creators.contains(&accounts.creator) {
+                    let _ = event_tx.send(TokenEvent::Filtered {
+                        mint: mint.clone(),
+                        reason: format!("Creator {} is blacklisted", accounts.creator),
+                        timestamp: Utc::now(),
+                    });
+                    continue;
+                }
+                
+                // Check whitelist (if set, token must be on whitelist)
+                if let Some(ref whitelist) = config_guard.whitelisted_tokens {
+                    if !whitelist.contains(&mint_pubkey) {
+                        let _ = event_tx.send(TokenEvent::Filtered {
+                            mint: mint.clone(),
+                            reason: "Token not on whitelist".to_string(),
+                            timestamp: Utc::now(),
+                        });
+                        continue;
+                    }
+                }
+            }
+            
             match process_and_buy(
                 config,
                 wallet,
@@ -658,14 +721,16 @@ async fn process_and_buy(
         config.sol_price_usd,
     );
     
-    // Await all futures - they run concurrently due to Box::pin
-    let das_result = das_fut.await;
-    let mc_result = mc_fut.await;
-    let socials_result = socials_fut.await;
+    // ⚡ PARALLEL: Await all futures simultaneously using tokio::join!
+    let (das_result, mc_result, socials_result) = tokio::join!(
+        das_fut,
+        mc_fut,
+        socials_fut
+    );
     
     // Filter #2: Creator Token Count
     eprintln!("  [2/3] Creator Token Count");
-    let (creator_count, das_check_failed) = match das_result {
+    let (creator_count, _das_check_failed) = match das_result {
         Ok(count) => {
             eprintln!("        Current:  {} tokens", count);
             eprintln!("        Required: {} - {} tokens", config.min_dev_tokens, config.max_dev_tokens);
@@ -880,12 +945,28 @@ async fn process_and_buy(
         HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap()
     )?;
     
-    // Check if ATA already exists
+    // Check if ATA already exists (could be optimized with batch call if checking multiple accounts)
     let ata_exists = rpc.get_account(&user_ata).await.is_ok();
+    
+    // Calculate priority fee (dynamic or static)
+    let priority_fee = if config.enable_dynamic_priority_fee {
+        match config.calculate_dynamic_priority_fee(rpc).await {
+            Ok(fee) => {
+                eprintln!("  💰 Dynamic priority fee: {} lamports", fee);
+                fee
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Failed to calculate dynamic fee, using static: {}", e);
+                config.priority_fee
+            }
+        }
+    } else {
+        config.priority_fee
+    };
     
     let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
-        ComputeBudgetInstruction::set_compute_unit_price(config.priority_fee),
+        ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
     ];
     
     // Create ATA instruction if needed
@@ -1064,7 +1145,7 @@ async fn process_and_buy(
     eprintln!("    [4] Jito Tip");
     eprintln!();
     
-    let recent_blockhash = rpc.get_latest_blockhash().await?;
+    let recent_blockhash = get_cached_blockhash(rpc).await?;
     
     // ========================================================================
     // SECTION 7: SEND TRANSACTION
@@ -1200,7 +1281,7 @@ async fn process_and_buy(
         rpc,
         &user_wallet,
         config.buy_amount_lamports(),
-        config.priority_fee,
+        priority_fee,
         config.jito_tip,
         &recent_blockhash,
     ).await {
@@ -1750,10 +1831,21 @@ async fn execute_sell(
     ).await?;
 
     // Build transaction
-    let recent_blockhash = rpc.get_latest_blockhash().await?;
+    let recent_blockhash = get_cached_blockhash(rpc).await?;
+    
+    // Calculate priority fee (dynamic or static) for sell transaction
+    let priority_fee = if config.enable_dynamic_priority_fee {
+        match config.calculate_dynamic_priority_fee(rpc).await {
+            Ok(fee) => fee,
+            Err(_) => config.priority_fee,
+        }
+    } else {
+        config.priority_fee
+    };
+    
     let instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
-        ComputeBudgetInstruction::set_compute_unit_price(config.priority_fee),
+        ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
         sell_ix,
     ];
 

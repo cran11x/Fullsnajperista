@@ -1,5 +1,6 @@
 // main.rs - Main entry point for Pump.fun Sniper Bot GUI
 pub mod accounts;
+pub mod blockhash_cache;
 pub mod bot_core;
 pub mod buy;
 pub mod sell;
