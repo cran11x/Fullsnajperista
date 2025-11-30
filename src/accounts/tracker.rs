@@ -62,7 +62,7 @@ impl TokenTracker {
     pub fn new() -> Result<Self> {
         // Try to find and load the latest JSON file first
         if let Ok(tracker) = Self::load_from_latest_json() {
-            eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
+            // Removed noisy log: eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
             return Ok(tracker);
         }
         
@@ -125,7 +125,7 @@ impl TokenTracker {
             .max_by_key(|(_, modified)| modified)
             .ok_or_else(|| anyhow::anyhow!("Failed to find latest JSON file"))?;
         
-        eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
+        // Removed noisy log: eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
         
         // Read and deserialize JSON
         let content = fs::read_to_string(latest_json_path)?;

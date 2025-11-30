@@ -43,6 +43,7 @@ pub enum BotControl {
     Stop,
     UpdateConfig(crate::config::Config),
     Restart,
+    ManualSell(String), // Mint address to sell
 }
 
 impl TokenEvent {

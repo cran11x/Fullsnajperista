@@ -135,6 +135,9 @@ impl GuiApp {
                         self.start_bot();
                     }
                 }
+                BotControl::ManualSell(_) => {
+                    // Forwarded to bot thread, nothing to do in GUI thread
+                }
             }
         }
     }
@@ -270,10 +273,11 @@ impl eframe::App for GuiApp {
                 
                 let tabs = [
                     (0, "📊", "Dashboard"),
-                    (1, "💰", "Recent Buys"),
-                    (2, "🔴", "Live Feed"),
-                    (3, "⏭️", "Filtered"),
-                    (4, "⚙️", "Settings"),
+                    (1, "🎯", "Positions"), // New tab
+                    (2, "💰", "Recent Buys"),
+                    (3, "🔴", "Live Feed"),
+                    (4, "⏭️", "Filtered"),
+                    (5, "⚙️", "Settings"),
                 ];
                 
                 for (idx, icon, label) in tabs.iter() {
@@ -325,10 +329,11 @@ impl eframe::App for GuiApp {
                 .show(ui, |ui| {
                 match self.selected_tab {
                     0 => tabs::dashboard::render(ui, &self.metrics),
-                    1 => tabs::buys::render(ui, &self.tracker),
-                    2 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
-                    3 => tabs::filtered::render(ui, &self.event_log),
-                    4 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
+                    1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
+                    2 => tabs::buys::render(ui, &self.tracker),
+                    3 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
+                    4 => tabs::filtered::render(ui, &self.event_log),
+                    5 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
                     _ => {}
                 }
             });

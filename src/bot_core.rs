@@ -12,6 +12,7 @@ use solana_sdk::{
 };
 use spl_associated_token_account::{
     get_associated_token_address, 
+    get_associated_token_address_with_program_id,
     instruction::{
         create_associated_token_account,
         create_associated_token_account_idempotent,
@@ -124,6 +125,9 @@ pub async fn run_bot(
                 }
                 BotControl::Start => {
                     // Already running, ignore
+                }
+                BotControl::ManualSell(_) => {
+                    // Ignore manual sell before WebSocket connection is established
                 }
             }
         }
@@ -265,6 +269,8 @@ async fn listen_websocket_once(
     const HEALTH_CHECK_INTERVAL_SECS: u64 = 30; // Check every 30 seconds
     const MAX_SILENCE_SECS: u64 = 60; // Reconnect if no messages for 60 seconds
     
+    let mut stop_buying = false; // Flag for One Shot Mode to stop buying but keep monitoring
+
     loop {
         // Periodic health check - verify we're still receiving messages
         if last_health_check.elapsed() > Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS) {
@@ -295,12 +301,89 @@ async fn listen_websocket_once(
             // Check for control messages
             control_result = control_rx.recv() => {
                 if let Some(control) = control_result {
-                    if matches!(control, BotControl::Stop) {
-                        let _ = event_tx.send(TokenEvent::Info {
-                            message: "Bot stopped by user (in WebSocket loop)".to_string(),
-                            timestamp: Utc::now(),
-                        });
-                        return Ok(true); // Signal that we stopped
+                    match control {
+                        BotControl::Stop => {
+                            let _ = event_tx.send(TokenEvent::Info {
+                                message: "Bot stopped by user (in WebSocket loop)".to_string(),
+                                timestamp: Utc::now(),
+                            });
+                            return Ok(true); // Signal that we stopped
+                        }
+                        BotControl::ManualSell(mint_to_sell) => {
+                            eprintln!("📩 Received ManualSell command for {}", mint_to_sell);
+                            let _ = event_tx.send(TokenEvent::Info {
+                                message: format!("🚨 Manual sell requested for {}", mint_to_sell),
+                                timestamp: Utc::now(),
+                            });
+                            
+                            // Find position
+                            let position_opt = if let Ok(tracker_guard) = tracker.read() {
+                                if let Some(tracker_ref) = tracker_guard.as_ref() {
+                                    tracker_ref.get_active_positions().into_iter()
+                                        .find(|p| p.mint == mint_to_sell)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            
+                            if let Some(position) = position_opt {
+                                // Clone resources for sell execution
+                                let wallet_bytes = wallet.to_bytes();
+                                let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                                    Ok(kp) => kp,
+                                    Err(e) => {
+                                        eprintln!("Failed to clone wallet for manual sell: {}", e);
+                                        continue;
+                                    }
+                                };
+                                
+                                let config_clone = {
+                                    let cfg = config_arc.read().unwrap();
+                                    (*cfg).clone()
+                                };
+                                
+                                let rpc_client = config_clone.create_rpc_client();
+                                
+                                // Execute sell in background task to not block WebSocket loop
+                                let tracker_clone = tracker.clone();
+                                let event_tx_clone = event_tx.clone();
+                                
+                                eprintln!("🚀 Spawning sell task for {}", position.mint);
+                                tokio::spawn(async move {
+                                    eprintln!("🔄 Sell task started for {}", position.mint);
+                                    match execute_sell(
+                                        &config_clone,
+                                        &wallet_clone,
+                                        &rpc_client,
+                                        &tracker_clone,
+                                        &position,
+                                        "manual_sell",
+                                        &event_tx_clone,
+                                    ).await {
+                                        Ok(sig) => {
+                                            let _ = event_tx_clone.send(TokenEvent::Info {
+                                                message: format!("✅ Manual sell executed: {}", sig),
+                                                timestamp: Utc::now(),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = event_tx_clone.send(TokenEvent::Error {
+                                                message: format!("❌ Manual sell failed: {}", e),
+                                                timestamp: Utc::now(),
+                                            });
+                                        }
+                                    }
+                                });
+                            } else {
+                                let _ = event_tx.send(TokenEvent::Error {
+                                    message: format!("Position not found for manual sell: {}", mint_to_sell),
+                                    timestamp: Utc::now(),
+                                });
+                            }
+                        }
+                        _ => {} // Ignore other messages like Start/UpdateConfig which are handled by GUI
                     }
                 } else {
                     // Channel closed
@@ -383,6 +466,14 @@ async fn listen_websocket_once(
                             timestamp: Utc::now(),
                         });
                     }
+                }
+                continue;
+            }
+            
+            // If we are in stop_buying mode (One Shot triggered), skip processing new tokens
+            if stop_buying {
+                if message_count % 50 == 0 {
+                    println!("      💤 Monitor-only mode (One Shot active) - skipping new token");
                 }
                 continue;
             }
@@ -547,13 +638,14 @@ async fn listen_websocket_once(
                         
                         // Check if one shot mode is enabled - stop bot after successful buy
                         if config.one_shot_mode {
-                            eprintln!("🎯 One Shot Mode: Buy successful, stopping bot...");
+                            eprintln!("🎯 One Shot Mode: Buy successful, entering monitor-only mode...");
                             let _ = event_tx.send(TokenEvent::Info {
-                                message: "One Shot Mode: Buy successful, stopping bot".to_string(),
+                                message: "One Shot Mode: Buy successful, stopped buying new tokens".to_string(),
                                 timestamp: Utc::now(),
                             });
-                            // Break from WebSocket loop to stop bot
-                            return Ok(true);
+                            // Instead of breaking, we set the flag to stop buying new tokens
+                            // This keeps the connection open for manual sells and monitoring
+                            stop_buying = true;
                         }
                     } else {
                         eprintln!("⚠️  Buy returned None signature - buy may not have been recorded");
@@ -576,12 +668,12 @@ async fn listen_websocket_once(
                     // In one shot mode, also stop on errors to prevent wasting credits
                     // (but not on SKIP errors which are expected filter rejections)
                     if config.one_shot_mode && !reason.contains("SKIP") {
-                        eprintln!("🎯 One Shot Mode: Processing error occurred, stopping bot to prevent wasting credits");
+                        eprintln!("🎯 One Shot Mode: Processing error occurred, entering monitor-only mode");
                         let _ = event_tx.send(TokenEvent::Info {
-                            message: "One Shot Mode: Error occurred, stopping bot".to_string(),
+                            message: "One Shot Mode: Error occurred, stopped buying new tokens".to_string(),
                             timestamp: Utc::now(),
                         });
-                        return Ok(true);
+                        stop_buying = true;
                     }
                 }
             }
@@ -1569,6 +1661,9 @@ async fn process_and_buy(
                     eprintln!("  ❌ Tracker error: {}", e);
                 } else {
                     eprintln!("  ✅ Recorded in tracker (Total buys: {})", tracker.total_buys());
+                    if let Some(mc) = mc_entry_usd {
+                        eprintln!("  📈 Entry MC: ${:.0}", mc);
+                    }
                 }
             }
         }
@@ -1692,6 +1787,8 @@ async fn monitor_positions(
             continue;
         }
 
+        eprintln!("\n📊 MONITORING POSITIONS:");
+        
         // Check each position
         for position in active_positions {
             // Skip if we don't have required data
@@ -1731,6 +1828,16 @@ async fn monitor_positions(
 
             // Check take profit: current_mc >= take_profit_mc_usd
             let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+            
+            // Calculate PnL percentage
+            let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
+            let pnl_emoji = if pnl_percent > 0.0 { "🚀" } else { "📉" };
+            
+            eprintln!("   • Token: {}...", &position.mint[0..8]);
+            eprintln!("     Current MC: ${:.0} (Entry: ${:.0})", current_mc, entry_mc);
+            eprintln!("     PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
+            eprintln!("     Stop Loss: ${:.0} (-{}%)", stop_loss_threshold, stop_loss_percent);
+            eprintln!("     Take Profit: ${:.0}", take_profit_mc_usd);
 
             if should_sell_stop_loss || should_sell_take_profit {
                 let reason = if should_sell_stop_loss {
@@ -1793,23 +1900,56 @@ async fn execute_sell(
     reason: &str, // "stop_loss" or "take_profit"
     event_tx: &mpsc::UnboundedSender<TokenEvent>,
 ) -> Result<String> {
+    eprintln!("🏗️ EXECUTE SELL CALLED for {} (reason: {})", position.mint, reason);
+    
     let mint = Pubkey::from_str(&position.mint)?;
-    let user_token_account = Pubkey::from_str(
-        position.user_token_account.as_ref()
-            .ok_or_else(|| anyhow!("User token account not found"))?
-    )?;
     let bonding_curve = Pubkey::from_str(
         position.bonding_curve.as_ref()
             .ok_or_else(|| anyhow!("Bonding curve not found"))?
     )?;
+    let user_wallet = wallet.pubkey();
+    
+    // Calculate ATA address fresh using Token 2022 Program
+    // Pump.fun uses Token 2022 (TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb)
+    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+    let user_token_account = get_associated_token_address_with_program_id(
+        &user_wallet, 
+        &mint, 
+        &token_program_2022
+    );
+    eprintln!("   🔑 ATA Address (Token2022): {}", user_token_account);
+    eprintln!("   👤 Wallet: {}", user_wallet);
+    eprintln!("   🪙 Mint: {}", mint);
 
-    // Fetch token balance
-    let account_data = rpc.get_account_data(&user_token_account).await?;
-    let token_account = TokenAccount::unpack(&account_data)?;
-    let token_balance = token_account.amount;
+    // Fetch token balance using get_token_account_balance with retries
+    eprintln!("   ⏳ Fetching token balance...");
+    let mut token_balance = 0;
+    let mut attempts = 0;
+    let max_attempts = 10; // Increased retries
+    
+    while attempts < max_attempts {
+        match rpc.get_token_account_balance(&user_token_account).await {
+            Ok(balance) => {
+                token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+                if token_balance > 0 {
+                    break;
+                }
+                eprintln!("   ⚠️  Token balance is 0, retrying ({}/{})", attempts + 1, max_attempts);
+            }
+            Err(e) => {
+                eprintln!("   ⚠️  Error getting token balance: {} (attempt {}/{})", e, attempts + 1, max_attempts);
+            }
+        }
+        attempts += 1;
+        if attempts < max_attempts {
+            tokio::time::sleep(Duration::from_secs(1)).await; // Increased delay to 1s
+        }
+    }
+    
+    eprintln!("   💰 Final Token balance: {}", token_balance);
 
     if token_balance == 0 {
-        return Err(anyhow!("Token balance is 0"));
+        return Err(anyhow!("Token balance is 0 (account empty or not found after retries)"));
     }
 
     // Calculate sell amount based on sell_percent
@@ -1845,14 +1985,17 @@ async fn execute_sell(
     let user_wallet = wallet.pubkey();
 
     // Build sell instruction
+    eprintln!("   🏗️ Building sell instruction...");
     let sell_ix = build_sell_instruction(
         &accounts,
         &user_wallet,
         &user_token_account,
         sell_amount,
     ).await?;
+    eprintln!("   ✅ Sell instruction built");
 
     // Build transaction
+    eprintln!("   🧱 Building transaction...");
     let recent_blockhash = get_cached_blockhash(rpc).await?;
     
     // Calculate priority fee (dynamic or static) for sell transaction
@@ -1884,6 +2027,7 @@ async fn execute_sell(
     )?;
 
     // Send transaction using same submission mode as buy
+    eprintln!("   🚀 Sending sell transaction via {:?}", config.submission_mode);
     let tx_sig = match config.submission_mode {
         crate::config::SubmissionMode::Helius => {
             send_helius_transaction(tx).await?
