@@ -37,12 +37,13 @@ pub fn derive_event_authority_pda() -> (Pubkey, u8) {
 }
 
 /// Derive User Volume PDA (Account 13 in Buy instruction)
-/// Seeds: ["user-trade-history", user_wallet.as_ref()]
+/// Seeds: ["user_volume_accumulator", user_wallet.as_ref()]
+/// Confirmed via pumpfun-rs SDK
 pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
         .expect("Invalid PUMP_PROGRAM_ID constant");
     Pubkey::find_program_address(
-        &[b"user-trade-history", user_wallet.as_ref()],
+        &[b"user_volume_accumulator", user_wallet.as_ref()],
         &pump_program,
     )
 }

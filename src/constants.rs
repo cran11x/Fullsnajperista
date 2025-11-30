@@ -13,6 +13,10 @@ pub const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb
 /// Sell instruction discriminator
 pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0x57, 0x77, 0x35, 0x8a, 0x92];
 
+/// Global Volume Leaderboard (Account 13 in Buy instruction)
+/// Used instead of User Volume PDA in recent program versions
+pub const GLOBAL_VOLUME_LEADERBOARD: &str = "4o2mH9Fwq56UhD1nRa3mVsy8y1TeBPD8WoDzGmZ6DZC7";
+
 /// Jito tip accounts for MEV protection
 pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
     "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",

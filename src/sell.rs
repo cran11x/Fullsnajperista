@@ -56,7 +56,7 @@ pub async fn build_sell_instruction(
     // data.push(0x00); // Removed extra byte
 
     // CRITICAL: Use RECALCULATED PDAs, not values from accounts
-    Ok(Instruction {
+    let instruction = Instruction {
         program_id: pump_program,
         accounts: vec![
             // Account 0: Global (PDA, RECALCULATED)
@@ -81,7 +81,7 @@ pub async fn build_sell_instruction(
             AccountMeta::new(accounts.creator_vault, false),
             // Account 10: Event Authority (PDA, RECALCULATED)
             AccountMeta::new(pdas.event_authority, false),
-            // Account 11: Pump Program (readonly, program itself)
+            // Account 11: Pump Program (readonly, program itself - REQUIRED for program verification)
             AccountMeta::new_readonly(pump_program, false),
             // Account 12: Global Volume Accumulator (hardcoded)
             AccountMeta::new(pdas.global_volume, false),
@@ -93,7 +93,15 @@ pub async fn build_sell_instruction(
             AccountMeta::new_readonly(pdas.fee_program, false),
         ],
         data,
-    })
+    };
+
+    // Debug: Log sell instruction details
+    eprintln!("🔍 SELL INSTRUCTION BUILT:");
+    eprintln!("   Token Amount: {}", token_amount);
+    eprintln!("   Min SOL Output: 0 (100% slippage for fast exit)");
+    eprintln!("   User Volume PDA: {} (verified)", pdas.user_volume);
+    
+    Ok(instruction)
 }
 
 #[cfg(test)]

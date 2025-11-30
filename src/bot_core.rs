@@ -1093,7 +1093,7 @@ async fn process_and_buy(
         (0, "Global", expected_global),
         (3, "Bonding Curve", expected_bc),
         (10, "Event Authority", expected_ea),
-        (13, "User Volume", expected_user_volume),
+        (13, "User Volume", expected_user_volume),  // Index 13 (after Pump Program at 11, Global Volume at 12)
     ];
     
     for (idx, name, expected) in checks {
@@ -1289,6 +1289,28 @@ async fn process_and_buy(
         m.record_error(ErrorType::Validation);
         return Err(anyhow!("Pre-flight validation failed: {}", e));
     }
+    
+    // Log transaction details before sending
+    eprintln!();
+    eprintln!("📤 PRE-SUBMISSION TRANSACTION SUMMARY:");
+    eprintln!("   Instructions: {} total", instructions.len());
+    for (idx, ix) in instructions.iter().enumerate() {
+        eprintln!("      [{}] Program: {}, Accounts: {}, Data: {} bytes", 
+            idx, ix.program_id, ix.accounts.len(), ix.data.len());
+        if ix.program_id.to_string() == crate::constants::PUMP_PROGRAM_ID {
+            eprintln!("         → This is the Pump.fun BUY instruction");
+            eprintln!("         → Accounts in BUY instruction:");
+            for (acc_idx, acc) in ix.accounts.iter().enumerate() {
+                let signer_str = if acc.is_signer { " [SIGNER]" } else { "" };
+                let writable_str = if acc.is_writable { " [WRITABLE]" } else { " [READONLY]" };
+                eprintln!("            [{}] {}{}{}", acc_idx, acc.pubkey, signer_str, writable_str);
+            }
+        }
+    }
+    eprintln!("   Recent Blockhash: {}", recent_blockhash);
+    eprintln!("   Priority Fee: {} lamports", priority_fee);
+    eprintln!("   Jito Tip: {} lamports", config.jito_tip);
+    eprintln!();
     
     let msg = v0::Message::try_compile(
         &user_wallet,

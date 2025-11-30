@@ -9,6 +9,7 @@ pub mod sell;
 pub mod config;
 pub mod constants;
 pub mod das_check;
+pub mod debug;
 pub mod detection;
 pub mod errors;
 pub mod filters;

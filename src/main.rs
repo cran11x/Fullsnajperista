@@ -7,6 +7,7 @@ pub mod sell;
 pub mod config;
 pub mod constants;
 pub mod das_check;
+pub mod debug;
 pub mod detection;
 pub mod errors;
 pub mod filters;
@@ -28,6 +29,46 @@ use anyhow::{anyhow, Result};
 // Remove old constants - now using Config and constants module
 
 fn main() -> Result<()> {
+    // Check for debug command
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 3 && args[1] == "debug" {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            let rpc = solana_client::nonblocking::rpc_client::RpcClient::new(
+                std::env::var("SOLANA_RPC_URL")
+                    .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string())
+            );
+            
+            if args.len() >= 4 {
+                // Debug mode: compare two transactions
+                // Usage: cargo run -- debug <successful_sig> <failed_sig>
+                let successful_sig = &args[2];
+                let failed_sig = &args[3];
+                
+                println!("🔍 Debug Mode: Comparing transactions");
+                println!("   Successful: {}", successful_sig);
+                println!("   Failed:     {}", failed_sig);
+                println!();
+                
+                if let Err(e) = debug::debug_compare_transactions(&rpc, successful_sig, failed_sig).await {
+                    eprintln!("❌ Debug failed: {}", e);
+                    std::process::exit(1);
+                }
+            } else {
+                // Debug mode: analyze single transaction
+                // Usage: cargo run -- debug <tx_sig>
+                let tx_sig = &args[2];
+                
+                if let Err(e) = debug::analyze_single_transaction(&rpc, tx_sig).await {
+                    eprintln!("❌ Analysis failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        });
+        
+        return Ok(());
+    }
+    
     // Install panic handler to catch crashes and show them in GUI instead of crashing
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("❌ Panic occurred: {:?}", panic_info);
