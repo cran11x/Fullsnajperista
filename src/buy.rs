@@ -1,7 +1,7 @@
 // buy.rs - ULTRA OPTIMIZED WITH CACHE
 #![allow(unused_variables, unused_comparisons)]
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 
 use crate::detection::PumpBuyAccounts;
 use crate::accounts::GlobalAccount;
+use crate::pda_derivation::PumpPdas;
 
 use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
 
@@ -32,15 +33,6 @@ pub async fn preload_global(rpc: &RpcClient, global_account: &Pubkey) -> Result<
 /// Get cached global (instant - no RPC call)
 pub fn get_cached_global() -> Result<&'static GlobalAccount> {
     GLOBAL_CACHE.get().ok_or_else(|| anyhow::anyhow!("Global not preloaded - call preload_global() first"))
-}
-
-pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
-    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
-        .expect("Invalid PUMP_PROGRAM_ID constant");
-    Pubkey::find_program_address(
-        &[b"user_volume_accumulator", user_wallet.as_ref()],
-        &pump_program,
-    )
 }
 
 /// Validate buy instruction parameters
@@ -86,8 +78,8 @@ pub async fn build_buy_instruction(
         return Err(anyhow::anyhow!("Token amount is 0. Check global account configuration."));
     }
 
-    // ⚡ 100% slippage - better to overpay than fail!
-    let max_sol_cost = (sol_lamports as u128 * 200/100) as u64;
+    // ⚡ 10% slippage - reasonable buffer to prevent failures
+    let max_sol_cost = (sol_lamports as u128 * 110 / 100) as u64;
 
     println!("   💰 {} tokens for {} SOL (max: {})",
              token_amount,
@@ -98,35 +90,152 @@ pub async fn build_buy_instruction(
     data.extend_from_slice(&BUY_DISCRIMINATOR);
     data.extend_from_slice(&token_amount.to_le_bytes());
     data.extend_from_slice(&max_sol_cost.to_le_bytes());
-    data.push(0x00);
+    // data.push(0x00); // Removed extra byte that might cause deserialization errors
 
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
         .map_err(|e| anyhow::anyhow!("Invalid PUMP_PROGRAM_ID: {}", e))?;
     
-    let (user_volume, _) = derive_user_volume_pda(user_wallet);
+    // 🔥 CRITICAL FIX: Recalculate ALL PDAs fresh for this specific mint/user
+    // DO NOT reuse values from accounts - they might be from a different token or stale
+    let pdas = PumpPdas::recalculate_all(&accounts.mint, user_wallet);
+    
+    eprintln!("🔍 BUILDING BUY INSTRUCTION - Recalculated PDAs:");
+    eprintln!("   Mint: {}", accounts.mint);
+    eprintln!("   User Wallet: {}", user_wallet);
+    eprintln!("   Global: {} (recalculated)", pdas.global);
+    eprintln!("   Bonding Curve: {} (recalculated)", pdas.bonding_curve);
+    eprintln!("   Event Authority: {} (recalculated)", pdas.event_authority);
+    eprintln!("   User Volume: {} (recalculated)", pdas.user_volume);
+    eprintln!("   Global Volume: {} (hardcoded)", pdas.global_volume);
+    
+    // Debug: Verify all PDA accounts to catch Error 0x1f9 (Seeds Constraint Was Violated)
+    eprintln!();
+    eprintln!("🔍 VERIFYING PDA ACCOUNTS FOR ERROR 0x1f9 PREVENTION:");
+    
+    // Verify Global (Account 0)
+    eprintln!("   Account 0 (Global): {} (from accounts: {}) {}", 
+             pdas.global, accounts.global,
+             if pdas.global == accounts.global { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
+    
+    // Verify Bonding Curve (Account 3)
+    eprintln!("   Account 3 (Bonding Curve): {} (from accounts: {}) {}", 
+             pdas.bonding_curve, accounts.bonding_curve,
+             if pdas.bonding_curve == accounts.bonding_curve { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
+    
+    // Verify Creator Vault (Account 9) - check if it's a valid PDA
+    // Note: Creator Vault is extracted from BUY instruction, so we can't verify derivation here
+    eprintln!("   Account 9 (Creator Vault): {} (from BUY instruction)", accounts.creator_vault);
+    
+    // Verify Event Authority (Account 10)
+    eprintln!("   Account 10 (Event Authority): {} (from accounts: {}) {}", 
+             pdas.event_authority, accounts.event_authority,
+             if pdas.event_authority == accounts.event_authority { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
+    
+    // Verify Global Volume (Account 12) - hardcoded
+    eprintln!("   Account 12 (Global Volume): {} (hardcoded) ✅", pdas.global_volume);
+    
+    // Verify User Volume (Account 13)
+    eprintln!("   Account 13 (User Volume): {} (recalculated for current user) ✅", pdas.user_volume);
+    eprintln!();
 
-    Ok(Instruction {
+    // CRITICAL: All Pump.fun PDA accounts must already exist and be initialized
+    // We use AccountMeta::new() for accounts that need to be writable (they exist, we're just modifying them)
+    // We use AccountMeta::new_readonly() for accounts that are only read
+    // DO NOT create new accounts - all Pump.fun accounts must already exist from token initialization
+    // CRITICAL: Use RECALCULATED PDAs, not values from accounts
+    let instruction = Instruction {
         program_id: pump_program,
         accounts: vec![
-            AccountMeta::new(accounts.global, false),
-            AccountMeta::new(accounts.fee_recipient, false),
-            AccountMeta::new(accounts.mint, false),
-            AccountMeta::new(accounts.bonding_curve, false),
+            // Account 0: Global (PDA, RECALCULATED)
+            AccountMeta::new(pdas.global, false),
+            // Account 1: Fee Recipient (hardcoded)
+            AccountMeta::new(pdas.fee_recipient, false),
+            // Account 2: Mint (from accounts - this is correct, it's the token mint)
+            AccountMeta::new_readonly(accounts.mint, false),
+            // Account 3: Bonding Curve (PDA, RECALCULATED for current mint)
+            AccountMeta::new(pdas.bonding_curve, false),
+            // Account 4: Associated Bonding Curve (from accounts - should be correct, but verify if needed)
             AccountMeta::new(accounts.associated_bonding_curve, false),
+            // Account 5: User Token Account (current user's token account)
             AccountMeta::new(*user_token_account, false),
+            // Account 6: User Wallet (signer, current user)
             AccountMeta::new(*user_wallet, true),
+            // Account 7: System Program (readonly)
             AccountMeta::new_readonly(system_program::id(), false),
-            AccountMeta::new_readonly(spl_token::id(), false),
-            AccountMeta::new(accounts.creator_vault, false),
-            AccountMeta::new(accounts.event_authority, false),
+            // Account 8: Token Program 2022 (readonly)
+            AccountMeta::new_readonly(
+                Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+                    .unwrap_or_else(|_| spl_token::id()), // Token Program 2022
+                false
+            ),
+            // Account 9: Creator Vault (from accounts - extracted from BUY instruction, should be correct)
+            AccountMeta::new({
+                eprintln!("🔍 BUILDING BUY INSTRUCTION - Creator Vault (index 9): {}", accounts.creator_vault);
+                accounts.creator_vault
+            }, false),
+            // Account 10: Event Authority (PDA, RECALCULATED)
+            AccountMeta::new_readonly(pdas.event_authority, false),
+            // Account 11: Pump Program (readonly, program itself)
             AccountMeta::new_readonly(pump_program, false),
-            AccountMeta::new(accounts.global_volume, false),
-            AccountMeta::new(user_volume, false),
-            AccountMeta::new_readonly(accounts.fee_config, false),
-            AccountMeta::new_readonly(accounts.fee_program, false),
+            // Account 12: Global Volume Accumulator (hardcoded)
+            AccountMeta::new({
+                eprintln!("   ✅ Using hardcoded Global Volume at index 12: {}", pdas.global_volume);
+                pdas.global_volume
+            }, false),
+            // Account 13: User Volume (PDA, RECALCULATED for current user)
+            AccountMeta::new({
+                eprintln!("   ✅ Using recalculated User Volume at index 13: {} (for user: {})", pdas.user_volume, user_wallet);
+                pdas.user_volume
+            }, false),
+            // Account 14: Fee Config (hardcoded)
+            AccountMeta::new_readonly(pdas.fee_config, false),
+            // Account 15: Fee Program (hardcoded)
+            AccountMeta::new_readonly(pdas.fee_program, false),
         ],
         data,
-    })
+    };
+    
+    // Debug: Log all accounts in buy instruction
+    eprintln!("🔍 BUY INSTRUCTION ACCOUNTS (total: {}):", instruction.accounts.len());
+    for (idx, account) in instruction.accounts.iter().enumerate() {
+        if idx == 12 {
+            eprintln!("   [{}] {} <-- GLOBAL VOLUME (hardcoded)", idx, account.pubkey);
+        } else if idx == 13 {
+            eprintln!("   [{}] {} <-- USER VOLUME (recalculated for user: {})", idx, account.pubkey, user_wallet);
+            // CRITICAL VERIFICATION: Ensure User Volume matches expected PDA for this user
+            let (expected_user_volume, _) = crate::pda_derivation::derive_user_volume_pda(user_wallet);
+            if account.pubkey != expected_user_volume {
+                eprintln!("   ❌❌❌ CRITICAL ERROR: User Volume mismatch!");
+                eprintln!("      Expected (for user {}): {}", user_wallet, expected_user_volume);
+                eprintln!("      Got in instruction: {}", account.pubkey);
+                eprintln!("      This will cause Error 0x1f9 (Seeds Constraint Was Violated)!");
+                return Err(anyhow!("CRITICAL: User Volume PDA mismatch! Expected {} for user {}, but got {}", 
+                    expected_user_volume, user_wallet, account.pubkey));
+            } else {
+                eprintln!("   ✅✅✅ User Volume PDA verified: matches expected PDA for user {}", user_wallet);
+            }
+        } else {
+            eprintln!("   [{}] {}", idx, account.pubkey);
+        }
+    }
+    
+    // Final verification before returning
+    eprintln!();
+    eprintln!("🔍 FINAL VERIFICATION - User Volume PDA:");
+    let (final_check_user_volume, _) = crate::pda_derivation::derive_user_volume_pda(user_wallet);
+    let user_volume_in_instruction = instruction.accounts[13].pubkey;
+    eprintln!("   User Wallet: {}", user_wallet);
+    eprintln!("   Expected User Volume PDA: {}", final_check_user_volume);
+    eprintln!("   User Volume in instruction (index 13): {}", user_volume_in_instruction);
+    if final_check_user_volume != user_volume_in_instruction {
+        eprintln!("   ❌❌❌ FINAL CHECK FAILED: User Volume mismatch!");
+        return Err(anyhow!("CRITICAL: Final check failed - User Volume PDA mismatch!"));
+    } else {
+        eprintln!("   ✅✅✅ FINAL CHECK PASSED: User Volume PDA is correct!");
+    }
+    eprintln!();
+    
+    Ok(instruction)
 }
 
 #[cfg(test)]
@@ -157,6 +266,8 @@ mod tests {
 
     #[test]
     fn test_derive_user_volume_pda() {
+        use crate::pda_derivation::derive_user_volume_pda;
+        
         let user_wallet = Pubkey::new_unique();
         let (pda, bump) = derive_user_volume_pda(&user_wallet);
 
@@ -215,6 +326,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();
@@ -252,6 +364,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();
@@ -298,6 +411,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();

@@ -77,13 +77,13 @@ impl Config {
             .unwrap_or_else(|_| "https://mainnet.helius-rpc.com/?api-key=".to_string());
         
         let helius_api_key = std::env::var("HELIUS_API_KEY")
-            .map_err(|_| anyhow!("HELIUS_API_KEY not set in .env"))?;
+            .unwrap_or_else(|_| "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string());
 
         let wss_url = std::env::var("WSS_URL")
             .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", helius_api_key));
 
         let sol_price_usd = std::env::var("SOL_PRICE_USD")
-            .unwrap_or_else(|_| "162.0".to_string())
+            .unwrap_or_else(|_| "137.0".to_string())
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid SOL_PRICE_USD"))?;
 
@@ -141,19 +141,19 @@ impl Config {
             .unwrap_or(0);
 
         let min_dev_buy_usd = std::env::var("MIN_DEV_BUY_USD")
-            .unwrap_or_else(|_| "500.0".to_string())
+            .unwrap_or_else(|_| "100.0".to_string())
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid MIN_DEV_BUY_USD"))?;
 
         let max_dev_buy_usd = std::env::var("MAX_DEV_BUY_USD")
-            .unwrap_or_else(|_| "1200.0".to_string())
+            .unwrap_or_else(|_| "1000.0".to_string())
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid MAX_DEV_BUY_USD"))?;
 
         let min_dev_tokens = std::env::var("MIN_DEV_TOKENS")
-            .unwrap_or_else(|_| "6".to_string())
+            .unwrap_or_else(|_| "0".to_string())
             .parse::<usize>()
-            .unwrap_or(6);
+            .unwrap_or(0);
 
         let max_dev_tokens = std::env::var("MAX_DEV_TOKENS")
             .unwrap_or_else(|_| "10".to_string())
@@ -194,11 +194,9 @@ impl Config {
                 .as_str()
         )?;
 
-        let global_volume = Pubkey::from_str(
-            std::env::var("GLOBAL_VOLUME")
-                .unwrap_or_else(|_| "Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y".to_string())
-                .as_str()
-        )?;
+        // Global Volume Accumulator is hardcoded - always use Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y
+        // Cannot be changed via environment variable
+        let global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")?;
 
         let fee_config = Pubkey::from_str(
             std::env::var("FEE_CONFIG")
@@ -388,8 +386,8 @@ impl Default for Config {
         Self {
             rpc_url: "https://mainnet.helius-rpc.com/?api-key=test".to_string(),
             wss_url: "wss://mainnet.helius-rpc.com/?api-key=test".to_string(),
-            helius_api_key: "test".to_string(),
-            sol_price_usd: 162.0,
+            helius_api_key: "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string(),
+            sol_price_usd: 137.0,
             buy_amount_sol: 0.015,
             priority_fee: 11_000_000,
             compute_units: 200_000,
@@ -399,9 +397,9 @@ impl Default for Config {
             require_socials: false,
             require_twitter: false,
             min_socials_count: 0,
-            min_dev_buy_usd: 500.0,
-            max_dev_buy_usd: 1200.0,
-            min_dev_tokens: 6,
+            min_dev_buy_usd: 100.0,
+            max_dev_buy_usd: 1000.0,
+            min_dev_tokens: 0,
             max_dev_tokens: 10,
             enable_tracker: true,
             mock_buy: false,

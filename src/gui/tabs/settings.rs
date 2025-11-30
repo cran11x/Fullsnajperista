@@ -212,6 +212,27 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     let mut config_clone = current_config.clone();
     
+    // Force re-initialize state values from current config if they're None
+    // This ensures default values are shown when UI first loads
+    if state.helius_api_key_str.is_none() {
+        state.helius_api_key_str = Some(config_clone.helius_api_key.clone());
+    }
+    if state.sol_price_str.is_none() {
+        state.sol_price_str = Some(config_clone.sol_price_usd.to_string());
+    }
+    if state.min_dev_buy_str.is_none() {
+        state.min_dev_buy_str = Some(config_clone.min_dev_buy_usd.to_string());
+    }
+    if state.max_dev_buy_str.is_none() {
+        state.max_dev_buy_str = Some(config_clone.max_dev_buy_usd.to_string());
+    }
+    if state.min_dev_tokens_str.is_none() {
+        state.min_dev_tokens_str = Some(config_clone.min_dev_tokens.to_string());
+    }
+    if state.max_dev_tokens_str.is_none() {
+        state.max_dev_tokens_str = Some(config_clone.max_dev_tokens.to_string());
+    }
+    
     // Enhanced Wallet Private Key Section with premium styling
     ui.group(|ui| {
         ui.set_min_height(140.0);
@@ -1084,9 +1105,36 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         }
     });
     
-    // Save state back to memory
+    // Save state back to memory and update from config
+    // Do this BEFORE any potential grid layout issues
+    let current_config_check = {
+        let cfg = config.read().unwrap();
+        (cfg.helius_api_key.clone(), cfg.sol_price_usd, cfg.min_dev_buy_usd, cfg.max_dev_buy_usd, cfg.min_dev_tokens, cfg.max_dev_tokens)
+    };
+    
     ui.data_mut(|d| {
-        d.insert_temp(state_id, state);
+        let stored_state = d.get_temp_mut_or_insert_with(state_id, || SettingsState::default());
+        // Update state values from current config if they differ
+        if stored_state.helius_api_key_str.as_ref().map(|s| s.as_str()) != Some(&current_config_check.0) {
+            stored_state.helius_api_key_str = Some(current_config_check.0.clone());
+        }
+        if stored_state.sol_price_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.1) {
+            stored_state.sol_price_str = Some(current_config_check.1.to_string());
+        }
+        if stored_state.min_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.2) {
+            stored_state.min_dev_buy_str = Some(current_config_check.2.to_string());
+        }
+        if stored_state.max_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.3) {
+            stored_state.max_dev_buy_str = Some(current_config_check.3.to_string());
+        }
+        if stored_state.min_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.4) {
+            stored_state.min_dev_tokens_str = Some(current_config_check.4.to_string());
+        }
+        if stored_state.max_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.5) {
+            stored_state.max_dev_tokens_str = Some(current_config_check.5.to_string());
+        }
+        // Also save the state we modified during rendering
+        *stored_state = state;
     });
 }
 

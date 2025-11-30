@@ -37,7 +37,7 @@ pub struct TokenBuy {
     pub sell_signature: Option<String>,     // Sell transaction signature if sold
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerStats {
     pub total_buys: u32,
     pub total_sol_spent: f64,
@@ -58,8 +58,15 @@ pub struct TokenTracker {
 }
 
 impl TokenTracker {
-    /// Create new tracker
+    /// Create new tracker or load from latest existing JSON file
     pub fn new() -> Result<Self> {
+        // Try to find and load the latest JSON file first
+        if let Ok(tracker) = Self::load_from_latest_json() {
+            eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
+            return Ok(tracker);
+        }
+        
+        // If no existing JSON found, create new tracker
         let session_start = Utc::now();
         let timestamp = session_start.format("%Y%m%d_%H%M%S");
 
@@ -87,26 +94,107 @@ impl TokenTracker {
             json_path,
         })
     }
+    
+    /// Load tracker from the latest JSON file
+    fn load_from_latest_json() -> Result<Self> {
+        use std::fs;
+        
+        // Find all JSON files matching the pattern
+        let current_dir = std::env::current_dir()?;
+        let json_files: Vec<_> = fs::read_dir(&current_dir)?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if file_name.starts_with("sniper_session_") && file_name.ends_with(".json") {
+                            return Some((path.clone(), entry.metadata().ok()?.modified().ok()?));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        
+        if json_files.is_empty() {
+            return Err(anyhow::anyhow!("No existing JSON files found"));
+        }
+        
+        // Get the latest file
+        let (latest_json_path, _) = json_files.iter()
+            .max_by_key(|(_, modified)| modified)
+            .ok_or_else(|| anyhow::anyhow!("Failed to find latest JSON file"))?;
+        
+        eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
+        
+        // Read and deserialize JSON
+        let content = fs::read_to_string(latest_json_path)?;
+        let stats: TrackerStats = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+        
+        // Extract CSV path from JSON path
+        let csv_path = latest_json_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path"))?
+            .replace(".json", ".csv");
+        
+        Ok(Self {
+            stats,
+            csv_path,
+            json_path: latest_json_path.to_str().unwrap().to_string(),
+        })
+    }
 
     /// Record a token buy
     pub fn record_buy(&mut self, buy: TokenBuy) -> Result<()> {
         self.stats.total_buys += 1;
-        self.stats.total_sol_spent += buy.our_buy_sol;
+        // Safe addition to prevent NaN/infinite accumulation
+        let our_buy_safe = if buy.our_buy_sol.is_finite() && !buy.our_buy_sol.is_nan() {
+            buy.our_buy_sol
+        } else {
+            0.0
+        };
+        self.stats.total_sol_spent += our_buy_safe;
+        // Ensure total_sol_spent stays finite
+        if !self.stats.total_sol_spent.is_finite() || self.stats.total_sol_spent.is_nan() {
+            self.stats.total_sol_spent = 0.0;
+        }
         self.stats.last_buy = buy.timestamp;
 
         // Update MC stats (using entry MC as that's the real execution price)
         if let Some(mc_usd) = buy.mc_at_entry_usd {
-            self.stats.min_mc_usd = self.stats.min_mc_usd.min(mc_usd);
-            self.stats.max_mc_usd = self.stats.max_mc_usd.max(mc_usd);
+            // Safety check for NaN and infinite values
+            if mc_usd.is_finite() && !mc_usd.is_nan() {
+                if self.stats.min_mc_usd == f64::MAX || mc_usd < self.stats.min_mc_usd {
+                    self.stats.min_mc_usd = mc_usd;
+                }
+                if mc_usd > self.stats.max_mc_usd {
+                    self.stats.max_mc_usd = mc_usd;
+                }
 
-            // Recalculate average
-            let total_mc: f64 = self.stats.buys.iter()
-                .filter_map(|b| b.mc_at_entry_usd)
-                .sum::<f64>() + mc_usd;
-            let count_with_mc = self.stats.buys.iter()
-                .filter(|b| b.mc_at_entry_usd.is_some())
-                .count() + 1;
-            self.stats.avg_mc_usd = total_mc / count_with_mc as f64;
+                // Recalculate average with safety checks
+                let total_mc: f64 = self.stats.buys.iter()
+                    .filter_map(|b| b.mc_at_entry_usd)
+                    .filter(|&v| v.is_finite() && !v.is_nan())
+                    .sum::<f64>() + mc_usd;
+                let count_with_mc = self.stats.buys.iter()
+                    .filter(|b| b.mc_at_entry_usd.is_some())
+                    .filter(|b| {
+                        if let Some(v) = b.mc_at_entry_usd {
+                            v.is_finite() && !v.is_nan()
+                        } else {
+                            false
+                        }
+                    })
+                    .count() + 1;
+                
+                if count_with_mc > 0 {
+                    self.stats.avg_mc_usd = total_mc / count_with_mc as f64;
+                    // Ensure average is also finite
+                    if !self.stats.avg_mc_usd.is_finite() || self.stats.avg_mc_usd.is_nan() {
+                        self.stats.avg_mc_usd = 0.0;
+                    }
+                }
+            }
         }
 
         // Append to CSV
@@ -132,25 +220,53 @@ impl TokenTracker {
 
         let mut writer = BufWriter::new(&mut file);
 
+        // Safe formatting for numeric values to prevent NaN/infinite crashes
+        let dev_buy_sol_safe = if buy.dev_buy_sol.is_finite() && !buy.dev_buy_sol.is_nan() {
+            buy.dev_buy_sol
+        } else {
+            0.0
+        };
+        let our_buy_sol_safe = if buy.our_buy_sol.is_finite() && !buy.our_buy_sol.is_nan() {
+            buy.our_buy_sol
+        } else {
+            0.0
+        };
+        
+        let mc_detection_str = buy.mc_at_detection_usd
+            .filter(|&v| v.is_finite() && !v.is_nan())
+            .map(|v| format!("{:.0}", v))
+            .unwrap_or_default();
+        let mc_entry_str = buy.mc_at_entry_usd
+            .filter(|&v| v.is_finite() && !v.is_nan())
+            .map(|v| format!("{:.0}", v))
+            .unwrap_or_default();
+        let token_price_str = buy.token_price_sol
+            .filter(|&v| v.is_finite() && !v.is_nan())
+            .map(|v| format!("{:.8}", v))
+            .unwrap_or_default();
+        
+        // Escape CSV special characters in strings
+        let escape_csv = |s: &str| s.replace(",", " ").replace("\n", " ").replace("\r", " ");
+        
         writeln!(
             writer,
             "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}",
             buy.token_number,
-            buy.mint,
-            buy.signature,
-            buy.creator,
-            buy.dev_buy_sol,
-            buy.our_buy_sol,
+            escape_csv(&buy.mint),
+            escape_csv(&buy.signature),
+            escape_csv(&buy.creator),
+            dev_buy_sol_safe,
+            our_buy_sol_safe,
             buy.timestamp.to_rfc3339(),
             buy.has_socials,
-            buy.twitter.as_deref().unwrap_or(""),
-            buy.website.as_deref().unwrap_or(""),
-            buy.telegram.as_deref().unwrap_or(""),
+            buy.twitter.as_deref().map(escape_csv).unwrap_or_default(),
+            buy.website.as_deref().map(escape_csv).unwrap_or_default(),
+            buy.telegram.as_deref().map(escape_csv).unwrap_or_default(),
             buy.creator_token_count,
-            buy.detection_method,
-            buy.mc_at_detection_usd.map(|v| format!("{:.0}", v)).unwrap_or_default(),
-            buy.mc_at_entry_usd.map(|v| format!("{:.0}", v)).unwrap_or_default(),
-            buy.token_price_sol.map(|v| format!("{:.8}", v)).unwrap_or_default(),
+            escape_csv(&buy.detection_method),
+            mc_detection_str,
+            mc_entry_str,
+            token_price_str,
         )
         .map_err(|e| anyhow::anyhow!("Failed to write to CSV: {}", e))?;
 
@@ -162,10 +278,52 @@ impl TokenTracker {
 
     /// Save full stats to JSON with better error handling
     fn save_json(&self) -> Result<()> {
+        // Create a sanitized copy of stats to avoid NaN/infinite serialization issues
+        let mut sanitized_stats = self.stats.clone();
+        
+        // Sanitize all f64 values in stats
+        if !sanitized_stats.total_sol_spent.is_finite() || sanitized_stats.total_sol_spent.is_nan() {
+            sanitized_stats.total_sol_spent = 0.0;
+        }
+        if !sanitized_stats.avg_mc_usd.is_finite() || sanitized_stats.avg_mc_usd.is_nan() {
+            sanitized_stats.avg_mc_usd = 0.0;
+        }
+        if !sanitized_stats.min_mc_usd.is_finite() || sanitized_stats.min_mc_usd.is_nan() || sanitized_stats.min_mc_usd == f64::MAX {
+            sanitized_stats.min_mc_usd = 0.0;
+        }
+        if !sanitized_stats.max_mc_usd.is_finite() || sanitized_stats.max_mc_usd.is_nan() {
+            sanitized_stats.max_mc_usd = 0.0;
+        }
+        
+        // Sanitize all buys
+        for buy in &mut sanitized_stats.buys {
+            if !buy.dev_buy_sol.is_finite() || buy.dev_buy_sol.is_nan() {
+                buy.dev_buy_sol = 0.0;
+            }
+            if !buy.our_buy_sol.is_finite() || buy.our_buy_sol.is_nan() {
+                buy.our_buy_sol = 0.0;
+            }
+            if let Some(mc) = &mut buy.mc_at_detection_usd {
+                if !mc.is_finite() || mc.is_nan() {
+                    *mc = 0.0;
+                }
+            }
+            if let Some(mc) = &mut buy.mc_at_entry_usd {
+                if !mc.is_finite() || mc.is_nan() {
+                    *mc = 0.0;
+                }
+            }
+            if let Some(price) = &mut buy.token_price_sol {
+                if !price.is_finite() || price.is_nan() {
+                    *price = 0.0;
+                }
+            }
+        }
+        
         let file = File::create(&self.json_path)
             .map_err(|e| anyhow::anyhow!("Failed to create JSON file {}: {}", self.json_path, e))?;
         let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &self.stats)
+        serde_json::to_writer_pretty(writer, &sanitized_stats)
             .map_err(|e| anyhow::anyhow!("Failed to serialize JSON: {}", e))?;
         Ok(())
     }

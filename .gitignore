@@ -3,3 +3,18 @@
 *.exe
 *.app
 *.dmg
+
+# Session logs i CSV fajlovi
+*.csv
+sniper_session_*.json
+filtered_tokens_*.csv
+
+# Cursor IDE
+.cursor/
+
+# Log fajlovi
+*.log
+
+# Backup fajlovi
+*.bak
+*.tmp

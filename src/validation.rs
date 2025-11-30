@@ -14,25 +14,69 @@ const MAX_TX_SIZE_BYTES: usize = 1232;
 /// Minimum balance buffer for fees (in lamports)
 const MIN_FEE_BUFFER: u64 = 5000;
 
+/// Cost to create an Associated Token Account (ATA) in lamports
+/// This is approximately 0.002 SOL = 2,000,000 lamports
+const ATA_CREATION_FEE: u64 = 2_000_000;
+
 /// Validate before transaction submission
+/// 
+/// # Arguments
+/// * `rpc` - RPC client
+/// * `wallet` - Wallet public key
+/// * `buy_amount` - Amount to buy in lamports
+/// * `priority_fee` - Priority fee in lamports (optional)
+/// * `jito_tip` - Jito tip in lamports (optional)
+/// * `_recent_blockhash` - Recent blockhash (unused but kept for API compatibility)
 pub async fn validate_before_submission(
     rpc: &RpcClient,
     wallet: &Pubkey,
     buy_amount: u64,
     _recent_blockhash: &Hash,
 ) -> Result<()> {
+    validate_before_submission_with_fees(rpc, wallet, buy_amount, 0, 0, _recent_blockhash).await
+}
+
+/// Validate before transaction submission with all fees
+pub async fn validate_before_submission_with_fees(
+    rpc: &RpcClient,
+    wallet: &Pubkey,
+    buy_amount: u64,
+    priority_fee: u64,
+    jito_tip: u64,
+    _recent_blockhash: &Hash,
+) -> Result<()> {
     // 1. Check wallet balance
     let balance = rpc.get_balance(wallet).await
         .map_err(|e| anyhow!("Failed to get balance: {}", e))?;
     
-    let required_balance = buy_amount + MIN_FEE_BUFFER;
+    // Calculate total required balance including all fees
+    // Priority fee is in microlamports per compute unit
+    // We need to estimate the actual priority fee cost based on compute units used
+    // Typical buy transaction uses ~200k compute units, but we'll be conservative
+    let estimated_compute_units = 300_000u64; // Conservative estimate for buy + ATA creation
+    let estimated_priority_fee = if priority_fee > 0 {
+        // Priority fee is in microlamports per compute unit
+        // Convert to lamports: (microlamports * compute_units) / 1_000_000
+        (priority_fee as u128 * estimated_compute_units as u128 / 1_000_000) as u64
+    } else {
+        0
+    };
+    
+    // ATA creation fee is only needed if the token account doesn't exist
+    // We'll include it to be safe (worst case scenario)
+    let total_fees = MIN_FEE_BUFFER + estimated_priority_fee + jito_tip + ATA_CREATION_FEE;
+    let required_balance = buy_amount + total_fees;
+    
     if balance < required_balance {
         return Err(anyhow!(
-            "Insufficient balance: have {} SOL, need {} SOL (buy: {} + fees: {})",
+            "Insufficient balance: have {:.9} SOL, need {:.9} SOL (buy: {:.9} + base fees: {:.9} + priority fee: {:.9} + jito tip: {:.9} + ATA creation: {:.9})",
             balance as f64 / 1e9,
             required_balance as f64 / 1e9,
             buy_amount as f64 / 1e9,
-            MIN_FEE_BUFFER as f64 / 1e9
+            MIN_FEE_BUFFER as f64 / 1e9,
+            estimated_priority_fee as f64 / 1e9,
+            jito_tip as f64 / 1e9,
+            ATA_CREATION_FEE as f64 / 1e9
         ));
     }
 

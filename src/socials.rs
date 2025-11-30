@@ -75,6 +75,16 @@ impl Socials {
         self.twitter.is_some()
     }
 
+    /// Check if token has website
+    pub fn has_website(&self) -> bool {
+        self.website.is_some()
+    }
+
+    /// Check if token has Telegram
+    pub fn has_telegram(&self) -> bool {
+        self.telegram.is_some()
+    }
+
     /// Count how many socials exist
     pub fn count(&self) -> usize {
         let mut count = 0;

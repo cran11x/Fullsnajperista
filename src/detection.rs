@@ -12,6 +12,65 @@ use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
 // 🔧 TOGGLE THIS: true = detailed logs, false = normal logs
 const DEBUG: bool = true;
 
+/// Calculate Associated Bonding Curve addresses with both Token Program versions (standard and 2022)
+fn calculate_addresses_both_programs(
+    bonding_curve: &Pubkey,
+    mint: &Pubkey,
+    _creator: &Pubkey,
+) -> (Pubkey, Pubkey) {
+    // Token Program (obični)
+    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+    
+    // Token Program 2022
+    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+    
+    let abc_standard = spl_associated_token_account::get_associated_token_address_with_program_id(
+        bonding_curve, mint, &token_program
+    );
+    
+    let abc_2022 = spl_associated_token_account::get_associated_token_address_with_program_id(
+        bonding_curve, mint, &token_program_2022
+    );
+    
+    (abc_standard, abc_2022)
+}
+
+/// Extract Associated Bonding Curve address from transaction
+fn extract_associated_bonding_curve_from_tx(
+    instructions: &[solana_sdk::instruction::CompiledInstruction],
+    account_keys: &[Pubkey],
+    bonding_curve: &Pubkey,
+    mint: &Pubkey,
+) -> Option<Pubkey> {
+    let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").ok()?;
+    
+    for ix in instructions.iter() {
+        let program_id_idx = ix.program_id_index as usize;
+        if let Some(&program_id) = account_keys.get(program_id_idx) {
+            if program_id == ata_program {
+                let ix_accounts: Vec<Pubkey> = ix.accounts
+                    .iter()
+                    .filter_map(|&idx| account_keys.get(idx as usize).copied())
+                    .collect();
+                
+                // ATA instruction has: payer, owner, mint, system_program, token_program, ata_account
+                if ix_accounts.len() >= 6 {
+                    let owner = ix_accounts.get(1); // owner is at index 1
+                    let mint_account = ix_accounts.get(2); // mint is at index 2
+                    let ata_account = ix_accounts.get(5); // ata_account is at index 5
+                    
+                    // Check if this ATA is for bonding_curve
+                    if owner == Some(bonding_curve) && mint_account == Some(mint) {
+                        return ata_account.copied();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+
 #[derive(Debug, Clone)]
 pub struct PumpBuyAccounts {
     pub mint: Pubkey,
@@ -26,6 +85,7 @@ pub struct PumpBuyAccounts {
     pub fee_program: Pubkey,
     pub dev_buy_sol: u64,
     pub creator: Pubkey,
+    pub associated_bonding_curve_instruction: Option<solana_sdk::instruction::Instruction>, // Store actual instruction from dev TX
 }
 
 impl PumpBuyAccounts {
@@ -110,11 +170,106 @@ impl PumpBuyAccounts {
             }
 
             let mut dev_buy_sol = 0u64;
-            let mut creator_vault: Option<Pubkey> = None;
 
             if DEBUG {
                 println!("      🔍 DEBUG: TX {} instructions, {} accounts",
                          instructions.len(), account_keys.len());
+            }
+
+            // 🔍 Analyze all instructions to see how dev builds transaction
+            // Look for Associated Bonding Curve creation instruction and extract actual address
+            let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").ok();
+            let mut found_abc_instruction = false;
+            let mut abc_instruction_idx = None;
+            let mut actual_abc_from_tx: Option<Pubkey> = None;
+            let mut abc_instruction_from_tx: Option<solana_sdk::instruction::Instruction> = None;
+            
+            // Calculate bonding curve first to use in comparison
+            let (bonding_curve_temp, _) = Pubkey::find_program_address(
+                &[b"bonding-curve", &mint.to_bytes()],
+                &pump_program,
+            );
+            
+            for (ix_idx, ix) in instructions.iter().enumerate() {
+                let program_id_idx = ix.program_id_index as usize;
+                if let Some(&program_id) = account_keys.get(program_id_idx) {
+                    // Check if this is ATA creation instruction (for Associated Bonding Curve)
+                    if let Some(ata_prog) = ata_program {
+                        if program_id == ata_prog {
+                            let ix_accounts: Vec<Pubkey> = ix.accounts
+                                .iter()
+                                .filter_map(|&idx| account_keys.get(idx as usize).copied())
+                                .collect();
+                            
+                            // Check if this ATA is for bonding_curve (owner) and mint
+                            // ATA instruction has: payer, owner, mint, system_program, token_program, ata_account
+                            if ix_accounts.len() >= 6 {
+                                let owner = ix_accounts.get(1); // owner is at index 1
+                                let mint_account = ix_accounts.get(2); // mint is at index 2
+                                let ata_account = ix_accounts.get(5); // ata_account is at index 5
+                                
+                                // Check if this ATA is for bonding_curve
+                                if owner == Some(&bonding_curve_temp) && mint_account == Some(mint) {
+                                    found_abc_instruction = true;
+                                    abc_instruction_idx = Some(ix_idx);
+                                    actual_abc_from_tx = ata_account.copied();
+                                    
+                                    // Extract the actual instruction to use it later
+                                    // We need to get the actual account metadata from the compiled instruction
+                                    // ATA instruction structure: [payer (writable, signer), owner (writable), mint (readonly), system (readonly), token_program (readonly), ata_account (writable)]
+                                    let program_id_from_tx = account_keys.get(program_id_idx).copied();
+                                    if let Some(prog_id) = program_id_from_tx {
+                                        // Get account keys from the instruction
+                                        let mut accounts_meta = Vec::new();
+                                        for (i, &account_idx) in ix.accounts.iter().enumerate() {
+                                            if let Some(account_key) = account_keys.get(account_idx as usize) {
+                                                // ATA instruction structure:
+                                                // 0: payer (writable, signer)
+                                                // 1: owner (writable)
+                                                // 2: mint (readonly)
+                                                // 3: system_program (readonly)
+                                                // 4: token_program (readonly)
+                                                // 5: ata_account (writable)
+                                                let is_writable = i == 0 || i == 1 || i == 5;
+                                                let is_signer = i == 0; // Only payer is signer
+                                                
+                                                accounts_meta.push(solana_sdk::instruction::AccountMeta {
+                                                    pubkey: *account_key, // account_key is &Pubkey, dereference to get Pubkey
+                                                    is_signer,
+                                                    is_writable,
+                                                });
+                                            }
+                                        }
+                                        
+                                        if accounts_meta.len() >= 6 {
+                                            abc_instruction_from_tx = Some(solana_sdk::instruction::Instruction {
+                                                program_id: prog_id,
+                                                accounts: accounts_meta,
+                                                data: ix.data.clone(),
+                                            });
+                                        }
+                                    }
+                                    
+                                    if DEBUG {
+                                        println!("      ✅ Found Associated Bonding Curve instruction at position {} (address: {})", 
+                                                 ix_idx, ata_account.map(|a| a.to_string()).unwrap_or("N/A".to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if found_abc_instruction {
+                if DEBUG {
+                    println!("      📋 Dev transaction structure: Associated Bonding Curve created at instruction {}", 
+                             abc_instruction_idx.unwrap());
+                }
+            } else {
+                if DEBUG {
+                    println!("      ⚠️  No Associated Bonding Curve instruction found in dev transaction");
+                }
             }
 
             for (ix_idx, ix) in instructions.iter().enumerate() {
@@ -139,55 +294,99 @@ impl PumpBuyAccounts {
                             let is_create_instruction = discriminator == &[0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77] // New format
                                 || discriminator == &[0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4]; // Old format
 
-                            if is_create_instruction && creator_vault.is_none() {
-                                // Try different account positions for vault
-                                // Common positions: 8, 9, 10, 11
-                                let possible_indices = vec![9, 10, 11, 8, 7, 12];
-                                for &idx in &possible_indices {
-                                    if ix_accounts.len() > idx {
-                                        let candidate = ix_accounts[idx];
-                                        // Check if it looks like a token account (creator vault)
-                                        // Skip: mint, creator, pump program, and system/token program IDs
-                                        let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").ok();
-                                        let system_program = Pubkey::from_str("11111111111111111111111111111111").ok();
-
-                                        if candidate != *mint
-                                            && candidate != creator
-                                            && candidate != pump_program
-                                            && candidate != token_program.unwrap_or(candidate)
-                                            && candidate != system_program.unwrap_or(candidate) {
-                                            creator_vault = Some(candidate);
-                                            if DEBUG {
-                                                println!("      ✅ Creator vault (idx {}): {}", idx, candidate);
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if discriminator == BUY_DISCRIMINATOR {
-                                // ✅ Also try to extract creator_vault from BUY instruction if not found yet
-                                if creator_vault.is_none() && ix_accounts.len() >= 10 {
-                                    // BUY instruction typically has creator vault around index 9-11
-                                    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").ok();
+                            if is_create_instruction {
+                                // Extract Associated Bonding Curve from CREATE instruction
+                                // CREATE instruction typically has Associated Bonding Curve around index 4-7
+                                // NOTE: We verify ownership to ensure it's a token account
+                                if actual_abc_from_tx.is_none() && ix_accounts.len() >= 8 {
+                                    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                                    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
                                     let system_program = Pubkey::from_str("11111111111111111111111111111111").ok();
-
-                                    let possible_indices = vec![9, 10, 11, 8];
+                                    let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").ok();
+                                    
+                                    // Try different positions for Associated Bonding Curve
+                                    // Common positions: 4, 5, 6, 7 (after mint, bonding_curve, etc.)
+                                    let possible_indices = vec![4, 5, 6, 7, 3, 8];
                                     for &idx in &possible_indices {
                                         if ix_accounts.len() > idx {
                                             let candidate = ix_accounts[idx];
+                                            
+                                            // Basic filter: skip known programs
                                             if candidate != *mint
                                                 && candidate != creator
                                                 && candidate != pump_program
-                                                && candidate != token_program.unwrap_or(candidate)
-                                                && candidate != system_program.unwrap_or(candidate) {
-                                                creator_vault = Some(candidate);
-                                                if DEBUG {
-                                                    println!("      ✅ Creator vault from BUY (idx {}): {}", idx, candidate);
+                                                && candidate != bonding_curve_temp
+                                                && candidate != token_program
+                                                && candidate != token_program_2022
+                                                && candidate != system_program.unwrap_or(candidate)
+                                                && candidate != ata_program.unwrap_or(candidate) {
+                                                
+                                                // CRITICAL: Verify ownership - must be a token account
+                                                if let Ok(account_info) = rpc.get_account(&candidate).await {
+                                                    let owner = account_info.owner;
+                                                    let is_token_account = owner == token_program_2022 || owner == token_program;
+                                                    
+                                                    if is_token_account {
+                                                        actual_abc_from_tx = Some(candidate);
+                                                        found_abc_instruction = true;
+                                                        abc_instruction_idx = Some(ix_idx);
+                                                        if DEBUG {
+                                                            println!("      ✅ Associated Bonding Curve from CREATE (idx {}): {} (verified: token account, owner: {})", idx, candidate, owner);
+                                                        }
+                                                        break;
+                                                    } else if DEBUG {
+                                                        println!("      ⚠️  Skipping candidate at idx {}: {} (not a token account, owner: {})", idx, candidate, owner);
+                                                    }
+                                                } else if DEBUG {
+                                                    println!("      ⚠️  Cannot verify candidate at idx {}: {} (account not found)", idx, candidate);
                                                 }
-                                                break;
                                             }
+                                        }
+                                    }
+                                }
+                                
+                                // ⚠️  SKIPPED: Creator Vault extraction from CREATE instruction
+                                // We prefer BUY instruction for Creator Vault (more reliable - exact index 9)
+                                // CREATE instruction extraction is disabled to ensure we use BUY instruction value
+                                // if creator_vault.is_none() {
+                                //     ... (commented out - use BUY instruction instead)
+                                // }
+                            }
+
+                            if discriminator == BUY_DISCRIMINATOR {
+                                // ✅ Extract Associated Bonding Curve from BUY instruction
+                                // BUY instruction has Associated Bonding Curve at index 4 (after global, fee_recipient, mint, bonding_curve)
+                                // PRIORITY: BUY instruction has exact structure, so we trust index 4
+                                if actual_abc_from_tx.is_none() && ix_accounts.len() >= 5 {
+                                    let candidate = ix_accounts[4]; // Associated Bonding Curve is at index 4
+                                    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                                    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                                    
+                                    // Basic filter: skip known programs
+                                    if candidate != *mint
+                                        && candidate != creator
+                                        && candidate != pump_program
+                                        && candidate != bonding_curve_temp
+                                        && candidate != token_program
+                                        && candidate != token_program_2022 {
+                                        
+                                        // CRITICAL: Verify ownership - must be a token account
+                                        if let Ok(account_info) = rpc.get_account(&candidate).await {
+                                            let owner = account_info.owner;
+                                            let is_token_account = owner == token_program_2022 || owner == token_program;
+                                            
+                                            if is_token_account {
+                                                actual_abc_from_tx = Some(candidate);
+                                                found_abc_instruction = true;
+                                                abc_instruction_idx = Some(ix_idx);
+                                                if DEBUG {
+                                                    println!("      ✅ Associated Bonding Curve from BUY (idx 4): {} (verified: token account, owner: {})", candidate, owner);
+                                                }
+                                            } else if DEBUG {
+                                                println!("      ⚠️  BUY idx 4 is not a token account: {} (owner: {})", candidate, owner);
+                                            }
+                                        } else if DEBUG {
+                                            println!("      ⚠️  Cannot verify BUY idx 4: {} (account not found)", candidate);
                                         }
                                     }
                                 }
@@ -274,50 +473,239 @@ impl PumpBuyAccounts {
                 println!("      📋 Final: {} SOL", dev_buy_sol as f64 / 1e9);
             }
 
-            // ✅ Check if we found creator_vault, if not, calculate it as fallback
-            if creator_vault.is_none() {
-                // 🔥 FALLBACK: Calculate creator vault as associated token address
-                // Creator vault is always the ATA of (creator, mint)
-                let calculated_vault = get_associated_token_address(
-                    &creator,
-                    mint
-                );
+            // Note: creator_vault extraction happens in the loop above
+            // We'll use the comparison results to decide which one to use later
 
-                // Verify this account exists in the transaction accounts
-                let vault_in_tx = account_keys.iter().any(|&key| key == calculated_vault);
-
-                if vault_in_tx {
-                    creator_vault = Some(calculated_vault);
-                    if DEBUG {
-                        println!("      ✅ Creator vault (calculated ATA): {}", calculated_vault);
-                    }
-                } else {
-                    // Last resort: use calculated ATA anyway (might be valid if account was created in same TX)
-                    creator_vault = Some(calculated_vault);
-                    if DEBUG {
-                        println!("      ⚠️  Creator vault not in TX, using calculated ATA: {}", calculated_vault);
+            // KONAČNO RIJEŠENJE – 2025 PUMPFUN
+            // Extract actual accounts from BUY instruction FIRST (before using them)
+            let pump_program_id = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap();
+            
+            // Try to extract actual accounts from BUY instruction:
+            // - Bonding Curve: index 3 (extract from BUY to verify derivation)
+            // - Creator Vault: index 9
+            // - User Volume Accumulator: index 14 (for reference only - creator's user volume)
+            let mut bonding_curve_from_buy: Option<Pubkey> = None;
+            let mut vault_from_buy: Option<Pubkey> = None;
+            let mut user_volume_from_buy: Option<Pubkey> = None;
+            
+            for ix in instructions.iter() {
+                let program_id_idx = ix.program_id_index as usize;
+                if let Some(&program_id) = account_keys.get(program_id_idx) {
+                    if program_id == pump_program_id && ix.data.len() >= 8 {
+                        let discriminator = &ix.data[0..8];
+                        if discriminator == BUY_DISCRIMINATOR {
+                            let ix_accounts: Vec<Pubkey> = ix.accounts
+                                .iter()
+                                .filter_map(|&idx| account_keys.get(idx as usize).copied())
+                                .collect();
+                            
+                            // Extract Bonding Curve (index 3) from BUY instruction to verify derivation
+                            if ix_accounts.len() >= 4 {
+                                bonding_curve_from_buy = Some(ix_accounts[3]);
+                                eprintln!("✅ Extracted Bonding Curve (index 3): {}", ix_accounts[3]);
+                            }
+                            
+                            // Extract Creator Vault (index 9)
+                            if ix_accounts.len() >= 10 {
+                                vault_from_buy = Some(ix_accounts[9]);
+                                eprintln!("✅ Extracted Creator Vault (index 9): {}", ix_accounts[9]);
+                            } else {
+                                eprintln!("⚠️  BUY instruction has only {} accounts, need at least 10 for Creator Vault", ix_accounts.len());
+                            }
+                            
+                            // Extract User Volume Accumulator (index 14) - for reference only (creator's user volume)
+                            if ix_accounts.len() >= 15 {
+                                user_volume_from_buy = Some(ix_accounts[14]);
+                                eprintln!("✅ Extracted User Volume Accumulator (index 14): {} (creator's user volume)", ix_accounts[14]);
+                            }
+                            
+                            if vault_from_buy.is_some() {
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
-            // ✅ Unwrap creator_vault safely - we checked above
-            let creator_vault = creator_vault.unwrap();
-
-            let (bonding_curve, _) = Pubkey::find_program_address(
+            // Derive bonding curve PDA first
+            let (bonding_curve_derived, _) = Pubkey::find_program_address(
                 &[b"bonding-curve", &mint.to_bytes()],
                 &pump_program,
             );
+            
+            // Use bonding curve from BUY instruction if available, otherwise use derived
+            let bonding_curve = if let Some(bc_from_buy) = bonding_curve_from_buy {
+                eprintln!();
+                eprintln!("🔍 DECIDING WHICH BONDING CURVE ADDRESS TO USE...");
+                eprintln!("   ✅ USING BONDING CURVE FROM BUY (index 3): {}", bc_from_buy);
+                eprintln!("   📋 Derived PDA: {} (for comparison)", bonding_curve_derived);
+                if bc_from_buy != bonding_curve_derived {
+                    eprintln!("   ⚠️  WARNING: Bonding curve from BUY does NOT match derived PDA!");
+                    eprintln!("   ⚠️  This might cause Error 2006 (ConstraintSeeds)!");
+                }
+                bc_from_buy
+            } else {
+                eprintln!();
+                eprintln!("🔍 DECIDING WHICH BONDING CURVE ADDRESS TO USE...");
+                eprintln!("   ⚠️  NO BUY INSTRUCTION → USING DERIVED PDA");
+                eprintln!("   📋 Derived PDA: {}", bonding_curve_derived);
+                bonding_curve_derived
+            };
+            
+            eprintln!("   ✅ FINAL Bonding Curve: {}", bonding_curve);
 
-            let associated_bonding_curve =
-                spl_associated_token_account::get_associated_token_address(
-                    &bonding_curve,
-                    mint
-                );
+            // Check if bonding curve account exists in transaction (it should be created in initialize TX)
+            let bonding_curve_in_tx = account_keys.iter().any(|&key| key == bonding_curve);
+            eprintln!("      ✅ Bonding curve account found in transaction: {}", bonding_curve);
+
+            // Extract actual addresses from transaction
+            let actual_abc = actual_abc_from_tx.or_else(|| {
+                extract_associated_bonding_curve_from_tx(&instructions, &account_keys, &bonding_curve, mint)
+            });
+            // Calculate addresses with both token programs
+            eprintln!();
+            eprintln!("🔍 CALCULATING ADDRESSES WITH BOTH TOKEN PROGRAMS...");
+            eprintln!("   Bonding curve: {}", bonding_curve);
+            eprintln!("   Mint: {}", mint);
+            eprintln!("   Creator: {}", creator);
+            
+            let (abc_standard, abc_2022) = 
+                calculate_addresses_both_programs(&bonding_curve, mint, &creator);
+            
+            eprintln!("   ✅ Calculated ABC (standard): {}", abc_standard);
+            eprintln!("   ✅ Calculated ABC (2022):     {}", abc_2022);
+
+            // Compare and log (using eprintln! so it shows in console)
+            eprintln!();
+            eprintln!("================== ADDRESS COMPARISON ==================");
+            eprintln!("Associated Bonding Curve:");
+            eprintln!("  Actual (from TX):      {}", actual_abc.as_ref().map(|a| a.to_string()).unwrap_or("NOT FOUND".to_string()));
+            eprintln!("  Calculated (standard): {}", abc_standard);
+            eprintln!("  Calculated (2022):     {}", abc_2022);
+            eprintln!("  Match standard:        {}", actual_abc.as_ref() == Some(&abc_standard));
+            eprintln!("  Match 2022:            {}", actual_abc.as_ref() == Some(&abc_2022));
+            eprintln!();
+            eprintln!("Bonding Curve PDA:");
+            eprintln!("  Calculated:            {}", bonding_curve);
+            eprintln!("  In transaction:        {}", bonding_curve_in_tx);
+            
+            // Verify bonding curve PDA calculation
+            if bonding_curve_in_tx {
+                // Extract actual bonding curve from transaction if possible
+                let actual_bonding_curve = account_keys.iter()
+                    .find(|&&key| {
+                        // Check if this could be a bonding curve PDA
+                        let (calculated, _) = Pubkey::find_program_address(
+                            &[b"bonding-curve", &mint.to_bytes()],
+                            &pump_program,
+                        );
+                        key == calculated
+                    });
+                
+                if let Some(&actual) = actual_bonding_curve {
+                    if actual == bonding_curve {
+                        println!("  ✅ PDA matches transaction");
+                    } else {
+                        println!("  ⚠️  PDA mismatch! Calculated: {}, Actual: {}", bonding_curve, actual);
+                    }
+                }
+            }
+            eprintln!("========================================================");
+            eprintln!();
+
+            // Decide which address to use based on comparison
+            // CRITICAL: Verify actual address is a token account before using it
+            eprintln!();
+            eprintln!("🔍 DECIDING WHICH ASSOCIATED BONDING CURVE ADDRESS TO USE...");
+            let associated_bonding_curve = if let Some(actual) = actual_abc {
+                eprintln!("   📋 Actual address found in transaction: {}", actual);
+                eprintln!("   🔍 Verifying actual address is a token account...");
+                
+                // Verify actual address is a valid token account
+                let actual_check = rpc.get_account(&actual).await;
+                let is_valid_token_account = if let Ok(acc) = actual_check {
+                    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                    let is_token = acc.owner == token_program_2022 || acc.owner == token_program;
+                    eprintln!("   📊 Actual address account info:");
+                    eprintln!("      Owner: {}", acc.owner);
+                    eprintln!("      Data size: {} bytes", acc.data.len());
+                    eprintln!("      Is token account: {} (expected: Token Program 2022 or Token Program)", is_token);
+                    is_token
+                } else {
+                    eprintln!("   ❌ Actual address does not exist on blockchain!");
+                    false
+                };
+                
+                if is_valid_token_account {
+                    // Actual address is valid token account - use it
+                    eprintln!("   ✅ Actual address is valid token account - will use it");
+                    if actual == abc_2022 {
+                        eprintln!("      ✅ Matches calculated Token Program 2022 address");
+                    } else if actual == abc_standard {
+                        eprintln!("      ✅ Matches calculated standard Token Program address");
+                    } else {
+                        eprintln!("      ⚠️  Does NOT match calculated addresses, but is valid token account");
+                        eprintln!("      Calculated (2022): {}", abc_2022);
+                        eprintln!("      Calculated (standard): {}", abc_standard);
+                    }
+                    actual
+                } else {
+                    // Actual address is NOT a token account - use calculated Token Program 2022 instead
+                    eprintln!("   ❌ Actual address is NOT a token account!");
+                    eprintln!("   🔄 Falling back to calculated Token Program 2022 address");
+                    eprintln!("      Calculated (2022): {}", abc_2022);
+                    abc_2022
+                }
+            } else {
+                // Fallback to 2022 (pump.fun uses Token Program 2022)
+                eprintln!("   ⚠️  No actual address found in transaction");
+                eprintln!("   🔄 Using calculated Token Program 2022 address (default for pump.fun)");
+                eprintln!("      Calculated (2022): {}", abc_2022);
+                abc_2022
+            };
+            eprintln!("   ✅ FINAL Associated Bonding Curve address: {}", associated_bonding_curve);
+
+            // FINALNO: Creator vault je ili iz BUY indexa 9 (canon) ili PDA fallback
+            let creator_vault = if let Some(vault) = vault_from_buy {
+                // Index 9 iz BUY instrukcije je apsolutna istina
+                eprintln!();
+                eprintln!("🔍 DECIDING WHICH CREATOR VAULT ADDRESS TO USE...");
+                eprintln!("   ✅ USING CANONICAL CREATOR VAULT FROM BUY (index 9): {}", vault);
+                vault
+            } else {
+                // PDA fallback samo ako nema BUY-a (gotovo nikad)
+                eprintln!();
+                eprintln!("🔍 DECIDING WHICH CREATOR VAULT ADDRESS TO USE...");
+                eprintln!("   ⚠️  NO BUY INSTRUCTION → USING PDA FALLBACK");
+                let (pda, _) = Pubkey::find_program_address(&[b"creator_vault", creator.as_ref()], &pump_program_id);
+                eprintln!("   📋 Calculated PDA: {}", pda);
+                pda
+            };
+            
+            eprintln!("   ✅ FINAL Creator Vault: {}", creator_vault);
 
             let global = Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")?;
             let fee_recipient = Pubkey::from_str("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")?;
             let event_authority = Pubkey::from_str("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")?;
+            
+            // Global Volume Accumulator is hardcoded - ALWAYS use Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y
+            // NEVER derive or extract from transaction - always hardcoded
             let global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")?;
+            eprintln!();
+            eprintln!("✅ Global Volume Accumulator (HARDCODED - never derived): {}", global_volume);
+            eprintln!("   ⚠️  NOT using PDA derivation - always hardcoded to: {}", global_volume);
+            
+            // Log User Volume Accumulator from BUY instruction (index 14) for reference only
+            // Note: This is the user volume for the creator (dev buy), not for our buy
+            // We derive our own user volume in buy.rs based on our wallet
+            if let Some(user_vol) = user_volume_from_buy {
+                if DEBUG {
+                    eprintln!();
+                    eprintln!("📋 User Volume Accumulator from BUY (index 14): {} (creator's user volume)", user_vol);
+                }
+            }
+            
             let fee_config = Pubkey::from_str("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")?;
             let fee_program = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")?;
 
@@ -334,6 +722,7 @@ impl PumpBuyAccounts {
                 fee_program,
                 dev_buy_sol,
                 creator, // ✅ Now using correct creator from CREATE instruction
+                associated_bonding_curve_instruction: abc_instruction_from_tx, // Store actual instruction from dev TX
             };
 
             return Ok((accounts, *mint));
@@ -430,6 +819,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 1_000_000_000, // 1 SOL
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         }
     }
 

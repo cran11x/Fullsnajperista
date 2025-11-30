@@ -74,6 +74,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: (dev_buy_sol * 1e9) as u64,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         }
     }
 

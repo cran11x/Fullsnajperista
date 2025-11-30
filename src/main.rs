@@ -14,6 +14,7 @@ pub mod health;
 pub mod helius;
 pub mod jito;
 pub mod metrics;
+pub mod pda_derivation;
 pub mod rate_limiter;
 pub mod socials;
 pub mod utils;

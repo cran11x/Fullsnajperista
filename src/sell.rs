@@ -10,15 +10,7 @@ use std::str::FromStr;
 
 use crate::constants::{PUMP_PROGRAM_ID, SELL_DISCRIMINATOR};
 use crate::detection::PumpBuyAccounts;
-
-pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
-    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
-        .expect("Invalid PUMP_PROGRAM_ID constant");
-    Pubkey::find_program_address(
-        &[b"user_volume_accumulator", user_wallet.as_ref()],
-        &pump_program,
-    )
-}
+use crate::pda_derivation::PumpPdas;
 
 /// Validate sell instruction parameters
 fn validate_sell_params(
@@ -51,7 +43,9 @@ pub async fn build_sell_instruction(
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
         .map_err(|e| anyhow::anyhow!("Invalid PUMP_PROGRAM_ID: {}", e))?;
     
-    let (user_volume, _) = derive_user_volume_pda(user_wallet);
+    // 🔥 CRITICAL FIX: Recalculate ALL PDAs fresh for this specific mint/user
+    // DO NOT reuse values from accounts - they might be from a different token or stale
+    let pdas = PumpPdas::recalculate_all(&accounts.mint, user_wallet);
 
     // Build instruction data: discriminator + token_amount (u64) + min_sol_out (u64) + 1 byte
     // min_sol_out: 0 (accept any amount - better to sell than fail)
@@ -59,27 +53,44 @@ pub async fn build_sell_instruction(
     data.extend_from_slice(&SELL_DISCRIMINATOR);
     data.extend_from_slice(&token_amount.to_le_bytes());
     data.extend_from_slice(&0u64.to_le_bytes()); // min_sol_out = 0
-    data.push(0x00);
+    // data.push(0x00); // Removed extra byte
 
+    // CRITICAL: Use RECALCULATED PDAs, not values from accounts
     Ok(Instruction {
         program_id: pump_program,
         accounts: vec![
-            AccountMeta::new(accounts.global, false),
-            AccountMeta::new(accounts.fee_recipient, false),
+            // Account 0: Global (PDA, RECALCULATED)
+            AccountMeta::new(pdas.global, false),
+            // Account 1: Fee Recipient (hardcoded)
+            AccountMeta::new(pdas.fee_recipient, false),
+            // Account 2: Mint (from accounts - this is correct, it's the token mint)
             AccountMeta::new(accounts.mint, false),
-            AccountMeta::new(accounts.bonding_curve, false),
+            // Account 3: Bonding Curve (PDA, RECALCULATED for current mint)
+            AccountMeta::new(pdas.bonding_curve, false),
+            // Account 4: Associated Bonding Curve (from accounts - should be correct)
             AccountMeta::new(accounts.associated_bonding_curve, false),
+            // Account 5: User Token Account (current user's token account)
             AccountMeta::new(*user_token_account, false),
+            // Account 6: User Wallet (signer, current user)
             AccountMeta::new(*user_wallet, true),
+            // Account 7: System Program (readonly)
             AccountMeta::new_readonly(system_program::id(), false),
+            // Account 8: Token Program (readonly)
             AccountMeta::new_readonly(spl_token::id(), false),
+            // Account 9: Creator Vault (from accounts - extracted from BUY instruction, should be correct)
             AccountMeta::new(accounts.creator_vault, false),
-            AccountMeta::new(accounts.event_authority, false),
+            // Account 10: Event Authority (PDA, RECALCULATED)
+            AccountMeta::new(pdas.event_authority, false),
+            // Account 11: Pump Program (readonly, program itself)
             AccountMeta::new_readonly(pump_program, false),
-            AccountMeta::new(accounts.global_volume, false),
-            AccountMeta::new(user_volume, false),
-            AccountMeta::new_readonly(accounts.fee_config, false),
-            AccountMeta::new_readonly(accounts.fee_program, false),
+            // Account 12: Global Volume Accumulator (hardcoded)
+            AccountMeta::new(pdas.global_volume, false),
+            // Account 13: User Volume (PDA, RECALCULATED for current user)
+            AccountMeta::new(pdas.user_volume, false),
+            // Account 14: Fee Config (hardcoded)
+            AccountMeta::new_readonly(pdas.fee_config, false),
+            // Account 15: Fee Program (hardcoded)
+            AccountMeta::new_readonly(pdas.fee_program, false),
         ],
         data,
     })
@@ -91,6 +102,8 @@ mod tests {
 
     #[test]
     fn test_derive_user_volume_pda() {
+        use crate::pda_derivation::derive_user_volume_pda;
+        
         let user_wallet = Pubkey::new_unique();
         let (pda, bump) = derive_user_volume_pda(&user_wallet);
 
@@ -126,6 +139,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();
@@ -156,6 +170,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();
@@ -200,6 +215,7 @@ mod tests {
             fee_program: Pubkey::new_unique(),
             dev_buy_sol: 0,
             creator: Pubkey::new_unique(),
+            associated_bonding_curve_instruction: None,
         };
 
         let user_wallet = Pubkey::new_unique();

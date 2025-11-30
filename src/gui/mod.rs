@@ -48,8 +48,12 @@ impl GuiApp {
         let (control_tx, control_rx) = std_mpsc::channel();
         
         // Load config (will fail gracefully if .env not set)
+        // Use default() to ensure default values are used if .env doesn't have them
         let config = Arc::new(RwLock::new(
-            Config::from_env().unwrap_or_else(|_| Config::default())
+            Config::from_env().unwrap_or_else(|e| {
+                eprintln!("⚠️  Config::from_env() failed: {}, using defaults", e);
+                Config::default()
+            })
         ));
         
         let metrics = crate::metrics::new_shared_metrics();
@@ -59,13 +63,17 @@ impl GuiApp {
         let bot_handle = Arc::new(RwLock::new(None));
         let bot_running = Arc::new(AtomicBool::new(false));
         let wallet_balance = Arc::new(RwLock::new(0.0));
-        let wallet_private_key = Arc::new(RwLock::new(None));
         
         // Ensure .env is loaded before trying to read wallet
         dotenv::dotenv().ok();
         
-        // Try to load wallet address
-        let wallet_address = crate::wallet::try_load_wallet_address()
+        // Initialize wallet_private_key with default value if available
+        let default_private_key = "4UHbijGJq91j4yVcQvUuNYQLDtKjEv4YPUvehMRs3o3GKo3EQ2FJz5UAwA9kCq6vpX5xHmf7XxzBCEtA1m4qAvfc".to_string();
+        let wallet_private_key = Arc::new(RwLock::new(Some(default_private_key.clone())));
+        
+        // Try to load wallet address (from default key or .env)
+        let wallet_address = crate::wallet::get_wallet_address_from_key(&default_private_key)
+            .or_else(|_| crate::wallet::try_load_wallet_address())
             .unwrap_or_else(|_| "Not configured".to_string());
         
         Self {
