@@ -210,16 +210,17 @@ impl SettingsState {
 
 pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc::Sender<BotControl>, wallet_private_key: &Arc<RwLock<Option<String>>>) {
     ui.vertical_centered(|ui| {
-        ui.add_space(12.0);
+        ui.add_space(16.0);
         ui.label(egui::RichText::new("⚙️  Settings")
-            .size(26.0)
+            .size(28.0)
             .strong()
             .color(egui::Color32::from_rgb(220, 230, 245)));
+        ui.add_space(4.0);
         ui.label(egui::RichText::new("Configure bot parameters and filters")
-            .size(13.0)
+            .size(14.0)
             .color(egui::Color32::from_rgb(160, 170, 185)));
     });
-    ui.add_space(20.0);
+    ui.add_space(24.0);
     
     let current_config = {
         let cfg = config.read().unwrap();
@@ -257,12 +258,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     // Enhanced Wallet Private Key Section with premium styling
     ui.group(|ui| {
-        ui.set_min_height(140.0);
+        ui.set_min_height(150.0);
         ui.heading(egui::RichText::new("🔐 Wallet Configuration")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 210, 110)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Enter your Solana wallet private key (base58 format)")
             .size(12.0)
@@ -380,16 +381,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             .color(egui::Color32::from_rgb(255, 210, 110)));
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced API Configuration Section
     ui.group(|ui| {
-        ui.set_min_height(170.0);
+        ui.set_min_height(180.0);
         ui.heading(egui::RichText::new("🔑 API Configuration")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 160, 110)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Required: Helius API Key. Optional: Custom RPC/WebSocket URLs")
             .size(12.0)
@@ -448,16 +449,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced basic settings with premium styling
     ui.group(|ui| {
-        ui.set_min_height(300.0);
+        ui.set_min_height(320.0);
         ui.heading(egui::RichText::new("💰 Trading Settings")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 220, 0)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Buy Amount (SOL):")
@@ -593,16 +594,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         }
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced Auto-Sell Settings
     ui.group(|ui| {
-        ui.set_min_height(220.0);
+        ui.set_min_height(240.0);
         ui.heading(egui::RichText::new("💰 Auto-Sell Settings")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 220, 0)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Automatically sell positions when conditions are met")
             .size(12.0)
@@ -737,16 +738,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         }
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Blacklist/Whitelist Configuration
     ui.group(|ui| {
-        ui.set_min_height(200.0);
+        ui.set_min_height(220.0);
         ui.heading(egui::RichText::new("🚫 Blacklist / ✅ Whitelist")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 120, 120)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Enter comma-separated base58 addresses")
             .size(12.0)
@@ -865,16 +866,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             .color(egui::Color32::from_rgb(160, 170, 185)));
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced Target mint address (single token mode)
     ui.group(|ui| {
-        ui.set_min_height(120.0);
+        ui.set_min_height(130.0);
         ui.heading(egui::RichText::new("🎯 Target Token (Optional)")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 160, 210)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.label(egui::RichText::new("If set, bot will only buy this specific token when detected")
             .size(12.0)
@@ -928,16 +929,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         }
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced Dev buy filter
     ui.group(|ui| {
-        ui.set_min_height(140.0);
+        ui.set_min_height(150.0);
         ui.heading(egui::RichText::new("🔍 Dev Buy Filter")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(120, 200, 255)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Min Dev Buy (USD):")
@@ -1015,16 +1016,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced Social filters
     ui.group(|ui| {
-        ui.set_min_height(120.0);
+        ui.set_min_height(130.0);
         ui.heading(egui::RichText::new("📱 Social Filters")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(100, 255, 190)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         
         if ui.checkbox(&mut config_clone.require_socials, egui::RichText::new("Require Socials")
                 .size(13.0)).changed() {
@@ -1061,16 +1062,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
     });
     
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     
     // Enhanced Submission mode
     ui.group(|ui| {
-        ui.set_min_height(100.0);
+        ui.set_min_height(110.0);
         ui.heading(egui::RichText::new("🚀 Submission Mode")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 160, 110)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         egui::ComboBox::from_id_source("submission_mode")
             .selected_text(config_clone.submission_mode.as_str())
             .show_ui(ui, |ui| {

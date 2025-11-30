@@ -106,7 +106,9 @@ fn main() -> Result<()> {
         }
     }
     
-    // Initialize GUI app
+    // Initialize GUI app with macOS compatibility options
+    // Note: NSScreen panic is a known issue with icrate/eframe on macOS
+    // This may require updating eframe/egui or using a workaround
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
@@ -126,6 +128,8 @@ fn main() -> Result<()> {
         }),
     ) {
         eprintln!("❌ Failed to run GUI: {}", e);
+        eprintln!("⚠️  If you see NSScreen panic, this is a known issue with icrate/eframe on macOS");
+        eprintln!("   Try updating eframe/egui or check for macOS-specific workarounds");
         return Err(anyhow!("Failed to run GUI: {}", e));
     }
     

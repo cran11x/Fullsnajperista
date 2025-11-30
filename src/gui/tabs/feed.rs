@@ -22,11 +22,12 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
     ui.horizontal(|ui| {
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("🔴 Live Feed")
-                .size(26.0)
+                .size(28.0)
                 .strong()
                 .color(egui::Color32::from_rgb(255, 120, 120)));
+            ui.add_space(4.0);
             ui.label(egui::RichText::new("Real-time token detection and trading events")
-                .size(13.0)
+                .size(14.0)
                 .color(egui::Color32::from_rgb(160, 170, 185)));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -35,62 +36,62 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                     .strong())
                     .fill(egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.2))
                     .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 100, 100)))
-                    .min_size(egui::vec2(90.0, 34.0))
-                    .rounding(egui::Rounding::same(6.0)));
+                    .min_size(egui::vec2(100.0, 36.0))
+                    .rounding(egui::Rounding::same(8.0)));
             if clear_response.clicked() {
                 if let Ok(mut log) = event_log.write() {
                     log.clear();
                 }
             }
-            ui.add_space(8.0);
+            ui.add_space(10.0);
             ui.checkbox(auto_scroll, egui::RichText::new("Auto-scroll")
-                .size(13.0));
+                .size(14.0));
         });
     });
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     
     // Enhanced filters and options with premium styling
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Filters:")
-                .size(13.0)
+                .size(14.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(12.0);
+            ui.add_space(14.0);
             
             ui.checkbox(&mut state.filter_detected, egui::RichText::new("🔍 Detected")
-                .size(13.0));
-            ui.add_space(6.0);
+                .size(14.0));
+            ui.add_space(8.0);
             ui.checkbox(&mut state.filter_filtered, egui::RichText::new("⏭️ Filtered")
-                .size(13.0));
-            ui.add_space(6.0);
+                .size(14.0));
+            ui.add_space(8.0);
             ui.checkbox(&mut state.filter_bought, egui::RichText::new("✅ Bought")
-                .size(13.0));
-            ui.add_space(6.0);
+                .size(14.0));
+            ui.add_space(8.0);
             ui.checkbox(&mut state.filter_sold, egui::RichText::new("💰 Sold")
-                .size(13.0));
-            ui.add_space(6.0);
+                .size(14.0));
+            ui.add_space(8.0);
             ui.checkbox(&mut state.filter_error, egui::RichText::new("❌ Error")
-                .size(13.0));
-            ui.add_space(6.0);
+                .size(14.0));
+            ui.add_space(8.0);
             ui.checkbox(&mut state.filter_info, egui::RichText::new("ℹ️ Info")
-                .size(13.0));
+                .size(14.0));
             
-            ui.add_space(24.0);
+            ui.add_space(28.0);
             
             ui.checkbox(&mut state.show_full_addresses, egui::RichText::new("Show Full Addresses")
-                .size(13.0));
+                .size(14.0));
         });
         
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("🔍 Search:")
-                .size(13.0)
+                .size(14.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(8.0);
+            ui.add_space(10.0);
             ui.add(egui::TextEdit::singleline(&mut state.search_text)
-                .desired_width(300.0));
+                .desired_width(320.0));
             if !state.search_text.is_empty() {
                 ui.add_space(6.0);
                 if ui.button(egui::RichText::new("✕")
@@ -102,7 +103,7 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
         });
     });
     
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     
     let log = event_log.read().unwrap();
     
@@ -125,37 +126,37 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
     // Enhanced summary stats with premium styling
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("Total: {}", log.len()))
-            .size(14.0)
+            .size(15.0)
             .strong()
             .color(egui::Color32::from_rgb(220, 230, 245)));
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         ui.label(egui::RichText::new(format!("🔍 {}", detected_count))
-            .size(13.0)
+            .size(14.0)
             .strong()
             .color(egui::Color32::from_rgb(120, 200, 255)));
-        ui.add_space(10.0);
+        ui.add_space(12.0);
         ui.label(egui::RichText::new(format!("⏭️ {}", filtered_count))
-            .size(13.0)
+            .size(14.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 190, 120)));
-        ui.add_space(10.0);
+        ui.add_space(12.0);
         ui.label(egui::RichText::new(format!("✅ {}", bought_count))
-            .size(13.0)
+            .size(14.0)
             .strong()
             .color(egui::Color32::from_rgb(0, 255, 140)));
-        ui.add_space(10.0);
+        ui.add_space(12.0);
         ui.label(egui::RichText::new(format!("💰 {}", sold_count))
-            .size(13.0)
+            .size(14.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 220, 0)));
-        ui.add_space(10.0);
+        ui.add_space(12.0);
         ui.label(egui::RichText::new(format!("❌ {}", error_count))
-            .size(13.0)
+            .size(14.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 120, 120)));
     });
     
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     
     // Filter and search events
     let events_to_show: Vec<_> = log.iter().rev().take(500).filter(|event| {
@@ -240,12 +241,12 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                 };
                 
                 let group_response = ui.group(|ui| {
-                    ui.set_min_height(38.0);
+                    ui.set_min_height(42.0);
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.label(egui::RichText::new(icon).size(20.0));
                             ui.add_space(10.0);
-                            ui.label(egui::RichText::new(icon).size(18.0));
-                            ui.add_space(8.0);
                             
                             // Enhanced time display
                             ui.label(egui::RichText::new(

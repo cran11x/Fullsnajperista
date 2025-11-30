@@ -43,9 +43,9 @@ borsh = "1.5.7"
 lru = "0.12"
 once_cell = "1.19"
 
-# GUI Framework
-eframe = "0.28"
-egui = "0.28"
+# GUI Framework - using latest version to fix macOS NSScreen issues
+eframe = "0.29"
+egui = "0.29"
 open = "5.2"
 
 [dev-dependencies]

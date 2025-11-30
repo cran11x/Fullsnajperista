@@ -7,16 +7,17 @@ use crate::accounts::TokenTracker;
 
 pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
     ui.vertical_centered(|ui| {
-        ui.add_space(12.0);
+        ui.add_space(16.0);
         ui.label(egui::RichText::new("💰 Recent Buys")
-            .size(26.0)
+            .size(28.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 220, 0)));
+        ui.add_space(4.0);
         ui.label(egui::RichText::new("Track your successful token purchases")
-            .size(13.0)
+            .size(14.0)
             .color(egui::Color32::from_rgb(160, 170, 185)));
     });
-    ui.add_space(20.0);
+    ui.add_space(24.0);
     
     // Force refresh every frame by always reading fresh data
     // Also try to reload from JSON file to get latest data
@@ -53,10 +54,10 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
         
         // Enhanced total buys count display
         ui.label(egui::RichText::new(format!("Total buys recorded: {}", total_buys))
-            .size(13.0)
+            .size(15.0)
             .strong()
             .color(egui::Color32::from_rgb(180, 200, 255)));
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         
         if buys.is_empty() {
             ui.vertical_centered(|ui| {
@@ -71,34 +72,34 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                 .show(ui, |ui| {
                 egui::Grid::new("buys_grid")
                     .num_columns(6)
-                    .spacing([20.0, 8.0])
+                    .spacing([24.0, 10.0])
                     .striped(true)
-                    .min_row_height(38.0)
+                    .min_row_height(42.0)
                     .show(ui, |ui| {
                         // Enhanced header with premium styling
                         // Note: Cannot use add_space() inside grid layout
                         ui.label(egui::RichText::new("Time")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.label(egui::RichText::new("Token")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.label(egui::RichText::new("MC ($)")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.label(egui::RichText::new("Dev Buy (SOL)")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.label(egui::RichText::new("Socials")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.label(egui::RichText::new("Transaction")
-                            .size(14.0)
+                            .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.end_row();

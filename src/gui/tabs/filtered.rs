@@ -17,11 +17,12 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     ui.horizontal(|ui| {
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("⏭️  Filtered Tokens")
-                .size(26.0)
+                .size(28.0)
                 .strong()
                 .color(egui::Color32::from_rgb(255, 190, 120)));
+            ui.add_space(4.0);
             ui.label(egui::RichText::new("All detected tokens that were not bought with reasons")
-                .size(13.0)
+                .size(14.0)
                 .color(egui::Color32::from_rgb(160, 170, 185)));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -30,28 +31,28 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
                     .strong())
                     .fill(egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.2))
                     .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 100, 100)))
-                    .min_size(egui::vec2(90.0, 34.0))
-                    .rounding(egui::Rounding::same(6.0)));
+                    .min_size(egui::vec2(100.0, 36.0))
+                    .rounding(egui::Rounding::same(8.0)));
             if clear_response.clicked() {
                 // Clear only filtered tokens from log
                 if let Ok(mut log) = event_log.write() {
                     log.retain(|e| !matches!(e, TokenEvent::Filtered { .. }));
                 }
             }
-            ui.add_space(8.0);
+            ui.add_space(10.0);
             let export_response = ui.add(egui::Button::new(egui::RichText::new("💾 Export CSV")
                     .size(14.0)
                     .strong())
                     .fill(egui::Color32::from_rgb(100, 200, 255).linear_multiply(0.2))
                     .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 200, 255)))
-                    .min_size(egui::vec2(120.0, 34.0))
-                    .rounding(egui::Rounding::same(6.0)));
+                    .min_size(egui::vec2(130.0, 36.0))
+                    .rounding(egui::Rounding::same(8.0)));
             if export_response.clicked() {
                 export_to_csv(event_log);
             }
         });
     });
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     let log = event_log.read().unwrap();
     
@@ -86,10 +87,10 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     // Enhanced summary with premium styling
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("Total Filtered: {}", filtered_tokens.len()))
-            .size(16.0)
+            .size(17.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 190, 120)));
-        ui.add_space(24.0);
+        ui.add_space(28.0);
         
         // Enhanced count by reason
         use std::collections::HashMap;
@@ -100,14 +101,14 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
         
         for (reason, count) in reason_counts.iter() {
             ui.label(egui::RichText::new(format!("{}: {}", reason, count))
-                .size(13.0)
+                .size(14.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(12.0);
+            ui.add_space(14.0);
         }
     });
     
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     
     // Table with filtered tokens
     egui::ScrollArea::vertical()

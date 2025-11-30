@@ -8,20 +8,21 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
     let m = metrics.read().unwrap();
     
     ui.vertical_centered(|ui| {
-        ui.add_space(12.0);
+        ui.add_space(16.0);
         ui.label(egui::RichText::new("📊 Performance Dashboard")
-            .size(26.0)
+            .size(28.0)
             .strong()
             .color(egui::Color32::from_rgb(220, 240, 255)));
+        ui.add_space(4.0);
         ui.label(egui::RichText::new("Real-time metrics and performance analytics")
-            .size(13.0)
+            .size(14.0)
             .color(egui::Color32::from_rgb(160, 170, 185)));
     });
-    ui.add_space(20.0);
+    ui.add_space(24.0);
     
     // Premium main metrics row with enhanced spacing
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+        ui.spacing_mut().item_spacing = egui::vec2(20.0, 0.0);
         
         crate::gui::components::render_metric_card(
             ui,
@@ -59,7 +60,7 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
         );
     });
     
-    ui.add_space(24.0);
+    ui.add_space(28.0);
     
     // Enhanced success rate with premium styling
     let success_rate = m.success_rate();
@@ -70,16 +71,16 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
         egui::Color32::from_rgb(0, 240, 140),
     );
     
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     // Premium method breakdown with enhanced cards
     ui.group(|ui| {
-        ui.set_min_height(140.0);
+        ui.set_min_height(160.0);
         ui.heading(egui::RichText::new("🚀 Submission Method Performance")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(200, 220, 255)));
-        ui.add_space(16.0);
+        ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(20.0, 0.0);
             ui.vertical(|ui| {
@@ -144,15 +145,15 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
         });
     });
     
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     // Enhanced timing statistics with premium styling
     ui.group(|ui| {
         ui.heading(egui::RichText::new("⏱️ Timing Statistics (ms)")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(200, 220, 255)));
-        ui.add_space(12.0);
+        ui.add_space(14.0);
         egui::Grid::new("timing_grid")
             .spacing([20.0, 8.0])
             .show(ui, |ui| {
@@ -231,17 +232,17 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
         });
     });
     
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     // Enhanced filter breakdown with premium styling
     ui.group(|ui| {
         ui.heading(egui::RichText::new("🔍 Filter Breakdown")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(200, 220, 255)));
-        ui.add_space(12.0);
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(20.0, 0.0);
             ui.label(egui::RichText::new(format!("Dev Buy: {}", m.filtered_by_dev_buy))
                 .size(13.0)
                 .color(egui::Color32::from_rgb(255, 200, 130)));
@@ -257,17 +258,17 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
         });
     });
     
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     
     // Enhanced error breakdown with premium styling
     ui.group(|ui| {
         ui.heading(egui::RichText::new("⚠️ Error Breakdown")
-            .size(18.0)
+            .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 150, 150)));
-        ui.add_space(12.0);
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(20.0, 0.0);
             ui.label(egui::RichText::new(format!("Network: {}", m.network_errors))
                 .size(13.0)
                 .color(egui::Color32::from_rgb(255, 140, 140)));

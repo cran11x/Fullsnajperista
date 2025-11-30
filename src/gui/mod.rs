@@ -153,68 +153,120 @@ impl eframe::App for GuiApp {
         // Handle control messages
         self.handle_control_messages();
         
-        // Top bar with controls - premium modern header
+        // Top bar with controls - premium modern header (responsive)
         egui::TopBottomPanel::top("top_panel")
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(16, 18, 24))
-                .inner_margin(egui::Margin::same(20.0))
+                .fill(egui::Color32::from_rgb(18, 20, 26))
+                .inner_margin(egui::Margin::symmetric(20.0, 16.0))
                 .outer_margin(egui::Margin::same(0.0))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 40, 55))))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 45, 60))))
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.set_height(60.0);
+                ui.set_height(85.0);
+                ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
                 
-                // Logo/Title section with enhanced styling
+                // Logo/Title section - LEFT SIDE (responsive, can shrink)
                 ui.vertical(|ui| {
-                    ui.add_space(6.0);
+                    ui.add_space(14.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("⚡").size(28.0));
+                        ui.label(egui::RichText::new("⚡").size(24.0));
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Pump.fun Sniper Bot")
-                            .size(22.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(120, 220, 255)));
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new("Pump.fun Sniper Bot")
+                                .size(18.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(100, 200, 255)));
+                            ui.add_space(1.0);
+                            ui.label(egui::RichText::new("Professional Token Sniping Platform")
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(150, 160, 175)));
+                        });
                     });
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new("Professional Token Sniping Platform")
-                        .size(12.0)
-                        .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
                 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Update wallet address from UI private key if available
-                    let wallet_address_display = {
-                        let ui_key = self.wallet_private_key.read().unwrap();
-                        if let Some(ref key) = *ui_key {
-                            crate::wallet::get_wallet_address_from_key(key)
-                                .unwrap_or_else(|_| self.wallet_address.clone())
-                        } else {
-                            self.wallet_address.clone()
-                        }
-                    };
+                // Flexible spacer that adapts to available space
+                let available_width = ui.available_width();
+                let min_controls_width = 400.0; // Minimum space needed for controls
+                let spacer_width = (available_width - min_controls_width).max(20.0);
+                ui.add_space(spacer_width);
+                
+                // Start/Stop button - MOST VISIBLE, responsive size
+                let running = self.bot_running.load(Ordering::Relaxed);
+                let button_text = if running { "⏸ Stop" } else { "▶ Start" };
+                let button_color = if running {
+                    egui::Color32::from_rgb(255, 100, 100)
+                } else {
+                    egui::Color32::from_rgb(0, 240, 120)
+                };
+                
+                ui.vertical_centered(|ui| {
+                    // Responsive button size - smaller if space is limited
+                    let button_width = if available_width > 800.0 { 140.0 } else { 120.0 };
+                    let button_height = if available_width > 800.0 { 42.0 } else { 38.0 };
+                    let font_size = if available_width > 800.0 { 15.0 } else { 14.0 };
                     
-                    components::render_control_panel(
-                        ui,
-                        &self.bot_running,
-                        &wallet_address_display,
-                        &self.wallet_balance,
-                        &self.metrics,
-                        &self.config,
-                        &self.control_tx,
-                    );
+                    let button_response = ui.add(egui::Button::new(egui::RichText::new(button_text)
+                            .size(font_size)
+                            .strong())
+                            .fill(button_color.linear_multiply(0.4))
+                            .stroke(egui::Stroke::new(2.5, button_color))
+                            .min_size(egui::vec2(button_width, button_height))
+                            .rounding(egui::Rounding::same(10.0)));
+                    
+                    // Hover effect
+                    if button_response.hovered() {
+                        ui.painter().rect_filled(
+                            button_response.rect,
+                            10.0,
+                            button_color.linear_multiply(0.3),
+                        );
+                    }
+                    
+                    if button_response.clicked() {
+                        let control = if running {
+                            crate::gui::events::BotControl::Stop
+                        } else {
+                            crate::gui::events::BotControl::Start
+                        };
+                        let _ = self.control_tx.send(control);
+                    }
                 });
+                
+                ui.separator();
+                
+                // Control panel - RIGHT SIDE (compact, responsive)
+                // Update wallet address from UI private key if available
+                let wallet_address_display = {
+                    let ui_key = self.wallet_private_key.read().unwrap();
+                    if let Some(ref key) = *ui_key {
+                        crate::wallet::get_wallet_address_from_key(key)
+                            .unwrap_or_else(|_| self.wallet_address.clone())
+                    } else {
+                        self.wallet_address.clone()
+                    }
+                };
+                
+                components::render_control_panel(
+                    ui,
+                    &self.bot_running,
+                    &wallet_address_display,
+                    &self.wallet_balance,
+                    &self.metrics,
+                    &self.config,
+                    &self.control_tx,
+                );
             });
         });
         
         // Main content area with tabs - premium styling
         egui::CentralPanel::default()
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(20, 22, 28))
-                .inner_margin(egui::Margin::same(20.0)))
+                .fill(egui::Color32::from_rgb(22, 24, 30))
+                .inner_margin(egui::Margin::symmetric(24.0, 20.0)))
             .show(ctx, |ui| {
             // Premium modern tab bar with enhanced hover effects
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
                 
                 let tabs = [
                     (0, "📊", "Dashboard"),
@@ -227,36 +279,36 @@ impl eframe::App for GuiApp {
                 for (idx, icon, label) in tabs.iter() {
                     let is_selected = self.selected_tab == *idx;
                     let bg_color = if is_selected {
-                        egui::Color32::from_rgb(80, 140, 255).linear_multiply(0.25)
+                        egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
                     } else {
-                        egui::Color32::from_rgb(30, 35, 45).linear_multiply(0.6)
+                        egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
                     };
                     let border_color = if is_selected {
-                        egui::Color32::from_rgb(100, 180, 255)
+                        egui::Color32::from_rgb(80, 160, 255)
                     } else {
-                        egui::Color32::from_rgb(50, 55, 70)
+                        egui::Color32::from_rgb(55, 60, 75)
                     };
                     let text_color = if is_selected {
-                        egui::Color32::from_rgb(220, 240, 255)
+                        egui::Color32::from_rgb(230, 245, 255)
                     } else {
-                        egui::Color32::from_rgb(170, 180, 195)
+                        egui::Color32::from_rgb(180, 190, 205)
                     };
                     
                     let button_response = ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
-                            .size(15.0)
+                            .size(14.0)
                             .strong()
                             .color(text_color))
                             .fill(bg_color)
-                            .stroke(egui::Stroke::new(if is_selected { 2.5 } else { 1.0 }, border_color))
-                            .min_size(egui::vec2(140.0, 40.0))
-                            .rounding(egui::Rounding::same(8.0)));
+                            .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
+                            .min_size(egui::vec2(150.0, 42.0))
+                            .rounding(egui::Rounding::same(10.0)));
                     
                     // Enhanced hover effect
                     if button_response.hovered() && !is_selected {
                         ui.painter().rect_filled(
                             button_response.rect,
-                            8.0,
-                            egui::Color32::from_rgb(45, 55, 70).linear_multiply(0.8),
+                            10.0,
+                            egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
                         );
                     }
                     
@@ -266,9 +318,11 @@ impl eframe::App for GuiApp {
                 }
             });
             
-            ui.add_space(16.0);
+            ui.add_space(20.0);
             
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
                 match self.selected_tab {
                     0 => tabs::dashboard::render(ui, &self.metrics),
                     1 => tabs::buys::render(ui, &self.tracker),
@@ -313,11 +367,11 @@ fn setup_egui_style(ctx: &egui::Context) {
     style.visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 200, 255));
     
     // Premium spacing for professional feel
-    style.spacing.item_spacing = egui::vec2(14.0, 10.0);
-    style.spacing.window_margin = egui::Margin::same(16.0);
-    style.spacing.button_padding = egui::vec2(18.0, 10.0);
-    style.spacing.menu_margin = egui::Margin::same(10.0);
-    style.spacing.indent = 24.0;
+    style.spacing.item_spacing = egui::vec2(16.0, 12.0);
+    style.spacing.window_margin = egui::Margin::same(20.0);
+    style.spacing.button_padding = egui::vec2(20.0, 12.0);
+    style.spacing.menu_margin = egui::Margin::same(12.0);
+    style.spacing.indent = 28.0;
     
     // Enhanced typography with better readability
     style.text_styles.insert(
