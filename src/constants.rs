@@ -37,18 +37,19 @@ pub const JITO_ENDPOINTS: [&str; 4] = [
     "https://tokyo.mainnet.block-engine.jito.wtf",
 ];
 
-/// Helius tip accounts (legacy, may not be used)
-pub const HELIUS_TIP_ACCOUNTS: [&str; 10] = [
-    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+/// Helius tip accounts (required: minimum 200,000 lamports tip)
+pub const HELIUS_TIP_ACCOUNTS: [&str; 11] = [
     "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
-    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
     "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
     "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
     "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
     "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
-    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
     "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
     "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+    "D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM",
+    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
+    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
 ];
 
 /// Helius fast sender endpoint
@@ -72,6 +73,14 @@ pub fn random_jito_endpoint() -> &'static str {
     use rand::seq::SliceRandom;
     let mut rng = rand::thread_rng();
     JITO_ENDPOINTS.choose(&mut rng).unwrap()
+}
+
+/// Helper function to get a random Helius tip account as Pubkey
+pub fn random_helius_tip_account() -> Pubkey {
+    use rand::seq::SliceRandom;
+    let mut rng = rand::thread_rng();
+    let account_str = HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap();
+    Pubkey::from_str(account_str).expect("Invalid HELIUS_TIP_ACCOUNT")
 }
 
 #[cfg(test)]

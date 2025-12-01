@@ -14,7 +14,7 @@ use crate::pda_derivation::PumpPdas;
 
 /// Validate sell instruction parameters
 fn validate_sell_params(
-    accounts: &PumpBuyAccounts,
+    _accounts: &PumpBuyAccounts,
     user_wallet: &Pubkey,
     user_token_account: &Pubkey,
     token_amount: u64,

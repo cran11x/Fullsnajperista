@@ -33,6 +33,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
         let reloaded_tracker = crate::accounts::TokenTracker::new().ok();
         let tracker_to_use = reloaded_tracker.as_ref().unwrap_or(tracker_ref);
         
+        // Note: Cleanup is done in background by monitor_positions task
+        // We just display the current active positions
         let active_positions = tracker_to_use.get_active_positions();
         
         ui.label(egui::RichText::new(format!("Active positions: {}", active_positions.len()))
@@ -52,41 +54,54 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                // Improved grid with proper column widths and responsive spacing
+                let available_width = ui.available_width();
+                let spacing = if available_width > 1000.0 { 20.0 } else { 12.0 };
+                
                 egui::Grid::new("positions_grid")
                     .num_columns(6)
-                    .spacing([24.0, 10.0])
+                    .spacing([spacing, 10.0])
                     .striped(true)
                     .min_row_height(42.0)
                     .show(ui, |ui| {
-                        // Header
+                        // Header with proper column widths
+                        ui.set_width(90.0); // Time column
                         ui.label(egui::RichText::new("Time")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(200.0); // Token column
                         ui.label(egui::RichText::new("Token")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(100.0); // Entry MC column
                         ui.label(egui::RichText::new("Entry MC")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(100.0); // Invested column
                         ui.label(egui::RichText::new("Invested")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(100.0); // Tokens column
                         ui.label(egui::RichText::new("Tokens")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(150.0); // Action column
                         ui.label(egui::RichText::new("Action")
                             .size(15.0).strong().color(egui::Color32::from_rgb(220, 230, 245)));
                         ui.end_row();
                         
                         for pos in active_positions.iter().rev() {
-                            // Time
+                            // Time column
+                            ui.set_width(90.0);
                             let time_str = pos.timestamp.format("%H:%M:%S").to_string();
                             ui.label(egui::RichText::new(time_str)
                                 .size(13.0).color(egui::Color32::from_rgb(170, 190, 210)).monospace());
                             
-                            // Token
+                            // Token column
+                            ui.set_width(200.0);
                             let mint_short = format_address_safe(&pos.mint);
                             if ui.link(egui::RichText::new(mint_short)
                                 .size(13.0).monospace().color(egui::Color32::from_rgb(160, 210, 255))).clicked() {
                                 let _ = open::that(format!("https://solscan.io/token/{}", pos.mint));
                             }
                             
-                            // Entry MC
+                            // Entry MC column
+                            ui.set_width(100.0);
                             let mc_str = if let Some(mc) = pos.mc_at_entry_usd {
                                 format!("${:.0}", mc)
                             } else {
@@ -95,11 +110,13 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                             ui.label(egui::RichText::new(mc_str)
                                 .size(13.0).strong().color(egui::Color32::from_rgb(255, 230, 110)));
                                 
-                            // Invested
+                            // Invested column
+                            ui.set_width(100.0);
                             ui.label(egui::RichText::new(format!("{:.3} SOL", pos.our_buy_sol))
                                 .size(13.0).strong().color(egui::Color32::from_rgb(255, 255, 255)));
                                 
-                            // Tokens
+                            // Tokens column
+                            ui.set_width(100.0);
                             let tokens_str = if let Some(amt) = pos.token_amount {
                                 format!("{:.0}", amt as f64 / 1e6) // Assuming 6 decimals for display simplicity
                             } else {
@@ -108,8 +125,10 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                             ui.label(egui::RichText::new(tokens_str)
                                 .size(13.0).color(egui::Color32::from_rgb(200, 200, 200)));
                                 
-                            // Action (Link to Photon/Bullx for selling manually)
+                            // Action column
+                            ui.set_width(150.0);
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
                                 if ui.button("📈 Chart").clicked() {
                                     let _ = open::that(format!("https://photon-sol.tinyastro.io/en/lp/{}", pos.bonding_curve.as_ref().unwrap_or(&pos.mint)));
                                 }

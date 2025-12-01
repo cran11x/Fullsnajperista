@@ -60,7 +60,6 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_cache_ttl() {
@@ -87,7 +86,7 @@ mod tests {
         clear_cache();
         
         // After clearing, should fetch again
-        let hash3 = get_cached_blockhash(&rpc).await.unwrap();
+        let _hash3 = get_cached_blockhash(&rpc).await.unwrap();
         // hash3 might be same or different depending on timing
     }
 }

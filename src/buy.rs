@@ -1,7 +1,7 @@
 // buy.rs - ULTRA OPTIMIZED WITH CACHE
 #![allow(unused_variables, unused_comparisons)]
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -122,10 +122,43 @@ pub async fn build_buy_instruction(
              pdas.bonding_curve, accounts.bonding_curve,
              if pdas.bonding_curve == accounts.bonding_curve { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
     
-    // Verify Creator Vault (Account 9) - check if it's a valid PDA
-    // Note: Creator Vault is extracted from BUY instruction, so we can't verify derivation here
-    eprintln!("   Account 9 (Creator Vault): {} (from BUY instruction)", accounts.creator_vault);
+    // Verify Associated Bonding Curve (Account 4)
+    // IMPORTANT: We must use the RECALCULATED associated bonding curve based on the recalculated bonding curve
+    // The one in `accounts` might be derived from a stale or incorrect bonding curve
+    let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        .unwrap_or_else(|_| spl_token::id());
+    let recalculated_abc = spl_associated_token_account::get_associated_token_address_with_program_id(
+        &pdas.bonding_curve,
+        &accounts.mint,
+        &token_program_2022_id
+    );
     
+    eprintln!("   Account 4 (Associated Bonding Curve): {} (from accounts: {})", 
+             recalculated_abc, accounts.associated_bonding_curve);
+    if recalculated_abc != accounts.associated_bonding_curve {
+        eprintln!("   ❌ MISMATCH - The Associated Bonding Curve in accounts struct does not match derivation from recalculated Bonding Curve!");
+        eprintln!("   Using RECALCULATED: {}", recalculated_abc);
+    } else {
+        eprintln!("   ✅ MATCH - Associated Bonding Curve is consistent");
+    }
+    
+    // Verify Creator Vault (Account 9) - check if it's a valid PDA
+    // Fix: If Creator Vault matches Bonding Curve (common error when fallback is used), derive it
+    let final_creator_vault = if accounts.creator_vault == accounts.bonding_curve || accounts.creator_vault == pdas.bonding_curve {
+        eprintln!("   ❌ Creator Vault (Account 9) matches Bonding Curve! This is an ERROR.");
+        if accounts.creator != Pubkey::default() {
+            let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&accounts.creator);
+            eprintln!("   ✅ Recalculated Creator Vault using creator {}: {}", accounts.creator, derived_vault);
+            derived_vault
+        } else {
+            eprintln!("   ⚠️  Cannot recalculate Creator Vault: Creator is default/unknown. Using input but likely to fail.");
+            accounts.creator_vault
+        }
+    } else {
+        eprintln!("   Account 9 (Creator Vault): {} (from accounts)", accounts.creator_vault);
+        accounts.creator_vault
+    };
+
     // Verify Event Authority (Account 10)
     eprintln!("   Account 10 (Event Authority): {} (from accounts: {}) {}", 
              pdas.event_authority, accounts.event_authority,
@@ -154,8 +187,8 @@ pub async fn build_buy_instruction(
             AccountMeta::new_readonly(accounts.mint, false),
             // Account 3: Bonding Curve (PDA, RECALCULATED for current mint)
             AccountMeta::new(pdas.bonding_curve, false),
-            // Account 4: Associated Bonding Curve (from accounts - should be correct, but verify if needed)
-            AccountMeta::new(accounts.associated_bonding_curve, false),
+            // Account 4: Associated Bonding Curve (RECALCULATED to ensure consistency with Bonding Curve)
+            AccountMeta::new(recalculated_abc, false),
             // Account 5: User Token Account (current user's token account)
             AccountMeta::new(*user_token_account, false),
             // Account 6: User Wallet (signer, current user)
@@ -168,11 +201,8 @@ pub async fn build_buy_instruction(
                     .unwrap_or_else(|_| spl_token::id()), // Token Program 2022
                 false
             ),
-            // Account 9: Creator Vault (from accounts - extracted from BUY instruction, should be correct)
-            AccountMeta::new({
-                eprintln!("🔍 BUILDING BUY INSTRUCTION - Creator Vault (index 9): {}", accounts.creator_vault);
-                accounts.creator_vault
-            }, false),
+            // Account 9: Creator Vault (RECALCULATED if suspicious)
+            AccountMeta::new(final_creator_vault, false),
             // Account 10: Event Authority (PDA, RECALCULATED)
             AccountMeta::new_readonly(pdas.event_authority, false),
             // Account 11: Pump Program (readonly, program itself - REQUIRED for program verification)
@@ -241,6 +271,8 @@ pub async fn build_buy_instruction(
             } else {
                 eprintln!("   ✅✅✅ User Volume PDA verified: matches expected PDA for user {}", user_wallet);
             }
+        } else if idx == 9 {
+            eprintln!("   [{}] {} ({}){} <-- CREATOR VAULT", idx, account.pubkey, label, writable_str);
         } else {
             eprintln!("   [{}] {} ({}){}{}", idx, account.pubkey, label, signer_str, writable_str);
         }

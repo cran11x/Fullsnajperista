@@ -7,6 +7,7 @@ mod events;
 pub use events::{TokenEvent, BotControl};
 
 use eframe::egui;
+use std::str::FromStr;
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock, mpsc as std_mpsc, atomic::{AtomicBool, Ordering}};
 use chrono::Utc;
@@ -37,7 +38,8 @@ pub struct GuiApp {
     selected_tab: usize,
     auto_scroll_feed: bool,
     feed_state: tabs::feed::FeedState,
-    session_start: chrono::DateTime<Utc>,
+    buy_sniper_state: tabs::buy_sniper::BuySniperState,
+    _session_start: chrono::DateTime<Utc>,
 }
 
 impl GuiApp {
@@ -99,7 +101,8 @@ impl GuiApp {
                 filter_info: true,
                 ..Default::default()
             },
-            session_start: Utc::now(),
+            buy_sniper_state: tabs::buy_sniper::BuySniperState::default(),
+            _session_start: Utc::now(),
         }
     }
     
@@ -137,6 +140,111 @@ impl GuiApp {
                 }
                 BotControl::ManualSell(_) => {
                     // Forwarded to bot thread, nothing to do in GUI thread
+                }
+                BotControl::ManualBuy { mint, sol_amount } => {
+                    // Forward to bot thread if running
+                    if self.control_tx_bot.is_some() {
+                         // Already forwarded above
+                    } else {
+                         // Bot is NOT running - execute manually here
+                         eprintln!("🚀 Bot stopped, executing manual buy in background...");
+                         
+                         // Clone resources
+                         let config_clone = self.config.clone();
+                         let tracker_clone = self.tracker.clone();
+                         let metrics_clone = self.metrics.clone();
+                         let wallet_pk = self.wallet_private_key.clone();
+                         let mint_clone = mint.clone();
+                         
+                         // Spawn a one-off thread to handle the async buy
+                         std::thread::spawn(move || {
+                             let rt = tokio::runtime::Builder::new_current_thread()
+                                 .enable_all()
+                                 .build()
+                                 .unwrap();
+                                 
+                             rt.block_on(async move {
+                                 // Load wallet
+                                 let wallet = {
+                                     let ui_key = wallet_pk.read().unwrap();
+                                     if let Some(ref private_key) = *ui_key {
+                                         match crate::wallet::load_wallet_from_key(private_key) {
+                                             Ok(w) => w,
+                                             Err(e) => {
+                                                 eprintln!("❌ Failed to load wallet for manual buy: {}", e);
+                                                 return;
+                                             }
+                                         }
+                                     } else {
+                                         match crate::wallet::load_wallet() {
+                                             Ok(w) => w,
+                                             Err(e) => {
+                                                  eprintln!("❌ Failed to load wallet for manual buy: {}", e);
+                                                  return;
+                                             }
+                                         }
+                                     }
+                                 };
+
+                                 let config_val = {
+                                     let cfg = config_clone.read().unwrap();
+                                     (*cfg).clone()
+                                 };
+                                 let rpc_client = config_val.create_rpc_client();
+                                 
+                                 // Parse mint
+                                 let mint_pubkey = match solana_sdk::pubkey::Pubkey::from_str(&mint_clone) {
+                                     Ok(pk) => pk,
+                                     Err(e) => {
+                                         eprintln!("❌ Invalid mint address: {}", e);
+                                         return;
+                                     }
+                                 };
+
+                                 // Create accounts
+                                 let accounts = match crate::detection::PumpBuyAccounts::from_mint_address(&rpc_client, &mint_pubkey).await {
+                                     Ok(acc) => acc,
+                                     Err(e) => {
+                                         eprintln!("❌ Failed to create accounts: {}", e);
+                                         return;
+                                     }
+                                 };
+                                 
+                                 let buy_amount = sol_amount.unwrap_or(config_val.buy_amount_lamports());
+
+                                 // Preload global account (needed for buy instruction)
+                                 if let Err(e) = crate::buy::preload_global(&rpc_client, &config_val.global_account).await {
+                                     eprintln!("❌ Failed to preload global account: {}", e);
+                                     return;
+                                 }
+
+                                 // Execute buy
+                                 // We pass a dummy channel since we don't have the main event loop listening
+                                 let (dummy_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+                                 match crate::bot_core::execute_manual_buy(
+                                     &config_val,
+                                     &wallet,
+                                     &rpc_client,
+                                     &tracker_clone,
+                                     accounts,
+                                     buy_amount,
+                                     &metrics_clone,
+                                     &dummy_tx
+                                 ).await {
+                                     Ok(sig) => {
+                                         eprintln!("✅ Manual buy successful! Signature: {}", sig);
+                                         // We can't easily update the UI event log from here since it's not thread-safe to access the Arc<RwLock> 
+                                         // if we didn't pass it, and we don't want to complicate the signature too much.
+                                         // BUT wait, we CAN pass event_log to this closure if we clone it!
+                                     }
+                                     Err(e) => {
+                                         eprintln!("❌ Manual buy failed: {}", e);
+                                     }
+                                 }
+                             });
+                         });
+                    }
                 }
             }
         }
@@ -188,9 +296,13 @@ impl eframe::App for GuiApp {
                 });
                 
                 // Flexible spacer that adapts to available space
+                // Improved responsive logic to prevent negative spacing
                 let available_width = ui.available_width();
-                let min_controls_width = 400.0; // Minimum space needed for controls
-                let spacer_width = (available_width - min_controls_width).max(20.0);
+                let logo_width = 280.0; // Approximate logo section width
+                let button_width = if available_width > 800.0 { 140.0 } else { 120.0 };
+                let control_panel_width = 200.0; // Approximate control panel width
+                let min_controls_width = button_width + control_panel_width + 50.0; // Total controls width
+                let spacer_width = (available_width - logo_width - min_controls_width).max(20.0).min(available_width * 0.3);
                 ui.add_space(spacer_width);
                 
                 // Start/Stop button - MOST VISIBLE, responsive size
@@ -263,80 +375,105 @@ impl eframe::App for GuiApp {
         
         // Main content area with tabs - premium styling
         egui::CentralPanel::default()
-            .frame(egui::Frame::none()
+            .frame(egui::Frame::default()
                 .fill(egui::Color32::from_rgb(22, 24, 30))
                 .inner_margin(egui::Margin::symmetric(24.0, 20.0)))
             .show(ctx, |ui| {
             // Premium modern tab bar with enhanced hover effects
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-                
-                let tabs = [
-                    (0, "📊", "Dashboard"),
-                    (1, "🎯", "Positions"), // New tab
-                    (2, "💰", "Recent Buys"),
-                    (3, "🔴", "Live Feed"),
-                    (4, "⏭️", "Filtered"),
-                    (5, "⚙️", "Settings"),
-                ];
-                
-                for (idx, icon, label) in tabs.iter() {
-                    let is_selected = self.selected_tab == *idx;
-                    let bg_color = if is_selected {
-                        egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
-                    } else {
-                        egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
-                    };
-                    let border_color = if is_selected {
-                        egui::Color32::from_rgb(80, 160, 255)
-                    } else {
-                        egui::Color32::from_rgb(55, 60, 75)
-                    };
-                    let text_color = if is_selected {
-                        egui::Color32::from_rgb(230, 245, 255)
-                    } else {
-                        egui::Color32::from_rgb(180, 190, 205)
-                    };
-                    
-                    let button_response = ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
-                            .size(14.0)
-                            .strong()
-                            .color(text_color))
-                            .fill(bg_color)
-                            .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
-                            .min_size(egui::vec2(150.0, 42.0))
-                            .rounding(egui::Rounding::same(10.0)));
-                    
-                    // Enhanced hover effect
-                    if button_response.hovered() && !is_selected {
-                        ui.painter().rect_filled(
-                            button_response.rect,
-                            10.0,
-                            egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
-                        );
-                    }
-                    
-                    if button_response.clicked() {
-                        self.selected_tab = *idx;
-                    }
-                }
-            });
+            // Improved horizontal scroll with better spacing
+            // FIX: Limit tab bar height to prevent it from taking all available space
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .max_height(50.0) // Limit tab bar to 50px height
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+                        // Add padding at start for better visual appearance
+                        ui.add_space(4.0);
+                        
+                        let tabs = [
+                            (0, "📊", "Dashboard"),
+                            (1, "🎯", "POSITIONS"),
+                            (2, "💰", "Recent Buys"),
+                            (3, "🔴", "Live Feed"),
+                            (4, "⏭️", "Filtered"),
+                            (5, "⚙️", "Settings"),
+                            (6, "🚀", "BUY SNIPER"),
+                        ];
+                        
+                        for (idx, icon, label) in tabs.iter() {
+                            let is_selected = self.selected_tab == *idx;
+                            let bg_color = if is_selected {
+                                egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
+                            } else {
+                                egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
+                            };
+                            let border_color = if is_selected {
+                                egui::Color32::from_rgb(80, 160, 255)
+                            } else {
+                                egui::Color32::from_rgb(55, 60, 75)
+                            };
+                            let text_color = if is_selected {
+                                egui::Color32::from_rgb(230, 245, 255)
+                            } else {
+                                egui::Color32::from_rgb(180, 190, 205)
+                            };
+                            
+                            // Responsive tab button size
+                            let available_width = ui.available_width();
+                            let tab_width = if available_width > 1200.0 { 150.0 } else { 130.0 };
+                            
+                            let button_response = ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
+                                    .size(14.0)
+                                    .strong()
+                                    .color(text_color))
+                                    .fill(bg_color)
+                                    .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
+                                    .min_size(egui::vec2(tab_width, 42.0))
+                                    .rounding(egui::Rounding::same(10.0)));
+                            
+                            // Enhanced hover effect
+                            if button_response.hovered() && !is_selected {
+                                ui.painter().rect_filled(
+                                    button_response.rect,
+                                    10.0,
+                                    egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
+                                );
+                            }
+                            
+                            if button_response.clicked() {
+                                self.selected_tab = *idx;
+                            }
+                        }
+                        
+                        // Add padding at end for better visual appearance
+                        ui.add_space(4.0);
+                    });
+                });
             
-            ui.add_space(20.0);
+            ui.separator();
+            ui.add_space(10.0);
             
+            // Content area - ScrollArea with improved scrolling
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                match self.selected_tab {
-                    0 => tabs::dashboard::render(ui, &self.metrics),
-                    1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
-                    2 => tabs::buys::render(ui, &self.tracker),
-                    3 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
-                    4 => tabs::filtered::render(ui, &self.event_log),
-                    5 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
-                    _ => {}
-                }
-            });
+                    // Use available width naturally without forcing it
+                    ui.set_min_width(ui.available_width().max(400.0));
+                    
+                    match self.selected_tab {
+                        0 => tabs::dashboard::render(ui, &self.metrics),
+                        1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
+                        2 => tabs::buys::render(ui, &self.tracker),
+                        3 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
+                        4 => tabs::filtered::render(ui, &self.event_log),
+                        5 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
+                        6 => tabs::buy_sniper::render(ui, &mut self.buy_sniper_state, &self.config, &self.wallet_private_key, &self.control_tx, &self.event_log, &self.bot_running),
+                        _ => {
+                            ui.label(egui::RichText::new("Unknown tab").color(egui::Color32::WHITE));
+                        }
+                    }
+                });
         });
     }
 }
@@ -426,7 +563,7 @@ impl GuiApp {
         let das_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(10, 60));
         let socials_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(10, 60));
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (control_tx_bot, mut control_rx_bot) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx_bot, control_rx_bot) = tokio::sync::mpsc::unbounded_channel();
         let wallet_balance_clone = self.wallet_balance.clone();
         
         // Store bot control tx so stop_bot() and handle_control_messages() can use it

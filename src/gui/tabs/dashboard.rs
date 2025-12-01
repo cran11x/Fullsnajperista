@@ -5,7 +5,13 @@ use eframe::egui;
 use crate::metrics::SharedMetrics;
 
 pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
-    let m = metrics.read().unwrap();
+    let m = match metrics.read() {
+        Ok(m) => m,
+        Err(e) => {
+            ui.label(format!("Error reading metrics: {}", e));
+            return;
+        }
+    };
     
     ui.vertical_centered(|ui| {
         ui.add_space(16.0);

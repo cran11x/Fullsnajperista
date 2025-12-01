@@ -9,11 +9,11 @@ use super::events::BotControl;
 pub fn render_control_panel(
     ui: &mut egui::Ui,
     bot_running: &Arc<AtomicBool>,
-    wallet_address: &str,
+    _wallet_address: &str,
     wallet_balance: &Arc<std::sync::RwLock<f64>>,
-    metrics: &SharedMetrics,
-    config: &Arc<std::sync::RwLock<Config>>,
-    control_tx: &mpsc::Sender<BotControl>,
+    _metrics: &SharedMetrics,
+    _config: &Arc<std::sync::RwLock<Config>>,
+    _control_tx: &mpsc::Sender<BotControl>,
 ) {
     let running = bot_running.load(Ordering::Relaxed);
     
@@ -58,13 +58,6 @@ pub fn render_control_panel(
     });
 }
 
-fn format_address(addr: &str) -> String {
-    if addr.len() > 16 {
-        format!("{}...{}", &addr[..8], &addr[addr.len()-8..])
-    } else {
-        addr.to_string()
-    }
-}
 
 pub fn render_metric_card(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32) {
     let response = ui.group(|ui| {

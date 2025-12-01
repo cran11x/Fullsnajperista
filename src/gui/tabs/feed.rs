@@ -50,38 +50,79 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
     });
     ui.add_space(16.0);
     
-    // Enhanced filters and options with premium styling
+    // Enhanced filters and options with premium styling - improved responsive layout
     ui.group(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Filters:")
-                .size(14.0)
-                .strong()
-                .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(14.0);
-            
-            ui.checkbox(&mut state.filter_detected, egui::RichText::new("🔍 Detected")
-                .size(14.0));
-            ui.add_space(8.0);
-            ui.checkbox(&mut state.filter_filtered, egui::RichText::new("⏭️ Filtered")
-                .size(14.0));
-            ui.add_space(8.0);
-            ui.checkbox(&mut state.filter_bought, egui::RichText::new("✅ Bought")
-                .size(14.0));
-            ui.add_space(8.0);
-            ui.checkbox(&mut state.filter_sold, egui::RichText::new("💰 Sold")
-                .size(14.0));
-            ui.add_space(8.0);
-            ui.checkbox(&mut state.filter_error, egui::RichText::new("❌ Error")
-                .size(14.0));
-            ui.add_space(8.0);
-            ui.checkbox(&mut state.filter_info, egui::RichText::new("ℹ️ Info")
-                .size(14.0));
-            
-            ui.add_space(28.0);
-            
-            ui.checkbox(&mut state.show_full_addresses, egui::RichText::new("Show Full Addresses")
-                .size(14.0));
-        });
+        // Filter checkboxes - wrap to new line on smaller screens
+        let available_width = ui.available_width();
+        let use_wrap = available_width < 900.0;
+        
+        if use_wrap {
+            // Vertical layout for smaller screens
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Filters:")
+                        .size(14.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 230, 245)));
+                    ui.add_space(14.0);
+                    
+                    ui.checkbox(&mut state.filter_detected, egui::RichText::new("🔍 Detected")
+                        .size(14.0));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut state.filter_filtered, egui::RichText::new("⏭️ Filtered")
+                        .size(14.0));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut state.filter_bought, egui::RichText::new("✅ Bought")
+                        .size(14.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(80.0); // Align with filters label
+                    ui.checkbox(&mut state.filter_sold, egui::RichText::new("💰 Sold")
+                        .size(14.0));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut state.filter_error, egui::RichText::new("❌ Error")
+                        .size(14.0));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut state.filter_info, egui::RichText::new("ℹ️ Info")
+                        .size(14.0));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut state.show_full_addresses, egui::RichText::new("Show Full Addresses")
+                        .size(14.0));
+                });
+            });
+        } else {
+            // Horizontal layout for larger screens
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Filters:")
+                    .size(14.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(14.0);
+                
+                ui.checkbox(&mut state.filter_detected, egui::RichText::new("🔍 Detected")
+                    .size(14.0));
+                ui.add_space(8.0);
+                ui.checkbox(&mut state.filter_filtered, egui::RichText::new("⏭️ Filtered")
+                    .size(14.0));
+                ui.add_space(8.0);
+                ui.checkbox(&mut state.filter_bought, egui::RichText::new("✅ Bought")
+                    .size(14.0));
+                ui.add_space(8.0);
+                ui.checkbox(&mut state.filter_sold, egui::RichText::new("💰 Sold")
+                    .size(14.0));
+                ui.add_space(8.0);
+                ui.checkbox(&mut state.filter_error, egui::RichText::new("❌ Error")
+                    .size(14.0));
+                ui.add_space(8.0);
+                ui.checkbox(&mut state.filter_info, egui::RichText::new("ℹ️ Info")
+                    .size(14.0));
+                
+                ui.add_space(28.0);
+                
+                ui.checkbox(&mut state.show_full_addresses, egui::RichText::new("Show Full Addresses")
+                    .size(14.0));
+            });
+        }
         
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -90,8 +131,9 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(10.0);
+            let search_width = (available_width * 0.4).max(250.0).min(400.0);
             ui.add(egui::TextEdit::singleline(&mut state.search_text)
-                .desired_width(320.0));
+                .desired_width(search_width));
             if !state.search_text.is_empty() {
                 ui.add_space(6.0);
                 if ui.button(egui::RichText::new("✕")

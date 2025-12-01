@@ -42,7 +42,6 @@ use crate::metrics::{SharedMetrics, FilterReason, SubmissionMethod, ErrorType};
 use crate::gui::{TokenEvent, BotControl};
 use crate::sell::build_sell_instruction;
 use crate::blockhash_cache::get_cached_blockhash;
-use spl_token::state::Account as TokenAccount;
 use solana_sdk::program_pack::Pack;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_transaction_status::UiTransactionEncoding;
@@ -128,6 +127,9 @@ pub async fn run_bot(
                 }
                 BotControl::ManualSell(_) => {
                     // Ignore manual sell before WebSocket connection is established
+                }
+                BotControl::ManualBuy { .. } => {
+                    // Ignore manual buy before WebSocket connection is established
                 }
             }
         }
@@ -382,6 +384,99 @@ async fn listen_websocket_once(
                                     timestamp: Utc::now(),
                                 });
                             }
+                        }
+                        BotControl::ManualBuy { mint, sol_amount } => {
+                            eprintln!("📩 Received ManualBuy command for {}", mint);
+                            let _ = event_tx.send(TokenEvent::Info {
+                                message: format!("🚀 Manual buy requested for {}", mint),
+                                timestamp: Utc::now(),
+                            });
+                            
+                            // Parse mint address
+                            let mint_pubkey = match Pubkey::from_str(&mint) {
+                                Ok(pk) => pk,
+                                Err(e) => {
+                                    let _ = event_tx.send(TokenEvent::Error {
+                                        message: format!("❌ Invalid mint address: {}", e),
+                                        timestamp: Utc::now(),
+                                    });
+                                    continue;
+                                }
+                            };
+                            
+                            // Clone resources for buy execution
+                            let wallet_bytes = wallet.to_bytes();
+                            let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                                Ok(kp) => kp,
+                                Err(e) => {
+                                    eprintln!("Failed to clone wallet for manual buy: {}", e);
+                                    let _ = event_tx.send(TokenEvent::Error {
+                                        message: format!("❌ Failed to clone wallet: {}", e),
+                                        timestamp: Utc::now(),
+                                    });
+                                    continue;
+                                }
+                            };
+                            
+                            let config_clone = {
+                                let cfg = config_arc.read().unwrap();
+                                (*cfg).clone()
+                            };
+                            
+                            let rpc_client = config_clone.create_rpc_client();
+                            
+                            // Execute buy in background task to not block WebSocket loop
+                            let tracker_clone = tracker.clone();
+                            let event_tx_clone = event_tx.clone();
+                            let metrics_clone = metrics.clone();
+                            let sol_amount_clone = sol_amount;
+                            
+                            eprintln!("🚀 Spawning buy task for {}", mint);
+                            tokio::spawn(async move {
+                                eprintln!("🔄 Buy task started for {}", mint);
+                                
+                                // Create PumpBuyAccounts from mint address
+                                let accounts = match PumpBuyAccounts::from_mint_address(&rpc_client, &mint_pubkey).await {
+                                    Ok(acc) => acc,
+                                    Err(e) => {
+                                        let _ = event_tx_clone.send(TokenEvent::Error {
+                                            message: format!("❌ Failed to create accounts from mint: {}", e),
+                                            timestamp: Utc::now(),
+                                        });
+                                        return;
+                                    }
+                                };
+                                
+                                // Override buy amount if specified
+                                let buy_amount = sol_amount_clone.unwrap_or(config_clone.buy_amount_lamports());
+                                
+                                // Execute buy using existing logic
+                                match execute_manual_buy(
+                                    &config_clone,
+                                    &wallet_clone,
+                                    &rpc_client,
+                                    &tracker_clone,
+                                    accounts,
+                                    buy_amount,
+                                    &metrics_clone,
+                                    &event_tx_clone,
+                                ).await {
+                                    Ok(sig) => {
+                                        let _ = event_tx_clone.send(TokenEvent::Bought {
+                                            mint: mint.clone(),
+                                            signature: sig,
+                                            mc: None,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx_clone.send(TokenEvent::Error {
+                                            message: format!("❌ Manual buy failed: {}", e),
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                }
+                            });
                         }
                         _ => {} // Ignore other messages like Start/UpdateConfig which are handled by GUI
                     }
@@ -1744,6 +1839,39 @@ async fn verify_transaction_success(
 }
 
 /// Monitor active positions and trigger sells when conditions are met
+/// Helper function to get token balance using Helius API (faster and more reliable)
+async fn get_token_balance_helius(
+    helius_api_key: &str,
+    token_account: &Pubkey,
+) -> Result<u64> {
+    let url = format!("https://mainnet.helius-rpc.com/?api-key={}", helius_api_key);
+    let client = crate::utils::get_shared_http_client();
+    
+    let request_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "getTokenAccountBalance",
+        "params": [token_account.to_string()]
+    });
+    
+    let response = client
+        .post(&url)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Helius API request failed: {}", e))?;
+    
+    let result: serde_json::Value = response.json().await
+        .map_err(|e| anyhow!("Failed to parse Helius response: {}", e))?;
+    
+    if let Some(balance_str) = result["result"]["value"]["amount"].as_str() {
+        balance_str.parse::<u64>()
+            .map_err(|e| anyhow!("Failed to parse balance: {}", e))
+    } else {
+        Err(anyhow!("Helius API returned no balance"))
+    }
+}
+
 async fn monitor_positions(
     config: Arc<std::sync::RwLock<Config>>,
     wallet: Keypair,
@@ -1763,11 +1891,95 @@ async fn monitor_positions(
             continue;
         }
 
-        // Get config values
-        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd) = {
+        // Get config values including Helius API key
+        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd, helius_api_key) = {
             let cfg = config.read().unwrap();
-            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd)
+            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone())
         };
+
+        // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
+        let user_wallet = wallet.pubkey();
+        let positions_to_check = {
+            if let Ok(tracker_guard) = tracker.read() {
+                if let Some(tracker_ref) = tracker_guard.as_ref() {
+                    tracker_ref.get_active_positions()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+        
+        if !positions_to_check.is_empty() {
+            use solana_sdk::pubkey::Pubkey;
+            use spl_associated_token_account::get_associated_token_address_with_program_id;
+            use std::str::FromStr;
+            
+            let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+                .unwrap_or_else(|_| spl_token::id());
+            
+            let mut cleaned_count = 0;
+            // Check positions using Helius API (faster and more reliable)
+            for position in positions_to_check {
+                let user_token_account = match &position.user_token_account {
+                    Some(ata_str) => {
+                        match Pubkey::from_str(ata_str) {
+                            Ok(pubkey) => pubkey,
+                            Err(_) => {
+                                let mint = match Pubkey::from_str(&position.mint) {
+                                    Ok(m) => m,
+                                    Err(_) => continue,
+                                };
+                                get_associated_token_address_with_program_id(
+                                    &user_wallet,
+                                    &mint,
+                                    &token_program_2022,
+                                )
+                            }
+                        }
+                    }
+                    None => {
+                        let mint = match Pubkey::from_str(&position.mint) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+                        get_associated_token_address_with_program_id(
+                            &user_wallet,
+                            &mint,
+                            &token_program_2022,
+                        )
+                    }
+                };
+                
+                // Try Helius API first (faster), fallback to RPC
+                let balance = match get_token_balance_helius(&helius_api_key, &user_token_account).await {
+                    Ok(bal) => bal,
+                    Err(_) => {
+                        // Fallback to RPC if Helius fails
+                        match rpc.get_token_account_balance(&user_token_account).await {
+                            Ok(balance_info) => balance_info.amount.parse().unwrap_or(0),
+                            Err(_) => 0, // Account doesn't exist
+                        }
+                    }
+                };
+                
+                if balance == 0 {
+                    // Balance is zero - mark as sold
+                    if let Ok(mut tracker_guard) = tracker.write() {
+                        if let Some(tracker) = tracker_guard.as_mut() {
+                            if tracker.mark_position_as_sold(&position.mint).is_ok() {
+                                cleaned_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if cleaned_count > 0 {
+                eprintln!("🧹 Cleaned up {} positions with zero balance (live, Helius API)", cleaned_count);
+            }
+        }
 
         // Get active positions
         let active_positions = {
@@ -1890,6 +2102,265 @@ async fn monitor_positions(
     }
 }
 
+/// Execute manual buy transaction (simplified version without filtering)
+pub async fn execute_manual_buy(
+    config: &Config,
+    wallet: &Keypair,
+    rpc: &RpcClient,
+    tracker: &Arc<std::sync::RwLock<Option<TokenTracker>>>,
+    mut accounts: PumpBuyAccounts,
+    sol_amount: u64,
+    _metrics: &SharedMetrics,
+    _event_tx: &mpsc::UnboundedSender<TokenEvent>,
+) -> Result<String> {
+    use crate::buy::build_buy_instruction;
+    use crate::helius::send_helius_transaction;
+    use crate::jito::send_jito_bundle;
+    use crate::accounts::{fetch_bonding_curve_mc, TokenBuy};
+    use solana_sdk::{
+        instruction::Instruction,
+        system_instruction,
+        compute_budget::ComputeBudgetInstruction,
+        transaction::VersionedTransaction,
+        message::v0,
+        message::VersionedMessage,
+    };
+    use solana_client::nonblocking::rpc_client::RpcClient as AsyncRpcClient;
+    use spl_associated_token_account::instruction::{
+        create_associated_token_account, create_associated_token_account_idempotent,
+    };
+    use std::str::FromStr;
+    use crate::blockhash_cache::get_cached_blockhash;
+    use crate::constants::HELIUS_TIP_ACCOUNTS;
+    use rand::seq::SliceRandom;
+    
+    let user_wallet = wallet.pubkey();
+    let mint = accounts.mint;
+    
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║                    MANUAL BUY                                ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    eprintln!("  Mint:           {}", mint);
+    eprintln!("  SOL Amount:     {:.6} SOL", sol_amount as f64 / 1e9);
+    eprintln!();
+    
+    // Get user token account
+    let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        .unwrap_or_else(|_| spl_token::id());
+    
+    // IMPORTANT: Derive ATA using Token Program 2022 for Pump.fun tokens
+    use spl_associated_token_account::get_associated_token_address_with_program_id;
+    let user_ata = get_associated_token_address_with_program_id(
+        &user_wallet,
+        &accounts.mint,
+        &token_program_2022_id
+    );
+    
+    // Set hardcoded Global Volume
+    let hardcoded_global_volume = Pubkey::from_str("Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y")
+        .expect("Invalid hardcoded Global Volume address");
+    accounts.global_volume = hardcoded_global_volume;
+    
+    // Build buy instruction
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║              BUILDING BUY INSTRUCTION                         ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    
+    let buy_ix = build_buy_instruction(
+        rpc,
+        &accounts,
+        &user_wallet,
+        &user_ata,
+        sol_amount,
+    ).await?;
+    
+    eprintln!("  ✅ Buy instruction built ({} accounts)", buy_ix.accounts.len());
+    eprintln!();
+    
+    let tip_account = {
+        let mut rng = rand::thread_rng();
+        Pubkey::from_str(
+            HELIUS_TIP_ACCOUNTS.choose(&mut rng).unwrap()
+        )?
+    };
+    
+    // Check if ATA already exists
+    let ata_exists = rpc.get_account(&user_ata).await.is_ok();
+    
+    // Calculate priority fee
+    let priority_fee = if config.enable_dynamic_priority_fee {
+        match config.calculate_dynamic_priority_fee(rpc).await {
+            Ok(fee) => fee,
+            Err(_) => config.priority_fee,
+        }
+    } else {
+        config.priority_fee
+    };
+    
+    let mut instructions = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
+        ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
+    ];
+    
+    // Create ATA instruction if needed
+    {
+        let ata_ix = if !ata_exists {
+            create_associated_token_account(
+                &user_wallet,
+                &user_wallet,
+                &accounts.mint,
+                &token_program_2022_id,
+            )
+        } else {
+            create_associated_token_account_idempotent(
+                &user_wallet,
+                &user_wallet,
+                &accounts.mint,
+                &token_program_2022_id,
+            )
+        };
+        
+        let expected_ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+            .unwrap_or_else(|_| ata_ix.program_id);
+        
+        let fixed_ata_ix = if ata_ix.program_id != expected_ata_program {
+            Instruction {
+                program_id: expected_ata_program,
+                accounts: ata_ix.accounts,
+                data: ata_ix.data,
+            }
+        } else {
+            ata_ix
+        };
+        
+        instructions.push(fixed_ata_ix);
+    }
+    
+    instructions.push(buy_ix);
+    instructions.push(system_instruction::transfer(
+        &user_wallet,
+        &tip_account,
+        config.jito_tip,
+    ));
+    
+    let recent_blockhash = get_cached_blockhash(rpc).await?;
+    
+    // Build and send transaction
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║                 SENDING TRANSACTION                           ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    
+    let msg = v0::Message::try_compile(
+        &user_wallet,
+        &instructions,
+        &[],
+        recent_blockhash,
+    )?;
+    
+    let tx = VersionedTransaction::try_new(
+        VersionedMessage::V0(msg),
+        &[wallet],
+    )?;
+    
+    let tx_helius = tx.clone();
+    let tx_jito = tx.clone();
+    let tx_rpc = tx.clone();
+    
+    let wallet_bytes = wallet.to_bytes();
+    let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
+    let jito_tip = config.jito_tip;
+    let rpc_url = config.rpc_url.clone();
+    
+    let helius_task = tokio::spawn(async move {
+        match send_helius_transaction(tx_helius).await {
+            Ok(sig) => Ok(sig),
+            Err(e) => Err(e),
+        }
+    });
+    
+    let jito_task = tokio::spawn(async move {
+        match send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await {
+            Ok(bundle_id) => Ok(format!("Jito: {}", bundle_id)),
+            Err(e) => Err(e),
+        }
+    });
+    
+    let rpc_task = tokio::spawn(async move {
+        let rpc_client = AsyncRpcClient::new(rpc_url);
+        match rpc_client.send_transaction(&tx_rpc).await {
+            Ok(sig) => Ok(sig.to_string()),
+            Err(e) => Err(anyhow::anyhow!("RPC error: {}", e)),
+        }
+    });
+    
+    let (helius_res, jito_res, rpc_res) = tokio::join!(helius_task, jito_task, rpc_task);
+    
+    // Find first successful result
+    let mut actual_signature = None;
+    if let Ok(Ok(sig)) = helius_res {
+        actual_signature = Some(sig);
+    } else if let Ok(Ok(bundle_id)) = jito_res {
+        actual_signature = Some(bundle_id);
+    } else if let Ok(Ok(sig)) = rpc_res {
+        actual_signature = Some(sig);
+    }
+    
+    if let Some(sig) = actual_signature {
+        eprintln!("  ✅ Transaction submitted: {}", sig);
+        
+        // Record in tracker
+        let mc_result = fetch_bonding_curve_mc(
+            rpc,
+            &accounts.bonding_curve,
+            config.sol_price_usd,
+        ).await;
+        
+        let (mc_entry_usd, token_price_entry) = match mc_result {
+            Ok((curve, _, mc)) => {
+                let price = curve.get_token_price_sol();
+                (Some(mc), if price > 0.0 { Some(price) } else { None })
+            }
+            Err(_) => (None, None)
+        };
+
+        if let Ok(mut tracker_opt) = tracker.write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                let buy = TokenBuy {
+                    token_number: 0, // Not relevant for manual buy
+                    mint: mint.to_string(),
+                    signature: sig.clone(),
+                    creator: accounts.creator.to_string(),
+                    dev_buy_sol: 0.0, // Not relevant for manual buy
+                    our_buy_sol: sol_amount as f64 / 1e9,
+                    timestamp: Utc::now(),
+                    has_socials: false,
+                    twitter: None,
+                    website: None,
+                    telegram: None,
+                    creator_token_count: 0,
+                    detection_method: "manual".to_string(),
+                    mc_at_detection_usd: None,
+                    mc_at_entry_usd: mc_entry_usd,
+                    token_price_sol: token_price_entry,
+                    token_amount: None,
+                    user_token_account: Some(user_ata.to_string()),
+                    bonding_curve: Some(accounts.bonding_curve.to_string()),
+                    sold: false,
+                    sell_signature: None,
+                };
+                
+                if let Err(e) = tracker.record_buy(buy) {
+                    eprintln!("  ⚠️  Tracker error: {}", e);
+                }
+            }
+        }
+        
+        Ok(sig)
+    } else {
+        Err(anyhow!("All submission methods failed"))
+    }
+}
+
 /// Execute sell transaction for a position
 async fn execute_sell(
     config: &Config,
@@ -2008,11 +2479,25 @@ async fn execute_sell(
         config.priority_fee
     };
     
-    let instructions = vec![
+    // Build instructions - Helius tip must be last instruction (like Jito tip in buy)
+    let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
         ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
         sell_ix,
     ];
+    
+    // Add Helius tip instruction LAST (required: minimum 200,000 lamports)
+    // Helius requires tip to one of their wallets when using Helius Sender
+    // Tip must be the last instruction in the transaction
+    let helius_tip_amount = 200_000u64; // Minimum required by Helius
+    let helius_tip_account = crate::constants::random_helius_tip_account();
+    let helius_tip_ix = system_instruction::transfer(
+        &user_wallet,
+        &helius_tip_account,
+        helius_tip_amount,
+    );
+    instructions.push(helius_tip_ix);
+    eprintln!("   💰 Added Helius tip (last instruction): {} lamports to {}", helius_tip_amount, helius_tip_account);
 
     let msg = v0::Message::try_compile(
         &user_wallet,
@@ -2030,7 +2515,16 @@ async fn execute_sell(
     eprintln!("   🚀 Sending sell transaction via {:?}", config.submission_mode);
     let tx_sig = match config.submission_mode {
         crate::config::SubmissionMode::Helius => {
-            send_helius_transaction(tx).await?
+            match send_helius_transaction(tx).await {
+                Ok(sig) => {
+                    eprintln!("   ✅ Sell transaction sent successfully! Signature: {}", sig);
+                    sig
+                }
+                Err(e) => {
+                    eprintln!("   ❌ Sell transaction failed: {}", e);
+                    return Err(anyhow!("Sell transaction failed: {}", e));
+                }
+            }
         }
         crate::config::SubmissionMode::Jito => {
             let bundle_id = send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?;
@@ -2084,6 +2578,7 @@ async fn execute_sell(
     };
 
     let signature = tx_sig.to_string();
+    eprintln!("   ✅ Sell completed! Signature: {}", signature);
 
     // Calculate PnL (simplified - would need current token price)
     // For now, we'll set PnL to None as we'd need to fetch the actual SOL received from the sell
@@ -2093,7 +2588,9 @@ async fn execute_sell(
     if let Ok(mut tracker_opt) = tracker.write() {
         if let Some(tracker) = tracker_opt.as_mut() {
             if let Err(e) = tracker.mark_as_sold(&position.mint, signature.clone()) {
-                eprintln!("Failed to mark position as sold: {}", e);
+                eprintln!("   ⚠️  Failed to mark position as sold in tracker: {}", e);
+            } else {
+                eprintln!("   ✅ Position marked as sold in tracker");
             }
         }
     }
@@ -2107,6 +2604,7 @@ async fn execute_sell(
         timestamp: Utc::now(),
     });
 
+    eprintln!("   🎉 Sell process completed successfully!");
     Ok(signature)
 }
 

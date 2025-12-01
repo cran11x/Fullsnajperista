@@ -328,8 +328,6 @@ impl PumpBuyAccounts {
                                                     
                                                     if is_token_account {
                                                         actual_abc_from_tx = Some(candidate);
-                                                        found_abc_instruction = true;
-                                                        abc_instruction_idx = Some(ix_idx);
                                                         if DEBUG {
                                                             println!("      ✅ Associated Bonding Curve from CREATE (idx {}): {} (verified: token account, owner: {})", idx, candidate, owner);
                                                         }
@@ -377,8 +375,6 @@ impl PumpBuyAccounts {
                                             
                                             if is_token_account {
                                                 actual_abc_from_tx = Some(candidate);
-                                                found_abc_instruction = true;
-                                                abc_instruction_idx = Some(ix_idx);
                                                 if DEBUG {
                                                     println!("      ✅ Associated Bonding Curve from BUY (idx 4): {} (verified: token account, owner: {})", candidate, owner);
                                                 }
@@ -791,6 +787,199 @@ impl PumpBuyAccounts {
         }
 
         Ok(token_count)
+    }
+
+    /// Create PumpBuyAccounts from mint address (for manual buys)
+    /// This function derives most accounts from the mint and tries to fetch missing ones from RPC
+    pub async fn from_mint_address(
+        rpc: &RpcClient,
+        mint: &Pubkey,
+    ) -> Result<Self> {
+        use crate::pda_derivation::{
+            derive_bonding_curve_pda, derive_global_pda, derive_event_authority_pda,
+            get_global_volume_address, get_fee_recipient_address, 
+            get_fee_config_address, get_fee_program_address, get_global_account_address,
+        };
+
+        // Derive bonding curve PDA
+        let (bonding_curve, _) = derive_bonding_curve_pda(mint);
+        
+        // Calculate associated bonding curve (try both token programs)
+        let (abc_standard, abc_2022) = calculate_addresses_both_programs(
+            &bonding_curve,
+            mint,
+            &Pubkey::default(), // Creator not needed for ABC calculation
+        );
+        
+        // Try to determine which ABC to use by checking which one exists
+        let associated_bonding_curve = if rpc.get_account(&abc_2022).await.is_ok() {
+            abc_2022
+        } else if rpc.get_account(&abc_standard).await.is_ok() {
+            abc_standard
+        } else {
+            // Default to 2022 if neither exists (will be created)
+            abc_2022
+        };
+        
+        // Try to find creator and creator_vault from recent transactions
+        let (found_creator, found_vault) = Self::try_find_creator_info(rpc, mint, &bonding_curve).await;
+        
+        let creator = found_creator.unwrap_or(Pubkey::default());
+        
+        let creator_vault = if let Some(vault) = found_vault {
+            vault
+        } else if creator != Pubkey::default() {
+            // If we have creator but no vault, derive it
+            let (derived_vault, _) = Pubkey::find_program_address(
+                &[b"creator_vault", creator.as_ref()],
+                &Pubkey::from_str(PUMP_PROGRAM_ID).unwrap()
+            );
+            derived_vault
+        } else {
+            // Fallback: use bonding curve as placeholder (will fail, but better than panic)
+            eprintln!("⚠️  Could not find creator or vault, using bonding_curve as fallback");
+            bonding_curve
+        };
+        
+        // Derive other PDAs
+        let (global, _) = derive_global_pda();
+        let (event_authority, _) = derive_event_authority_pda();
+        
+        // Get hardcoded addresses
+        let global_volume = get_global_volume_address();
+        let fee_recipient = get_fee_recipient_address();
+        let fee_config = get_fee_config_address();
+        let fee_program = get_fee_program_address();
+        
+        Ok(Self {
+            mint: *mint,
+            bonding_curve,
+            associated_bonding_curve,
+            creator_vault,
+            event_authority,
+            global_volume,
+            global,
+            fee_recipient,
+            fee_config,
+            fee_program,
+            dev_buy_sol: 0, // Not relevant for manual buy
+            creator,
+            associated_bonding_curve_instruction: None,
+        })
+    }
+    
+    /// Try to find creator and creator_vault by searching recent transactions for this mint
+    async fn try_find_creator_info(
+        rpc: &RpcClient,
+        mint: &Pubkey,
+        bonding_curve: &Pubkey,
+    ) -> (Option<Pubkey>, Option<Pubkey>) {
+        use solana_client::rpc_config::{RpcTransactionConfig, RpcSignatureStatusConfig};
+        use solana_transaction_status::UiTransactionEncoding;
+        use solana_sdk::commitment_config::CommitmentConfig;
+        
+        // Try to get recent signatures for the bonding curve
+        if let Ok(sigs) = rpc.get_signatures_for_address(bonding_curve).await {
+            // Check oldest transaction first (creation) if possible, but here we just check recent
+            // because we want to find *any* valid BUY transaction or the creation
+            for sig_info in sigs.iter().take(20) {
+                if let Ok(sig) = solana_sdk::signature::Signature::from_str(&sig_info.signature) {
+                    if let Ok(tx) = rpc.get_transaction_with_config(
+                        &sig,
+                        RpcTransactionConfig {
+                            encoding: Some(UiTransactionEncoding::Base64), // Use Base64 for manual parsing
+                            max_supported_transaction_version: Some(0),
+                            commitment: Some(CommitmentConfig::confirmed()),
+                        }
+                    ).await {
+                        // Try to extract info from this transaction
+                        let (creator, vault) = Self::extract_info_from_tx(&tx, mint);
+                        if creator.is_some() || vault.is_some() {
+                            return (creator, vault);
+                        }
+                    }
+                }
+            }
+        }
+        
+        (None, None)
+    }
+    
+    /// Extract creator and creator_vault from a transaction
+    fn extract_info_from_tx(
+        tx: &solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta,
+        _mint: &Pubkey,
+    ) -> (Option<Pubkey>, Option<Pubkey>) {
+        use base64::{engine::general_purpose, Engine as _};
+        use solana_sdk::message::VersionedMessage;
+        use solana_sdk::transaction::VersionedTransaction;
+        use bincode;
+        
+        if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
+            if let Ok(tx_bytes) = general_purpose::STANDARD.decode(encoded) {
+                if let Ok(versioned_tx) = bincode::deserialize::<VersionedTransaction>(&tx_bytes) {
+                    let account_keys = match &versioned_tx.message {
+                        VersionedMessage::Legacy(msg) => &msg.account_keys,
+                        VersionedMessage::V0(msg) => &msg.account_keys,
+                    };
+                    
+                    let instructions = match &versioned_tx.message {
+                        VersionedMessage::Legacy(msg) => &msg.instructions,
+                        VersionedMessage::V0(msg) => &msg.instructions,
+                    };
+                    
+                    // 1. Extract creator (signer/payer - usually first account)
+                    let creator = account_keys.get(0).copied();
+                    
+                    // 2. Extract creator_vault from BUY instruction
+                    let pump_program_id = Pubkey::from_str(PUMP_PROGRAM_ID).unwrap_or_default();
+                    let mut creator_vault = None;
+                    
+                    for ix in instructions.iter() {
+                        let program_id_idx = ix.program_id_index as usize;
+                        if let Some(&program_id) = account_keys.get(program_id_idx) {
+                            if program_id == pump_program_id && ix.data.len() >= 8 {
+                                let discriminator = &ix.data[0..8];
+                                if discriminator == BUY_DISCRIMINATOR {
+                                    // Check accounts
+                                    let ix_accounts: Vec<Pubkey> = ix.accounts
+                                        .iter()
+                                        .filter_map(|&idx| account_keys.get(idx as usize).copied())
+                                        .collect();
+                                        
+                                    // BUY instruction: creator_vault is at index 9
+                                    if ix_accounts.len() >= 10 {
+                                        creator_vault = Some(ix_accounts[9]);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    return (creator, creator_vault);
+                }
+            }
+        }
+        
+        (None, None)
+    }
+
+    // Legacy method kept for compatibility if needed, but we use extract_info_from_tx now
+    async fn try_find_creator_vault(
+        rpc: &RpcClient,
+        mint: &Pubkey,
+        bonding_curve: &Pubkey,
+    ) -> Option<Pubkey> {
+        let (_, vault) = Self::try_find_creator_info(rpc, mint, bonding_curve).await;
+        vault
+    }
+    
+    fn extract_creator_vault_from_tx(
+        _tx: &dyn std::any::Any,
+        _mint: &Pubkey,
+    ) -> Option<Pubkey> {
+        None
     }
 }
 

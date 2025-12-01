@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
-            .with_title("Pump.fun Sniper Bot"),
+            .with_title("Pump.fun Sniper Bot - DEBUG BUILD"),
         ..Default::default()
     };
     

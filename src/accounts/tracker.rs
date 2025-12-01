@@ -405,6 +405,18 @@ impl TokenTracker {
             .collect()
     }
 
+    /// Mark a position as sold (for cleanup purposes)
+    pub fn mark_position_as_sold(&mut self, mint: &str) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.sold = true;
+            buy.sell_signature = Some("AUTO_CLEANUP".to_string());
+            self.save_json()?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
     /// Mark a position as sold
     pub fn mark_as_sold(&mut self, mint: &str, sell_signature: String) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {

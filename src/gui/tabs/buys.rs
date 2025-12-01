@@ -70,34 +70,43 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                // Improved grid with proper column widths and responsive spacing
+                let available_width = ui.available_width();
+                let spacing = if available_width > 1000.0 { 20.0 } else { 12.0 };
+                
                 egui::Grid::new("buys_grid")
                     .num_columns(6)
-                    .spacing([24.0, 10.0])
+                    .spacing([spacing, 10.0])
                     .striped(true)
                     .min_row_height(42.0)
                     .show(ui, |ui| {
-                        // Enhanced header with premium styling
-                        // Note: Cannot use add_space() inside grid layout
+                        // Enhanced header with proper column widths
+                        ui.set_width(90.0); // Time column
                         ui.label(egui::RichText::new("Time")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(200.0); // Token column
                         ui.label(egui::RichText::new("Token")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(100.0); // MC column
                         ui.label(egui::RichText::new("MC ($)")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(120.0); // Dev Buy column
                         ui.label(egui::RichText::new("Dev Buy (SOL)")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(100.0); // Socials column
                         ui.label(egui::RichText::new("Socials")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::from_rgb(220, 230, 245)));
+                        ui.set_width(180.0); // Transaction column
                         ui.label(egui::RichText::new("Transaction")
                             .size(15.0)
                             .strong()
@@ -106,7 +115,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                         
                         // Enhanced rows with premium styling and hover effects
                         for buy in buys.iter().rev() {
-                            // Enhanced time display with safe formatting
+                            // Time column
+                            ui.set_width(90.0);
                             let time_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 buy.timestamp.format("%H:%M:%S").to_string()
                             })).unwrap_or_else(|_| {
@@ -117,14 +127,16 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                 .color(egui::Color32::from_rgb(170, 190, 210))
                                 .monospace());
                             
-                            // Enhanced token display
+                            // Token column
+                            ui.set_width(200.0);
                             let mint_display = format_address_safe(&buy.mint);
                             ui.label(egui::RichText::new(mint_display)
                                 .size(13.0)
                                 .monospace()
                                 .color(egui::Color32::from_rgb(160, 210, 255)));
                             
-                            // Enhanced MC with better color coding and safe formatting
+                            // MC column
+                            ui.set_width(100.0);
                             let mc_display = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 if let Some(mc) = buy.mc_at_entry_usd {
                                     if mc.is_finite() && mc >= 0.0 && !mc.is_nan() {
@@ -155,7 +167,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                     .color(egui::Color32::from_rgb(120, 130, 150)));
                             }
                             
-                            // Enhanced dev buy display with safe formatting
+                            // Dev Buy column
+                            ui.set_width(120.0);
                             let dev_buy_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 if buy.dev_buy_sol.is_finite() && !buy.dev_buy_sol.is_nan() {
                                     format!("{:.3}", buy.dev_buy_sol)
@@ -170,7 +183,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                 .strong()
                                 .color(egui::Color32::from_rgb(255, 220, 0)));
                             
-                            // Enhanced socials display with safe access
+                            // Socials column
+                            ui.set_width(100.0);
                             let (socials_str, socials_color) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let socials_count = if buy.has_socials {
                                     [buy.twitter.as_ref(), buy.website.as_ref(), buy.telegram.as_ref()]
@@ -199,7 +213,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                 .strong()
                                 .color(socials_color));
                             
-                            // Enhanced transaction link - simplified for grid layout
+                            // Transaction column
+                            ui.set_width(180.0);
                             let sig_short = format_address_safe(&buy.signature);
                             let sig_button = ui.add(egui::Button::new(egui::RichText::new(sig_short.clone())
                                     .size(12.0)

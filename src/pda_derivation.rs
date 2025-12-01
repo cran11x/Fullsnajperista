@@ -48,6 +48,17 @@ pub fn derive_user_volume_pda(user_wallet: &Pubkey) -> (Pubkey, u8) {
     )
 }
 
+/// Derive Creator Vault PDA (Account 9 in Buy instruction)
+/// Seeds: ["creator_vault", creator.as_ref()]
+pub fn derive_creator_vault_pda(creator: &Pubkey) -> (Pubkey, u8) {
+    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
+        .expect("Invalid PUMP_PROGRAM_ID constant");
+    Pubkey::find_program_address(
+        &[b"creator_vault", creator.as_ref()],
+        &pump_program,
+    )
+}
+
 /// Get hardcoded Global Volume Accumulator address
 /// This is NOT a PDA - it's a fixed address
 pub fn get_global_volume_address() -> Pubkey {
@@ -162,11 +173,10 @@ mod tests {
 
     #[test]
     fn test_derive_global_pda() {
-        let (global, bump) = derive_global_pda();
+        let (global, _bump) = derive_global_pda();
         
         // Verify it's a valid PDA (not default)
         assert_ne!(global, Pubkey::default());
-        assert!(bump <= 255);
         
         // Verify it matches expected hardcoded address
         let expected = get_global_account_address();
@@ -181,7 +191,6 @@ mod tests {
         // Verify it's a valid PDA
         assert_ne!(bonding_curve, Pubkey::default());
         assert_ne!(bonding_curve, mint);
-        assert!(bump <= 255);
         
         // Same mint should produce same bonding curve
         let (bonding_curve2, bump2) = derive_bonding_curve_pda(&mint);
@@ -200,7 +209,6 @@ mod tests {
         
         // Verify it's a valid PDA
         assert_ne!(event_authority, Pubkey::default());
-        assert!(bump <= 255);
         
         // Should always produce same result
         let (event_authority2, bump2) = derive_event_authority_pda();
@@ -220,7 +228,6 @@ mod tests {
         // Verify it's a valid PDA
         assert_ne!(user_volume, Pubkey::default());
         assert_ne!(user_volume, user_wallet);
-        assert!(bump <= 255);
         
         // Same wallet should produce same user volume
         let (user_volume2, bump2) = derive_user_volume_pda(&user_wallet);
@@ -231,6 +238,20 @@ mod tests {
         let user_wallet2 = Pubkey::new_unique();
         let (user_volume3, _) = derive_user_volume_pda(&user_wallet2);
         assert_ne!(user_volume, user_volume3);
+    }
+
+    #[test]
+    fn test_derive_creator_vault_pda() {
+        let creator = Pubkey::new_unique();
+        let (creator_vault, bump) = derive_creator_vault_pda(&creator);
+        
+        assert_ne!(creator_vault, Pubkey::default());
+        assert_ne!(creator_vault, creator);
+        assert!(bump <= 255);
+        
+        // Same creator, same vault
+        let (creator_vault2, _) = derive_creator_vault_pda(&creator);
+        assert_eq!(creator_vault, creator_vault2);
     }
 
     #[test]
@@ -313,4 +334,3 @@ mod tests {
         assert_eq!(pdas1.global_volume, pdas2.global_volume);
     }
 }
-

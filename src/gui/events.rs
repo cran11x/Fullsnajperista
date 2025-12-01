@@ -44,6 +44,7 @@ pub enum BotControl {
     UpdateConfig(crate::config::Config),
     Restart,
     ManualSell(String), // Mint address to sell
+    ManualBuy { mint: String, sol_amount: Option<u64> }, // Manual buy with mint address and optional SOL amount
 }
 
 impl TokenEvent {

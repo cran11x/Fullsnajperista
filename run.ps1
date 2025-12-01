@@ -5,23 +5,21 @@ param(
     [string]$BuildProfile = "release"
 )
 
-Write-Host "Trazim Cargo..." -ForegroundColor Cyan
+$ErrorActionPreference = "SilentlyContinue"
 
-# Pokušaj pronaći cargo
+# Setup cargo path
 $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
 if (-not (Test-Path $cargo)) {
-    $found = Get-Command cargo -ErrorAction SilentlyContinue
-    if ($found) {
-        $cargo = "cargo"
-    } else {
-        Write-Host "Cargo nije pronaden!" -ForegroundColor Red
-        Write-Host "Molimo instalirajte Rust: https://rustup.rs/" -ForegroundColor Yellow
-        exit 1
-    }
+    $cargo = "cargo"
 }
 
-Write-Host "Cargo pronaden: $cargo" -ForegroundColor Green
-Write-Host ""
+Write-Host "Koristim cargo: $cargo" -ForegroundColor Cyan
+
+# Kill existing instances
+Write-Host "Gasim stare procese..." -ForegroundColor Gray
+Stop-Process -Name "Fullsnajperista" -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "cargo" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
 
 if ($BuildProfile -eq "release") {
     Write-Host "Pokretanje release verzije..." -ForegroundColor Cyan
@@ -30,4 +28,3 @@ if ($BuildProfile -eq "release") {
     Write-Host "Pokretanje debug verzije..." -ForegroundColor Cyan
     & $cargo run
 }
-

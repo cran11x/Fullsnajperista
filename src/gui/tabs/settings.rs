@@ -291,7 +291,10 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         let mut key_changed = false;
         let mut toggle_show = false;
         
-        // Enhanced password input with show/hide toggle
+        // Enhanced password input with show/hide toggle - responsive layout (increased size)
+        let available_width = ui.available_width();
+        let input_width = (available_width * 0.7).max(400.0).min(700.0);
+        
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Private Key:")
                 .size(13.0)
@@ -300,7 +303,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.add_space(8.0);
             let password_response = ui.add(egui::TextEdit::singleline(&mut private_key_str)
                 .password(!show_private_key)
-                .desired_width(450.0));
+                .desired_width(input_width));
             
             if password_response.changed() {
                 key_changed = true;
@@ -397,7 +400,10 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             .color(egui::Color32::from_rgb(170, 180, 195)));
         ui.add_space(10.0);
         
-        // Enhanced HELIUS_API_KEY (required)
+        // Enhanced HELIUS_API_KEY (required) - responsive width (increased size)
+        let available_width = ui.available_width();
+        let input_width = (available_width * 0.7).max(400.0).min(700.0);
+        
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Helius API Key:")
                 .size(13.0)
@@ -406,7 +412,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.add_space(8.0);
             let api_key_str = state.get_or_init("helius_api_key", config_clone.helius_api_key.clone());
             if ui.add(egui::TextEdit::singleline(api_key_str)
-                    .desired_width(450.0))
+                    .desired_width(input_width))
                     .changed() {
                 config_clone.helius_api_key = api_key_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
@@ -414,7 +420,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             }
         });
         
-        // Enhanced RPC_URL (optional)
+        // Enhanced RPC_URL (optional) - responsive width
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("RPC URL (optional):")
                 .size(13.0)
@@ -423,7 +429,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.add_space(8.0);
             let rpc_str = state.get_or_init("rpc_url", config_clone.rpc_url.clone());
             if ui.add(egui::TextEdit::singleline(rpc_str)
-                    .desired_width(450.0))
+                    .desired_width(input_width))
                     .changed() {
                 config_clone.rpc_url = rpc_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
@@ -431,7 +437,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             }
         });
         
-        // Enhanced WSS_URL (optional)
+        // Enhanced WSS_URL (optional) - responsive width
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("WebSocket URL (optional):")
                 .size(13.0)
@@ -440,7 +446,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.add_space(8.0);
             let wss_str = state.get_or_init("wss_url", config_clone.wss_url.clone());
             if ui.add(egui::TextEdit::singleline(wss_str)
-                    .desired_width(450.0))
+                    .desired_width(input_width))
                     .changed() {
                 config_clone.wss_url = wss_str.trim().to_string();
                 apply_config_live(&config, &control_tx, &config_clone);
@@ -1072,7 +1078,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             .strong()
             .color(egui::Color32::from_rgb(255, 160, 110)));
         ui.add_space(16.0);
-        egui::ComboBox::from_id_source("submission_mode")
+        egui::ComboBox::from_id_salt("submission_mode")
             .selected_text(config_clone.submission_mode.as_str())
             .show_ui(ui, |ui| {
                 let mut changed = false;
@@ -1113,9 +1119,14 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(16.0);
     
-    // Enhanced action buttons with premium styling
+    // Enhanced action buttons with premium styling - centered layout
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(14.0, 0.0);
+        
+        // Center buttons
+        let available_width = ui.available_width();
+        let buttons_width = 360.0; // Approximate width of both buttons + spacing
+        ui.add_space((available_width - buttons_width).max(0.0) / 2.0);
         
         // Clone state for use in button click handler
         let state_clone = state.clone();
