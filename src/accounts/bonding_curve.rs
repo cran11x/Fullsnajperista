@@ -8,7 +8,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::time::Duration;
 
 /// Bonding curve account structure (from pump.fun program)
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct BondingCurveAccount {
     /// Discriminator (8 bytes)
     pub discriminator: u64,
@@ -24,20 +24,6 @@ pub struct BondingCurveAccount {
     pub token_total_supply: u64,
     /// Is migration complete
     pub complete: bool,
-}
-
-impl Default for BondingCurveAccount {
-    fn default() -> Self {
-        Self {
-            discriminator: 0,
-            virtual_token_reserves: 0,
-            virtual_sol_reserves: 0,
-            real_token_reserves: 0,
-            real_sol_reserves: 0,
-            token_total_supply: 0,
-            complete: false,
-        }
-    }
 }
 
 impl BondingCurveAccount {

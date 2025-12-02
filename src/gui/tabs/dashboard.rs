@@ -5,6 +5,9 @@ use eframe::egui;
 use crate::metrics::SharedMetrics;
 
 pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
     let m = match metrics.read() {
         Ok(m) => m,
         Err(e) => {
@@ -292,5 +295,6 @@ pub fn render(ui: &mut egui::Ui, metrics: &SharedMetrics) {
                 .color(egui::Color32::from_rgb(255, 160, 160)));
         });
     });
+    }); // End ScrollArea
 }
 

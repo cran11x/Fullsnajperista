@@ -54,6 +54,13 @@ mockito = "1.2"
 tokio-test = "0.4"
 tempfile = "3.10"
 
+[profile.dev]
+# Optimizacije za development - brža kompilacija
+incremental = true
+codegen-units = 256  # Više jedinica = brža kompilacija (trade-off: veći executable)
+opt-level = 0         # Bez optimizacije za bržu kompilaciju
+debug = true          # Debug info za bolje error poruke
+
 [profile.release]
 opt-level = 3
 lto = true

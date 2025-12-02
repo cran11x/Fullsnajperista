@@ -209,20 +209,23 @@ impl SettingsState {
 }
 
 pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc::Sender<BotControl>, wallet_private_key: &Arc<RwLock<Option<String>>>) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(16.0);
-        ui.label(egui::RichText::new("⚙️  Settings")
-            .size(28.0)
-            .strong()
-            .color(egui::Color32::from_rgb(220, 230, 245)));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Configure bot parameters and filters")
-            .size(14.0)
-            .color(egui::Color32::from_rgb(160, 170, 185)));
-    });
-    ui.add_space(24.0);
-    
-    let current_config = {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("⚙️  Settings")
+                    .size(28.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Configure bot parameters and filters")
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
+            });
+            ui.add_space(24.0);
+            
+            let current_config = {
         let cfg = config.read().unwrap();
         (*cfg).clone()
     };
@@ -1314,5 +1317,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         // Also save the state we modified during rendering
         *stored_state = state;
     });
+    
+    }); // End ScrollArea
 }
 

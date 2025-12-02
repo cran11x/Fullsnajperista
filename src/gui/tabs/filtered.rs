@@ -14,13 +14,16 @@ pub struct FilteredToken {
 }
 
 pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) {
-    ui.horizontal(|ui| {
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("⏭️  Filtered Tokens")
-                .size(28.0)
-                .strong()
-                .color(egui::Color32::from_rgb(255, 190, 120)));
-            ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("⏭️  Filtered Tokens")
+                        .size(28.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 190, 120)));
+                    ui.add_space(4.0);
             ui.label(egui::RichText::new("All detected tokens that were not bought with reasons")
                 .size(14.0)
                 .color(egui::Color32::from_rgb(160, 170, 185)));
@@ -111,9 +114,8 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     ui.add_space(16.0);
     
     // Table with filtered tokens
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
+    // NOTE: Inner ScrollArea removed to prevent nested scrolling issues
+    ui.vertical(|ui| {
             // Enhanced table header with premium styling
             ui.horizontal(|ui| {
                 ui.set_min_height(36.0);
@@ -193,6 +195,8 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
                 ui.add_space(4.0);
             }
         });
+    
+    }); // End ScrollArea
 }
 
 fn export_to_csv(event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) {

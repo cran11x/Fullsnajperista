@@ -1,13 +1,4 @@
 // websocket.rs - WEBSOCKET CONNECTION HANDLING
-#![allow(unused_imports, dead_code)]
-
-use anyhow::Result;
-use solana_sdk::pubkey::Pubkey;
-use std::str::FromStr;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-use futures_util::{StreamExt, SinkExt};
-
-use crate::constants::PUMP_PROGRAM_ID;
 
 /// Check if notification is an initialize bonding curve event
 pub fn is_initialize_bonding_curve(notification: &serde_json::Value) -> bool {
@@ -34,24 +25,6 @@ pub fn extract_signature(notification: &serde_json::Value) -> Option<String> {
     notification["params"]["result"]["value"]["signature"]
         .as_str()
         .map(|s| s.to_string())
-}
-
-/// Create WebSocket subscription message
-pub fn create_subscribe_message() -> Result<serde_json::Value> {
-    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
-    Ok(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "logsSubscribe",
-        "params": [
-            {
-                "mentions": [pump_program.to_string()]
-            },
-            {
-                "commitment": "processed"
-            }
-        ]
-    }))
 }
 
 #[cfg(test)]
@@ -133,15 +106,6 @@ mod tests {
         });
 
         assert!(extract_signature(&notification2).is_none());
-    }
-
-    #[test]
-    fn test_create_subscribe_message() {
-        let msg = create_subscribe_message().unwrap();
-        
-        assert_eq!(msg["method"], "logsSubscribe");
-        assert_eq!(msg["jsonrpc"], "2.0");
-        assert!(msg["params"].is_array());
     }
 }
 

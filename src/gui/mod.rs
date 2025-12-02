@@ -380,100 +380,99 @@ impl eframe::App for GuiApp {
                 .inner_margin(egui::Margin::symmetric(24.0, 20.0)))
             .show(ctx, |ui| {
             // Premium modern tab bar with enhanced hover effects
-            // Improved horizontal scroll with better spacing
-            // FIX: Limit tab bar height to prevent it from taking all available space
-            egui::ScrollArea::horizontal()
-                .auto_shrink([false, false])
-                .max_height(50.0) // Limit tab bar to 50px height
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-                        // Add padding at start for better visual appearance
-                        ui.add_space(4.0);
-                        
-                        let tabs = [
-                            (0, "📊", "Dashboard"),
-                            (1, "🎯", "POSITIONS"),
-                            (2, "💰", "Recent Buys"),
-                            (3, "🔴", "Live Feed"),
-                            (4, "⏭️", "Filtered"),
-                            (5, "⚙️", "Settings"),
-                            (6, "🚀", "BUY SNIPER"),
-                        ];
-                        
-                        for (idx, icon, label) in tabs.iter() {
-                            let is_selected = self.selected_tab == *idx;
-                            let bg_color = if is_selected {
-                                egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
-                            } else {
-                                egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
-                            };
-                            let border_color = if is_selected {
-                                egui::Color32::from_rgb(80, 160, 255)
-                            } else {
-                                egui::Color32::from_rgb(55, 60, 75)
-                            };
-                            let text_color = if is_selected {
-                                egui::Color32::from_rgb(230, 245, 255)
-                            } else {
-                                egui::Color32::from_rgb(180, 190, 205)
-                            };
-                            
-                            // Responsive tab button size
-                            let available_width = ui.available_width();
-                            let tab_width = if available_width > 1200.0 { 150.0 } else { 130.0 };
-                            
-                            let button_response = ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", icon, label))
-                                    .size(14.0)
-                                    .strong()
-                                    .color(text_color))
-                                    .fill(bg_color)
-                                    .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
-                                    .min_size(egui::vec2(tab_width, 42.0))
-                                    .rounding(egui::Rounding::same(10.0)));
-                            
-                            // Enhanced hover effect
-                            if button_response.hovered() && !is_selected {
-                                ui.painter().rect_filled(
-                                    button_response.rect,
-                                    10.0,
-                                    egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
+            // FIX: Proper horizontal scrolling - ensure ScrollArea works correctly
+            // ALL 7 TABS - using icons only for maximum compactness
+            let tabs = [
+                (0, "📊", "Dashboard"),
+                (1, "🎯", "Positions"),
+                (2, "💰", "Buys"),
+                (3, "🔴", "Feed"),
+                (4, "⏭️", "Filtered"),
+                (5, "⚙️", "Settings"),
+                (6, "🚀", "Sniper"),
+            ];
+            
+            // Ultra compact - icons + very short text to fit ALL 7 tabs
+            let tab_width = 40.0;
+            let tab_spacing = 0.5;
+            let padding = 1.0;
+            
+            // Tab bar - MUST show all 7 tabs
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(tab_spacing, 0.0);
+                ui.add_space(padding);
+                
+                // Force render ALL tabs - no filtering, no skipping
+                for (idx, icon, label) in tabs.iter() {
+                    let is_selected = self.selected_tab == *idx;
+                    let bg_color = if is_selected {
+                        egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
+                    } else {
+                        egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
+                    };
+                    let border_color = if is_selected {
+                        egui::Color32::from_rgb(80, 160, 255)
+                    } else {
+                        egui::Color32::from_rgb(55, 60, 75)
+                    };
+                    let text_color = if is_selected {
+                        egui::Color32::from_rgb(230, 245, 255)
+                    } else {
+                        egui::Color32::from_rgb(180, 190, 205)
+                    };
+                    
+                    // Compact tab button - icon + short text
+                    let tab_height = 36.0;
+                    
+                    // Render button - MUST be visible
+                    let button_text = format!("{} {}", icon, label);
+                    let button_response = ui.add_sized(
+                        egui::vec2(tab_width, tab_height),
+                        egui::Button::new(egui::RichText::new(button_text)
+                            .size(8.5) // Very small font to fit all 7
+                            .strong()
+                            .color(text_color))
+                                        .fill(bg_color)
+                                        .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
+                                        .rounding(egui::Rounding::same(8.0))
                                 );
+                            
+                                // Enhanced hover effect
+                                if button_response.hovered() && !is_selected {
+                                    ui.painter().rect_filled(
+                                        button_response.rect,
+                                        8.0,
+                                        egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
+                                    );
+                                }
+                                
+                                if button_response.clicked() {
+                                    self.selected_tab = *idx;
+                                }
                             }
                             
-                            if button_response.clicked() {
-                                self.selected_tab = *idx;
-                            }
-                        }
-                        
-                        // Add padding at end for better visual appearance
-                        ui.add_space(4.0);
-                    });
-                });
+                            ui.add_space(padding);
+                        });
             
             ui.separator();
             ui.add_space(10.0);
             
-            // Content area - ScrollArea with improved scrolling
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Use available width naturally without forcing it
-                    ui.set_min_width(ui.available_width().max(400.0));
-                    
-                    match self.selected_tab {
-                        0 => tabs::dashboard::render(ui, &self.metrics),
-                        1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
-                        2 => tabs::buys::render(ui, &self.tracker),
-                        3 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
-                        4 => tabs::filtered::render(ui, &self.event_log),
-                        5 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
-                        6 => tabs::buy_sniper::render(ui, &mut self.buy_sniper_state, &self.config, &self.wallet_private_key, &self.control_tx, &self.event_log, &self.bot_running),
-                        _ => {
-                            ui.label(egui::RichText::new("Unknown tab").color(egui::Color32::WHITE));
-                        }
+            // Content area - Direct render (let tabs handle their own scrolling)
+            // This prevents nested ScrollArea issues and layout conflicts
+            ui.allocate_ui(ui.available_size(), |ui| {
+                match self.selected_tab {
+                    0 => tabs::dashboard::render(ui, &self.metrics),
+                    1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
+                    2 => tabs::buys::render(ui, &self.tracker),
+                    3 => tabs::feed::render(ui, &self.event_log, &mut self.auto_scroll_feed, &mut self.feed_state),
+                    4 => tabs::filtered::render(ui, &self.event_log),
+                    5 => tabs::settings::render(ui, &self.config, &self.control_tx, &self.wallet_private_key),
+                    6 => tabs::buy_sniper::render(ui, &mut self.buy_sniper_state, &self.config, &self.wallet_private_key, &self.control_tx, &self.event_log, &self.bot_running),
+                    _ => {
+                        ui.label(egui::RichText::new("Unknown tab").color(egui::Color32::WHITE));
                     }
-                });
+                }
+            });
         });
     }
 }

@@ -7,13 +7,16 @@ use crate::accounts::TokenTracker;
 use crate::gui::events::BotControl;
 
 pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, control_tx: &mpsc::Sender<BotControl>) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(16.0);
-        ui.label(egui::RichText::new("🎯 Active Positions")
-            .size(28.0)
-            .strong()
-            .color(egui::Color32::from_rgb(100, 255, 160)));
-        ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("🎯 Active Positions")
+                    .size(28.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(100, 255, 160)));
+                ui.add_space(4.0);
         ui.label(egui::RichText::new("Monitor your currently open trades")
             .size(14.0)
             .color(egui::Color32::from_rgb(160, 170, 185)));
@@ -51,19 +54,17 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                     .color(egui::Color32::from_rgb(160, 170, 185)));
             });
         } else {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
+            // Table handles its own layout, just direct render
+            // Improved grid with proper column widths and responsive spacing
+            let available_width = ui.available_width();
+            let spacing = if available_width > 1000.0 { 20.0 } else { 12.0 };
+            
+            egui::Grid::new("positions_grid")
+                .num_columns(6)
+                .spacing([spacing, 10.0])
+                .striped(true)
+                .min_row_height(42.0)
                 .show(ui, |ui| {
-                // Improved grid with proper column widths and responsive spacing
-                let available_width = ui.available_width();
-                let spacing = if available_width > 1000.0 { 20.0 } else { 12.0 };
-                
-                egui::Grid::new("positions_grid")
-                    .num_columns(6)
-                    .spacing([spacing, 10.0])
-                    .striped(true)
-                    .min_row_height(42.0)
-                    .show(ui, |ui| {
                         // Header with proper column widths
                         ui.set_width(90.0); // Time column
                         ui.label(egui::RichText::new("Time")
@@ -153,11 +154,12 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                             ui.end_row();
                         }
                     });
-            });
         }
     } else {
         ui.label("Tracker not initialized");
     }
+    
+    }); // End ScrollArea
 }
 
 fn format_address_safe(addr: &str) -> String {

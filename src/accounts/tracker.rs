@@ -364,7 +364,7 @@ impl TokenTracker {
 
     /// Print periodic stats (every N buys)
     pub fn print_periodic_stats(&self) {
-        if self.stats.total_buys % 10 == 0 {
+        if self.stats.total_buys.is_multiple_of(10) {
             let mut msg = format!("\n📊 STATS: {} buys | {:.4} SOL spent | Avg: {:.4} SOL/buy",
                                   self.stats.total_buys,
                                   self.stats.total_sol_spent,

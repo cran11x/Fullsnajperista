@@ -1,4 +1,5 @@
 // sell.rs - SELL INSTRUCTION BUILDER
+// FIXED: Matching Buy instruction account structure (Token Program @ 8, Creator Vault @ 9, + Volumes)
 
 use anyhow::Result;
 use solana_sdk::{
@@ -56,6 +57,59 @@ pub async fn build_sell_instruction(
     // data.push(0x00); // Removed extra byte
 
     // CRITICAL: Use RECALCULATED PDAs, not values from accounts
+    // Account order updated to match successful Buy/Sell transactions (V2):
+    // 0: Global
+    // 1: Fee Recipient
+    // 2: Mint
+    // 3: Bonding Curve
+    // 4: Associated Bonding Curve
+    // 5: User Token Account
+    // 6: User Wallet (signer)
+    // 7: System Program
+    // 8: Associated Token Program / Token Program 2022 (Readonly)
+    // 9: Creator Vault
+    // 10: Event Authority
+    // 11: Pump Program
+    // 12: Global Volume
+    // 13: User Volume
+    // 14: Fee Config
+    // 15: Fee Program
+
+    // Verify Creator Vault (Account 9) logic similar to Buy
+    // Also handle case where creator_vault matches creator (simplification in bot_core)
+    let final_creator_vault = if accounts.creator_vault == accounts.bonding_curve 
+        || accounts.creator_vault == pdas.bonding_curve 
+        || accounts.creator_vault == accounts.creator {
+        
+        if accounts.creator_vault == accounts.creator {
+            eprintln!("   ⚠️  Creator Vault matches Creator (simplified input) - Deriving PDA...");
+        } else {
+            eprintln!("   ❌ Creator Vault matches Bonding Curve! This is an ERROR.");
+        }
+
+        if accounts.creator != Pubkey::default() {
+            let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&accounts.creator);
+            eprintln!("   ✅ Recalculated Creator Vault using creator {}: {}", accounts.creator, derived_vault);
+            derived_vault
+        } else {
+            eprintln!("   ⚠️  Cannot derive Creator Vault: Creator is default. Using input: {}", accounts.creator_vault);
+            accounts.creator_vault
+        }
+    } else {
+        accounts.creator_vault
+    };
+
+    // Use Token Program 2022 by default as Pump.fun uses it, or fallback to standard
+    let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        .unwrap_or_else(|_| spl_token::id());
+
+    // Ensure Associated Bonding Curve is consistent with program
+    let recalculate_abc = spl_associated_token_account::get_associated_token_address_with_program_id(
+        &pdas.bonding_curve,
+        &accounts.mint,
+        &token_program_2022_id
+    );
+
     let instruction = Instruction {
         program_id: pump_program,
         accounts: vec![
@@ -63,30 +117,30 @@ pub async fn build_sell_instruction(
             AccountMeta::new(pdas.global, false),
             // Account 1: Fee Recipient (hardcoded)
             AccountMeta::new(pdas.fee_recipient, false),
-            // Account 2: Mint (from accounts - this is correct, it's the token mint)
-            AccountMeta::new(accounts.mint, false),
-            // Account 3: Bonding Curve (PDA, RECALCULATED for current mint)
+            // Account 2: Mint (from accounts)
+            AccountMeta::new_readonly(accounts.mint, false),
+            // Account 3: Bonding Curve (PDA, RECALCULATED)
             AccountMeta::new(pdas.bonding_curve, false),
-            // Account 4: Associated Bonding Curve (from accounts - should be correct)
-            AccountMeta::new(accounts.associated_bonding_curve, false),
+            // Account 4: Associated Bonding Curve (RECALCULATED)
+            AccountMeta::new(recalculate_abc, false),
             // Account 5: User Token Account (current user's token account)
             AccountMeta::new(*user_token_account, false),
-            // Account 6: User Wallet (signer, current user)
+            // Account 6: User Wallet (signer)
             AccountMeta::new(*user_wallet, true),
             // Account 7: System Program (readonly)
             AccountMeta::new_readonly(system_program::id(), false),
-            // Account 8: Token Program (readonly)
-            AccountMeta::new_readonly(spl_token::id(), false),
-            // Account 9: Creator Vault (from accounts - extracted from BUY instruction, should be correct)
-            AccountMeta::new(accounts.creator_vault, false),
+            // Account 8: Token Program (readonly) - Usually Token 2022 for Pump.fun
+            AccountMeta::new_readonly(token_program_2022_id, false),
+            // Account 9: Creator Vault
+            AccountMeta::new(final_creator_vault, false),
             // Account 10: Event Authority (PDA, RECALCULATED)
-            AccountMeta::new(pdas.event_authority, false),
-            // Account 11: Pump Program (readonly, program itself - REQUIRED for program verification)
+            AccountMeta::new_readonly(pdas.event_authority, false),
+            // Account 11: Pump Program (readonly)
             AccountMeta::new_readonly(pump_program, false),
-            // Account 12: Global Volume Accumulator (hardcoded)
-            AccountMeta::new(pdas.global_volume, false),
-            // Account 13: User Volume (PDA, RECALCULATED for current user)
-            AccountMeta::new(pdas.user_volume, false),
+            // Account 12: Global Volume (hardcoded)
+            AccountMeta::new_readonly(pdas.global_volume, false),
+            // Account 13: User Volume (PDA, RECALCULATED)
+            AccountMeta::new_readonly(pdas.user_volume, false),
             // Account 14: Fee Config (hardcoded)
             AccountMeta::new_readonly(pdas.fee_config, false),
             // Account 15: Fee Program (hardcoded)
@@ -98,8 +152,9 @@ pub async fn build_sell_instruction(
     // Debug: Log sell instruction details
     eprintln!("🔍 SELL INSTRUCTION BUILT:");
     eprintln!("   Token Amount: {}", token_amount);
-    eprintln!("   Min SOL Output: 0 (100% slippage for fast exit)");
-    eprintln!("   User Volume PDA: {} (verified)", pdas.user_volume);
+    eprintln!("   Min SOL Output: 0 (100% slippage)");
+    eprintln!("   Accounts: {} (updated to match V2)", instruction.accounts.len());
+    eprintln!("   Token Program used: {}", token_program_2022_id);
     
     Ok(instruction)
 }
@@ -118,8 +173,7 @@ mod tests {
         // PDA should be different from user wallet
         assert_ne!(pda, user_wallet);
 
-        // Bump should be valid (0-255)
-        assert!(bump <= 255);
+        // Bump is always valid (u8 type ensures 0-255 range)
 
         // Same wallet should produce same PDA
         let (pda2, bump2) = derive_user_volume_pda(&user_wallet);
@@ -196,7 +250,7 @@ mod tests {
 
         // Verify instruction structure
         assert_eq!(ix.program_id, Pubkey::from_str(PUMP_PROGRAM_ID).unwrap());
-        assert_eq!(ix.accounts.len(), 16);
+        assert_eq!(ix.accounts.len(), 16); // Updated length
 
         // Verify discriminator in data
         assert_eq!(ix.data[0..8], SELL_DISCRIMINATOR);
@@ -239,4 +293,3 @@ mod tests {
         assert!(result.is_err(), "Expected error for zero token amount");
     }
 }
-

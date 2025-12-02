@@ -26,6 +26,9 @@ pub fn render(
     event_log: &Arc<RwLock<VecDeque<TokenEvent>>>,
     bot_running: &Arc<AtomicBool>,
 ) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
     
     // Check for recent events to update status
     {
@@ -216,5 +219,7 @@ pub fn render(
             });
         }
     });
+    
+    }); // End ScrollArea
 }
 
