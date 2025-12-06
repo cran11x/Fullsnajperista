@@ -11,7 +11,6 @@ use solana_sdk::{
     system_instruction,
 };
 use spl_associated_token_account::{
-    get_associated_token_address, 
     get_associated_token_address_with_program_id,
     instruction::{
         create_associated_token_account,
@@ -41,7 +40,7 @@ use crate::constants::PUMP_PROGRAM_ID;
 use crate::metrics::{SharedMetrics, FilterReason, SubmissionMethod, ErrorType};
 use crate::gui::{TokenEvent, BotControl};
 use crate::sell::build_sell_instruction;
-use crate::blockhash_cache::get_cached_blockhash;
+// use crate::blockhash_cache::get_cached_blockhash;
 use solana_sdk::program_pack::Pack;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_transaction_status::UiTransactionEncoding;
@@ -94,6 +93,19 @@ pub async fn run_bot(
             monitor_rpc,
             monitor_tracker,
             monitor_event_tx,
+        ).await;
+    });
+    
+    // Start ultra-fast PnL monitor as separate background task
+    let pnl_config = config.clone();
+    let pnl_rpc = initial_config.create_rpc_client();
+    let pnl_tracker = tracker.clone();
+    
+    tokio::spawn(async move {
+        monitor_pnl_ultra_fast(
+            pnl_config,
+            pnl_rpc,
+            pnl_tracker,
         ).await;
     });
     
@@ -312,6 +324,9 @@ async fn listen_websocket_once(
                             return Ok(true); // Signal that we stopped
                         }
                         BotControl::ManualSell(mint_to_sell) => {
+                            eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+                            eprintln!("║              MANUAL SELL REQUESTED                           ║");
+                            eprintln!("╚═══════════════════════════════════════════════════════════════╝");
                             eprintln!("📩 Received ManualSell command for {}", mint_to_sell);
                             let _ = event_tx.send(TokenEvent::Info {
                                 message: format!("🚨 Manual sell requested for {}", mint_to_sell),
@@ -319,24 +334,39 @@ async fn listen_websocket_once(
                             });
                             
                             // Find position
+                            eprintln!("   🔍 Searching for position...");
                             let position_opt = if let Ok(tracker_guard) = tracker.read() {
                                 if let Some(tracker_ref) = tracker_guard.as_ref() {
-                                    tracker_ref.get_active_positions().into_iter()
+                                    let positions = tracker_ref.get_active_positions();
+                                    eprintln!("      - Found {} active positions", positions.len());
+                                    positions.into_iter()
                                         .find(|p| p.mint == mint_to_sell)
                                 } else {
+                                    eprintln!("      - ⚠️  Tracker is None");
                                     None
                                 }
                             } else {
+                                eprintln!("      - ❌ Failed to acquire tracker read lock");
                                 None
                             };
                             
                             if let Some(position) = position_opt {
+                                eprintln!("   ✅ Position found:");
+                                eprintln!("      - Mint: {}", position.mint);
+                                eprintln!("      - Creator: {}", position.creator);
+                                eprintln!("      - Buy signature: {}", position.signature);
+                                eprintln!("      - Buy SOL: {}", position.our_buy_sol);
+                                
                                 // Clone resources for sell execution
+                                eprintln!("   🔧 Preparing for sell execution...");
                                 let wallet_bytes = wallet.to_bytes();
                                 let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                                    Ok(kp) => kp,
+                                    Ok(kp) => {
+                                        eprintln!("      - ✅ Wallet cloned successfully");
+                                        kp
+                                    },
                                     Err(e) => {
-                                        eprintln!("Failed to clone wallet for manual sell: {}", e);
+                                        eprintln!("      - ❌ Failed to clone wallet for manual sell: {}", e);
                                         continue;
                                     }
                                 };
@@ -345,16 +375,20 @@ async fn listen_websocket_once(
                                     let cfg = config_arc.read().unwrap();
                                     (*cfg).clone()
                                 };
+                                eprintln!("      - ✅ Config cloned");
+                                eprintln!("         - Sell percent: {}%", config_clone.sell_percent);
+                                eprintln!("         - Submission mode: {:?}", config_clone.submission_mode);
                                 
                                 let rpc_client = config_clone.create_rpc_client();
+                                eprintln!("      - ✅ RPC client created");
                                 
                                 // Execute sell in background task to not block WebSocket loop
                                 let tracker_clone = tracker.clone();
                                 let event_tx_clone = event_tx.clone();
                                 
-                                eprintln!("🚀 Spawning sell task for {}", position.mint);
+                                eprintln!("   🚀 Spawning sell task for {}", position.mint);
                                 tokio::spawn(async move {
-                                    eprintln!("🔄 Sell task started for {}", position.mint);
+                                    eprintln!("   🔄 Sell task started for {}", position.mint);
                                     match execute_sell(
                                         &config_clone,
                                         &wallet_clone,
@@ -365,12 +399,17 @@ async fn listen_websocket_once(
                                         &event_tx_clone,
                                     ).await {
                                         Ok(sig) => {
+                                            eprintln!("   ✅ Manual sell executed successfully!");
+                                            eprintln!("      - Signature: {}", sig);
                                             let _ = event_tx_clone.send(TokenEvent::Info {
                                                 message: format!("✅ Manual sell executed: {}", sig),
                                                 timestamp: Utc::now(),
                                             });
                                         }
                                         Err(e) => {
+                                            eprintln!("   ❌ Manual sell failed!");
+                                            eprintln!("      - Error: {}", e);
+                                            eprintln!("      - Error details: {:?}", e);
                                             let _ = event_tx_clone.send(TokenEvent::Error {
                                                 message: format!("❌ Manual sell failed: {}", e),
                                                 timestamp: Utc::now(),
@@ -379,6 +418,7 @@ async fn listen_websocket_once(
                                     }
                                 });
                             } else {
+                                eprintln!("   ❌ Position not found for manual sell: {}", mint_to_sell);
                                 let _ = event_tx.send(TokenEvent::Error {
                                     message: format!("Position not found for manual sell: {}", mint_to_sell),
                                     timestamp: Utc::now(),
@@ -1332,7 +1372,7 @@ async fn process_and_buy(
     eprintln!("    [4] Jito Tip");
     eprintln!();
     
-    let recent_blockhash = get_cached_blockhash(rpc).await?;
+    let recent_blockhash = rpc.get_latest_blockhash().await?;
     
     // ========================================================================
     // SECTION 7: SEND TRANSACTION
@@ -1426,6 +1466,11 @@ async fn process_and_buy(
                             bonding_curve: Some(accounts.bonding_curve.to_string()),
                             sold: false,
                             sell_signature: None,
+                            current_price_sol: None,
+                            current_value_sol: None,
+                            pnl_sol: None,
+                            pnl_percent: None,
+                            last_pnl_update: None,
                         };
                         
                         match tracker.record_buy(buy) {
@@ -1750,6 +1795,11 @@ async fn process_and_buy(
                     bonding_curve: Some(accounts.bonding_curve.to_string()),
                     sold: false,
                     sell_signature: None,
+                    current_price_sol: None,
+                    current_value_sol: None,
+                    pnl_sol: None,
+                    pnl_percent: None,
+                    last_pnl_update: None,
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -1872,6 +1922,127 @@ async fn get_token_balance_helius(
     }
 }
 
+/// Get all token holdings for a wallet using Helius API
+pub async fn get_wallet_token_holdings(
+    helius_api_key: &str,
+    wallet_address: &Pubkey,
+) -> Result<Vec<(Pubkey, Pubkey, u64)>> {
+    // Returns Vec<(mint, token_account, balance)>
+    let url = format!("https://mainnet.helius-rpc.com/?api-key={}", helius_api_key);
+    let client = crate::utils::get_shared_http_client();
+    
+    eprintln!("🔍 Fetching token holdings for wallet: {}", wallet_address);
+    
+    // Use getTokenAccountsByOwner to get all token accounts
+    let request_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            wallet_address.to_string(),
+            {
+                "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" // Token 2022
+            },
+            {
+                "encoding": "jsonParsed"
+            }
+        ]
+    });
+    
+    let response = client
+        .post(&url)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Helius API request failed: {}", e))?;
+    
+    let result: serde_json::Value = response.json().await
+        .map_err(|e| anyhow!("Failed to parse Helius response: {}", e))?;
+    
+    // Also check standard Token Program
+    let request_body_standard = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "2",
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            wallet_address.to_string(),
+            {
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" // Standard Token Program
+            },
+            {
+                "encoding": "jsonParsed"
+            }
+        ]
+    });
+    
+    let response_standard = client
+        .post(&url)
+        .json(&request_body_standard)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Helius API request failed (standard): {}", e))?;
+    
+    let result_standard: serde_json::Value = response_standard.json().await
+        .map_err(|e| anyhow!("Failed to parse Helius response (standard): {}", e))?;
+    
+    let mut holdings = Vec::new();
+    
+    // Parse Token 2022 accounts
+    if let Some(accounts) = result["result"]["value"].as_array() {
+        for account in accounts {
+            if let (Some(account_data), Some(pubkey_str)) = (
+                account["account"]["data"]["parsed"]["info"].as_object(),
+                account["pubkey"].as_str()
+            ) {
+                if let (Some(mint_str), Some(token_amount)) = (
+                    account_data["mint"].as_str(),
+                    account_data["tokenAmount"]["amount"].as_str()
+                ) {
+                    if let (Ok(mint), Ok(token_account), Ok(balance)) = (
+                        Pubkey::from_str(mint_str),
+                        Pubkey::from_str(pubkey_str),
+                        token_amount.parse::<u64>()
+                    ) {
+                        if balance > 0 {
+                            holdings.push((mint, token_account, balance));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Parse standard Token Program accounts
+    if let Some(accounts) = result_standard["result"]["value"].as_array() {
+        for account in accounts {
+            if let (Some(account_data), Some(pubkey_str)) = (
+                account["account"]["data"]["parsed"]["info"].as_object(),
+                account["pubkey"].as_str()
+            ) {
+                if let (Some(mint_str), Some(token_amount)) = (
+                    account_data["mint"].as_str(),
+                    account_data["tokenAmount"]["amount"].as_str()
+                ) {
+                    if let (Ok(mint), Ok(token_account), Ok(balance)) = (
+                        Pubkey::from_str(mint_str),
+                        Pubkey::from_str(pubkey_str),
+                        token_amount.parse::<u64>()
+                    ) {
+                        if balance > 0 {
+                            // Avoid duplicates
+                            if !holdings.iter().any(|(m, _, _)| *m == mint) {
+                                holdings.push((mint, token_account, balance));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(holdings)
+}
+
 async fn monitor_positions(
     config: Arc<std::sync::RwLock<Config>>,
     wallet: Keypair,
@@ -1879,6 +2050,89 @@ async fn monitor_positions(
     tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
     event_tx: mpsc::UnboundedSender<TokenEvent>,
 ) {
+    eprintln!("🔍 Position monitor started");
+    
+    // Check wallet holdings on startup
+    {
+        let helius_api_key = {
+            let cfg = config.read().unwrap();
+            cfg.helius_api_key.clone()
+        };
+        let wallet_address = wallet.pubkey();
+        eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
+        eprintln!("║           CHECKING WALLET TOKEN HOLDINGS                      ║");
+        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+        eprintln!("🔍 Wallet: {}", wallet_address);
+        
+        match get_wallet_token_holdings(&helius_api_key, &wallet_address).await {
+            Ok(holdings) => {
+                if holdings.is_empty() {
+                    eprintln!("   ℹ️  No token holdings found in wallet");
+                } else {
+                    eprintln!("   ✅ Found {} token position(s):", holdings.len());
+                    eprintln!();
+                    
+                    // Get SOL price for MC calculation
+                    let sol_price = {
+                        let cfg = config.read().unwrap();
+                        cfg.sol_price_usd
+                    };
+                    
+                    // Fetch bonding curve and MC for each token
+                    for (idx, (mint, token_account, balance)) in holdings.iter().enumerate() {
+                        eprintln!("   [{}/{}] Token Position:", idx + 1, holdings.len());
+                        eprintln!("      - Mint: {}", mint);
+                        eprintln!("      - Token Account: {}", token_account);
+                        eprintln!("      - Balance: {} tokens", balance);
+                        
+                        // Try to derive bonding curve and get MC
+                        let (bonding_curve, _) = crate::pda_derivation::derive_bonding_curve_pda(mint);
+                        eprintln!("      - Bonding Curve: {}", bonding_curve);
+                        
+                        // Try to fetch MC
+                        match fetch_bonding_curve_mc(&rpc, &bonding_curve, sol_price).await {
+                            Ok((curve, mc_sol, mc_usd)) => {
+                                let token_price = curve.get_token_price_sol();
+                                // Balance is in raw units (like lamports), need to check token decimals
+                                // For most tokens, decimals are 6-9, but we'll use the raw balance for now
+                                // Position value = (balance * token_price) where balance is in smallest units
+                                // Token price is per token, so we need to know decimals
+                                // For simplicity, assume 1e9 (like SOL) for calculation
+                                let balance_tokens = *balance as f64 / 1e9; // Adjust if token has different decimals
+                                let position_value_sol = balance_tokens * token_price;
+                                let position_value_usd = position_value_sol * sol_price;
+                                
+                                eprintln!("      - 💰 Market Cap: ${:.2} ({:.4} SOL)", mc_usd, mc_sol);
+                                eprintln!("      - 📈 Token Price: {:.8} SOL (${:.6})", token_price, token_price * sol_price);
+                                eprintln!("      - 💵 Position Value: ${:.2} ({:.4} SOL)", position_value_usd, position_value_sol);
+                                eprintln!("      - 📊 Bonding Curve State:");
+                                eprintln!("         • Virtual: {:.4} SOL / {:.2} tokens", 
+                                    curve.virtual_sol_reserves as f64 / 1e9,
+                                    curve.virtual_token_reserves as f64 / 1e9);
+                                eprintln!("         • Real: {:.4} SOL / {:.2} tokens",
+                                    curve.real_sol_reserves as f64 / 1e9,
+                                    curve.real_token_reserves as f64 / 1e9);
+                                eprintln!("         • Total Supply: {} tokens", curve.token_total_supply);
+                                eprintln!("         • Complete: {}", curve.complete);
+                            }
+                            Err(e) => {
+                                eprintln!("      - ⚠️  Could not fetch market cap: {}", e);
+                                eprintln!("         (Token might be migrated or bonding curve doesn't exist)");
+                            }
+                        }
+                        eprintln!();
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("   ❌ Failed to fetch token holdings: {}", e);
+                eprintln!("      - Error details: {:?}", e);
+            }
+        }
+        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+        eprintln!();
+    }
+    
     loop {
         // Check if auto-sell is enabled
         let enabled = {
@@ -1887,15 +2141,24 @@ async fn monitor_positions(
         };
 
         if !enabled {
+            eprintln!("⏸️  Auto-sell is DISABLED - skipping position monitoring");
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
+        
+        eprintln!("✅ Auto-sell is ENABLED - checking positions...");
 
         // Get config values including Helius API key
-        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd, helius_api_key) = {
+        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd, helius_api_key, sell_percent) = {
             let cfg = config.read().unwrap();
-            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone())
+            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent)
         };
+        
+        eprintln!("   📋 Auto-sell settings:");
+        eprintln!("      - Stop Loss: {}%", stop_loss_percent);
+        eprintln!("      - Take Profit MC: ${:.2}", take_profit_mc_usd);
+        eprintln!("      - Sell Percent: {}%", sell_percent);
+        eprintln!("      - Monitor Interval: {}s", monitor_interval);
 
         // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
         let user_wallet = wallet.pubkey();
@@ -1973,6 +2236,13 @@ async fn monitor_positions(
                             }
                         }
                     }
+                } else {
+                    // Balance is non-zero - update token_amount in tracker so UI shows current balance
+                    if let Ok(mut tracker_guard) = tracker.write() {
+                        if let Some(tracker) = tracker_guard.as_mut() {
+                            let _ = tracker.update_token_amount(&position.mint, balance);
+                        }
+                    }
                 }
             }
             
@@ -1995,31 +2265,51 @@ async fn monitor_positions(
         };
 
         if active_positions.is_empty() {
+            eprintln!("   ℹ️  No active positions to monitor");
             tokio::time::sleep(Duration::from_secs(monitor_interval)).await;
             continue;
         }
 
-        eprintln!("\n📊 MONITORING POSITIONS:");
+        eprintln!("\n📊 MONITORING {} POSITION(S):", active_positions.len());
         
         // Check each position
-        for position in active_positions {
+        for (idx, position) in active_positions.iter().enumerate() {
+            eprintln!("   [{}/{}] Checking position...", idx + 1, active_positions.len());
+            eprintln!("      - Mint: {}", position.mint);
+            
             // Skip if we don't have required data
             let bonding_curve_str = match &position.bonding_curve {
-                Some(bc) => bc,
-                None => continue,
+                Some(bc) => {
+                    eprintln!("      - ✅ Bonding Curve: {}", bc);
+                    bc
+                },
+                None => {
+                    eprintln!("      - ❌ Missing bonding curve - skipping");
+                    continue;
+                }
             };
 
             let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
                 Ok(pk) => pk,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("      - ❌ Invalid bonding curve format: {} - skipping", e);
+                    continue;
+                }
             };
 
             let entry_mc = match position.mc_at_entry_usd {
-                Some(mc) => mc,
-                None => continue,
+                Some(mc) => {
+                    eprintln!("      - ✅ Entry MC: ${:.2}", mc);
+                    mc
+                },
+                None => {
+                    eprintln!("      - ❌ Missing entry MC - skipping");
+                    continue;
+                }
             };
 
             // Fetch current MC
+            eprintln!("      - 🔍 Fetching current MC...");
             let current_mc_result = fetch_bonding_curve_mc(
                 &rpc,
                 &bonding_curve,
@@ -2027,9 +2317,12 @@ async fn monitor_positions(
             ).await;
 
             let current_mc = match current_mc_result {
-                Ok((_, _, mc_usd)) => mc_usd,
+                Ok((_, _, mc_usd)) => {
+                    eprintln!("      - ✅ Current MC: ${:.2}", mc_usd);
+                    mc_usd
+                },
                 Err(e) => {
-                    eprintln!("Failed to fetch MC for {}: {}", position.mint, e);
+                    eprintln!("      - ❌ Failed to fetch MC for {}: {}", position.mint, e);
                     continue;
                 }
             };
@@ -2045,11 +2338,14 @@ async fn monitor_positions(
             let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
             let pnl_emoji = if pnl_percent > 0.0 { "🚀" } else { "📉" };
             
-            eprintln!("   • Token: {}...", &position.mint[0..8]);
-            eprintln!("     Current MC: ${:.0} (Entry: ${:.0})", current_mc, entry_mc);
-            eprintln!("     PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
-            eprintln!("     Stop Loss: ${:.0} (-{}%)", stop_loss_threshold, stop_loss_percent);
-            eprintln!("     Take Profit: ${:.0}", take_profit_mc_usd);
+            eprintln!("      - 📊 Position Status:");
+            eprintln!("         • Current MC: ${:.2} (Entry: ${:.2})", current_mc, entry_mc);
+            eprintln!("         • PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
+            eprintln!("         • Stop Loss Threshold: ${:.2} (-{}%)", stop_loss_threshold, stop_loss_percent);
+            eprintln!("         • Take Profit Threshold: ${:.2}", take_profit_mc_usd);
+            eprintln!("      - 🔍 Sell Conditions:");
+            eprintln!("         • Stop Loss Triggered: {} (Current: ${:.2} < Threshold: ${:.2})", should_sell_stop_loss, current_mc, stop_loss_threshold);
+            eprintln!("         • Take Profit Triggered: {} (Current: ${:.2} >= Threshold: ${:.2})", should_sell_take_profit, current_mc, take_profit_mc_usd);
 
             if should_sell_stop_loss || should_sell_take_profit {
                 let reason = if should_sell_stop_loss {
@@ -2058,15 +2354,30 @@ async fn monitor_positions(
                     "take_profit"
                 };
 
-                println!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
+                eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+                eprintln!("║              AUTO-SELL TRIGGERED                           ║");
+                eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+                eprintln!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
                          reason, position.mint, entry_mc, current_mc);
+                eprintln!("   📊 Position details:");
+                eprintln!("      - Mint: {}", position.mint);
+                eprintln!("      - Entry MC: ${:.2}", entry_mc);
+                eprintln!("      - Current MC: ${:.2}", current_mc);
+                eprintln!("      - MC Change: {:.2}%", ((current_mc - entry_mc) / entry_mc) * 100.0);
+                eprintln!("      - Stop Loss Threshold: ${:.2}", stop_loss_threshold);
+                eprintln!("      - Take Profit Threshold: ${:.2}", take_profit_mc_usd);
+                eprintln!("      - Reason: {}", reason);
 
                 // Clone wallet for execute_sell
+                eprintln!("   🔧 Preparing for sell execution...");
                 let wallet_bytes = wallet.to_bytes();
                 let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                    Ok(kp) => kp,
+                    Ok(kp) => {
+                        eprintln!("      - ✅ Wallet cloned successfully");
+                        kp
+                    },
                     Err(e) => {
-                        eprintln!("Failed to clone wallet: {}", e);
+                        eprintln!("      - ❌ Failed to clone wallet: {}", e);
                         continue;
                     }
                 };
@@ -2076,8 +2387,13 @@ async fn monitor_positions(
                     let cfg = config.read().unwrap();
                     (*cfg).clone()
                 };
+                eprintln!("      - ✅ Config cloned");
+                eprintln!("         - Sell percent: {}%", config_clone.sell_percent);
+                eprintln!("         - Submission mode: {:?}", config_clone.submission_mode);
+                eprintln!("         - Priority fee: {} lamports", config_clone.priority_fee);
 
                 // Execute sell
+                eprintln!("   🚀 Executing sell...");
                 match execute_sell(
                     &config_clone,
                     &wallet_clone,
@@ -2088,9 +2404,16 @@ async fn monitor_positions(
                     &event_tx,
                 ).await {
                     Ok(sig) => {
+                        eprintln!("   ✅ Auto-sell executed successfully!");
+                        eprintln!("      - Mint: {}", position.mint);
+                        eprintln!("      - Signature: {}", sig);
                         println!("✅ Auto-sell executed: {} - {}", position.mint, sig);
                     }
                     Err(e) => {
+                        eprintln!("   ❌ Auto-sell failed!");
+                        eprintln!("      - Mint: {}", position.mint);
+                        eprintln!("      - Error: {}", e);
+                        eprintln!("      - Error details: {:?}", e);
                         eprintln!("❌ Auto-sell failed for {}: {}", position.mint, e);
                     }
                 }
@@ -2130,7 +2453,7 @@ pub async fn execute_manual_buy(
         create_associated_token_account, create_associated_token_account_idempotent,
     };
     use std::str::FromStr;
-    use crate::blockhash_cache::get_cached_blockhash;
+    // use crate::blockhash_cache::get_cached_blockhash;
     use crate::constants::HELIUS_TIP_ACCOUNTS;
     use rand::seq::SliceRandom;
     
@@ -2243,7 +2566,7 @@ pub async fn execute_manual_buy(
         config.jito_tip,
     ));
     
-    let recent_blockhash = get_cached_blockhash(rpc).await?;
+    let recent_blockhash = rpc.get_latest_blockhash().await?;
     
     // Build and send transaction
     eprintln!("╔═══════════════════════════════════════════════════════════════╗");
@@ -2347,6 +2670,11 @@ pub async fn execute_manual_buy(
                     bonding_curve: Some(accounts.bonding_curve.to_string()),
                     sold: false,
                     sell_signature: None,
+                    current_price_sol: None,
+                    current_value_sol: None,
+                    pnl_sol: None,
+                    pnl_percent: None,
+                    last_pnl_update: None,
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -2361,6 +2689,74 @@ pub async fn execute_manual_buy(
     }
 }
 
+/// Extract Creator Vault directly from buy transaction (Account 9 in buy instruction)
+async fn extract_creator_vault_from_buy_tx(
+    rpc: &RpcClient,
+    buy_signature: &str,
+) -> Result<Pubkey> {
+    use solana_sdk::signature::Signature;
+    use solana_transaction_status::UiTransactionEncoding;
+    use base64::{engine::general_purpose, Engine as _};
+    use solana_sdk::message::VersionedMessage;
+    use solana_sdk::transaction::VersionedTransaction;
+    
+    let sig = Signature::from_str(buy_signature)?;
+    
+    let tx = rpc.get_transaction_with_config(
+        &sig,
+        solana_client::rpc_config::RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            max_supported_transaction_version: Some(0),
+            commitment: Some(CommitmentConfig::confirmed()),
+        }
+    ).await?;
+
+    if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
+        let tx_bytes = general_purpose::STANDARD.decode(encoded)?;
+        let versioned_tx: VersionedTransaction = bincode::deserialize(&tx_bytes)?;
+        
+        let account_keys = match &versioned_tx.message {
+            VersionedMessage::Legacy(msg) => &msg.account_keys,
+            VersionedMessage::V0(msg) => &msg.account_keys,
+        };
+
+        let instructions = match &versioned_tx.message {
+            VersionedMessage::Legacy(msg) => &msg.instructions,
+            VersionedMessage::V0(msg) => &msg.instructions,
+        };
+
+        let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
+        let buy_discriminator = crate::constants::BUY_DISCRIMINATOR;
+
+        // Find buy instruction
+        for ix in instructions.iter() {
+            let program_id_idx = ix.program_id_index as usize;
+            if let Some(&program_id) = account_keys.get(program_id_idx) {
+                if program_id == pump_program && ix.data.len() >= 8 {
+                    let discriminator = &ix.data[0..8];
+                    let is_buy = discriminator == &buy_discriminator
+                        || discriminator == &[0x33, 0xE6, 0x85, 0x5A, 0x5B, 0x6B, 0xBD, 0x5B];
+                    
+                    if is_buy {
+                        // Extract Creator Vault from Account 9 (index 9 in buy instruction)
+                        if ix.accounts.len() > 9 {
+                            let account_idx = ix.accounts[9] as usize;
+                            if let Some(&creator_vault) = account_keys.get(account_idx) {
+                                return Ok(creator_vault);
+                            }
+                        }
+                        return Err(anyhow!("Buy instruction found but Account 9 (Creator Vault) not available"));
+                    }
+                }
+            }
+        }
+        
+        Err(anyhow!("Buy instruction not found in transaction"))
+    } else {
+        Err(anyhow!("Transaction encoding not supported"))
+    }
+}
+
 /// Execute sell transaction for a position
 async fn execute_sell(
     config: &Config,
@@ -2371,7 +2767,17 @@ async fn execute_sell(
     reason: &str, // "stop_loss" or "take_profit"
     event_tx: &mpsc::UnboundedSender<TokenEvent>,
 ) -> Result<String> {
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║                    EXECUTE SELL                              ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     eprintln!("🏗️ EXECUTE SELL CALLED for {} (reason: {})", position.mint, reason);
+    eprintln!("   📋 Position details:");
+    eprintln!("      - Mint: {}", position.mint);
+    eprintln!("      - Creator: {}", position.creator);
+    eprintln!("      - Buy signature: {}", position.signature);
+    eprintln!("      - Buy SOL: {}", position.our_buy_sol);
+    eprintln!("      - Entry MC: ${:.2}", position.mc_at_entry_usd.unwrap_or(0.0));
+    eprintln!("      - Sell percent: {}%", config.sell_percent);
     
     let mint = Pubkey::from_str(&position.mint)?;
     let bonding_curve = Pubkey::from_str(
@@ -2380,68 +2786,232 @@ async fn execute_sell(
     )?;
     let user_wallet = wallet.pubkey();
     
-    // Calculate ATA address fresh using Token 2022 Program
-    // Pump.fun uses Token 2022 (TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb)
+    eprintln!("   🔍 Step 1: Deriving accounts...");
+    // Calculate ATA address for both Token 2022 and standard Token Program
+    // Pump.fun uses Token 2022, but some tokens might use standard Token Program
     let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-    let user_token_account = get_associated_token_address_with_program_id(
+    let token_program_standard = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+    
+    // First, try to use user_token_account from tracker if available
+    let user_token_account_from_tracker = position.user_token_account.as_ref()
+        .and_then(|s| Pubkey::from_str(s).ok());
+    
+    let user_token_account_2022 = get_associated_token_address_with_program_id(
         &user_wallet, 
         &mint, 
         &token_program_2022
     );
-    eprintln!("   🔑 ATA Address (Token2022): {}", user_token_account);
-    eprintln!("   👤 Wallet: {}", user_wallet);
-    eprintln!("   🪙 Mint: {}", mint);
-
-    // Fetch token balance using get_token_account_balance with retries
-    eprintln!("   ⏳ Fetching token balance...");
-    let mut token_balance = 0;
-    let mut attempts = 0;
-    let max_attempts = 10; // Increased retries
+    let user_token_account_standard = get_associated_token_address_with_program_id(
+        &user_wallet, 
+        &mint, 
+        &token_program_standard
+    );
     
-    while attempts < max_attempts {
-        match rpc.get_token_account_balance(&user_token_account).await {
-            Ok(balance) => {
-                token_balance = balance.amount.parse::<u64>().unwrap_or(0);
-                if token_balance > 0 {
-                    break;
+    eprintln!("   ✅ Accounts derived:");
+    if let Some(tracker_ata) = user_token_account_from_tracker {
+        eprintln!("      - 🔑 ATA from Tracker: {}", tracker_ata);
+    }
+    eprintln!("      - 🔑 ATA Address (Token2022): {}", user_token_account_2022);
+    eprintln!("      - 🔑 ATA Address (Standard): {}", user_token_account_standard);
+    eprintln!("      - 👤 Wallet: {}", user_wallet);
+    eprintln!("      - 🪙 Mint: {}", mint);
+    eprintln!("      - 📊 Bonding Curve: {}", bonding_curve);
+    eprintln!("      - 🔧 Token Program 2022: {}", token_program_2022);
+    eprintln!("      - 🔧 Token Program Standard: {}", token_program_standard);
+
+    // Fetch token balance - try both Token 2022 and standard, also try Helius API
+    eprintln!("   🔍 Step 2: Fetching token balance...");
+    
+    let mut token_balance = 0;
+    let mut user_token_account = user_token_account_2022; // Default to Token 2022
+    let mut token_program_used = token_program_2022;
+    let mut attempts = 0;
+    let max_attempts = 5; // Reduced since we're trying multiple methods
+    
+    // First, try user_token_account from tracker if available
+    if let Some(tracker_ata) = user_token_account_from_tracker {
+        eprintln!("      - 🔍 Trying ATA from tracker first: {}", tracker_ata);
+        let helius_api_key = config.helius_api_key.clone();
+        match get_token_balance_helius(&helius_api_key, &tracker_ata).await {
+            Ok(bal) => {
+                if bal > 0 {
+                    token_balance = bal;
+                    user_token_account = tracker_ata;
+                    // Try to determine which token program based on ATA
+                    if tracker_ata == user_token_account_2022 {
+                        token_program_used = token_program_2022;
+                    } else if tracker_ata == user_token_account_standard {
+                        token_program_used = token_program_standard;
+                    }
+                    eprintln!("      - ✅ Balance found via Helius API (from tracker): {} tokens", token_balance);
                 }
-                eprintln!("   ⚠️  Token balance is 0, retrying ({}/{})", attempts + 1, max_attempts);
             }
-            Err(e) => {
-                eprintln!("   ⚠️  Error getting token balance: {} (attempt {}/{})", e, attempts + 1, max_attempts);
+            Err(_) => {
+                // Try RPC
+                match rpc.get_token_account_balance(&tracker_ata).await {
+                    Ok(balance) => {
+                        token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+                        if token_balance > 0 {
+                            user_token_account = tracker_ata;
+                            if tracker_ata == user_token_account_2022 {
+                                token_program_used = token_program_2022;
+                            } else if tracker_ata == user_token_account_standard {
+                                token_program_used = token_program_standard;
+                            }
+                            eprintln!("      - ✅ Balance found via RPC (from tracker): {} tokens", token_balance);
+                        }
+                    }
+                    Err(_) => {}
+                }
             }
-        }
-        attempts += 1;
-        if attempts < max_attempts {
-            tokio::time::sleep(Duration::from_secs(1)).await; // Increased delay to 1s
         }
     }
     
-    eprintln!("   💰 Final Token balance: {}", token_balance);
+    // If tracker ATA didn't work, try Helius API for both token programs
+    if token_balance == 0 {
+        eprintln!("      - 🔍 Trying Helius API for Token 2022...");
+        let helius_api_key = config.helius_api_key.clone();
+        match get_token_balance_helius(&helius_api_key, &user_token_account_2022).await {
+        Ok(bal) => {
+            if bal > 0 {
+                token_balance = bal;
+                user_token_account = user_token_account_2022;
+                token_program_used = token_program_2022;
+                eprintln!("      - ✅ Balance found via Helius API (Token 2022): {} tokens", token_balance);
+            } else {
+                // Try standard token program via Helius
+                match get_token_balance_helius(&helius_api_key, &user_token_account_standard).await {
+                    Ok(bal_std) => {
+                        if bal_std > 0 {
+                            token_balance = bal_std;
+                            user_token_account = user_token_account_standard;
+                            token_program_used = token_program_standard;
+                            eprintln!("      - ✅ Balance found via Helius API (Standard): {} tokens", token_balance);
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("      - ⚠️  Helius API failed: {}, trying RPC...", e);
+        }
+        }
+    }
+    
+    // If Helius didn't work, try RPC for both token programs
+    if token_balance == 0 {
+        while attempts < max_attempts {
+            eprintln!("      - Attempt {}/{}: Trying RPC (Token 2022)...", attempts + 1, max_attempts);
+            match rpc.get_token_account_balance(&user_token_account_2022).await {
+                Ok(balance) => {
+                    token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+                    if token_balance > 0 {
+                        user_token_account = user_token_account_2022;
+                        token_program_used = token_program_2022;
+                        eprintln!("      - ✅ Balance fetched via RPC (Token 2022): {} tokens (raw: {})", token_balance, balance.amount);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("      - ❌ Token 2022 RPC error: {} (attempt {}/{})", e, attempts + 1, max_attempts);
+                }
+            }
+            
+            // Try standard token program
+            if token_balance == 0 {
+                eprintln!("      - Attempt {}/{}: Trying RPC (Standard Token)...", attempts + 1, max_attempts);
+                match rpc.get_token_account_balance(&user_token_account_standard).await {
+                    Ok(balance) => {
+                        token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+                        if token_balance > 0 {
+                            user_token_account = user_token_account_standard;
+                            token_program_used = token_program_standard;
+                            eprintln!("      - ✅ Balance fetched via RPC (Standard): {} tokens (raw: {})", token_balance, balance.amount);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("      - ❌ Standard Token RPC error: {} (attempt {}/{})", e, attempts + 1, max_attempts);
+                    }
+                }
+            }
+            
+            attempts += 1;
+            if attempts < max_attempts && token_balance == 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    
+    eprintln!("   💰 Final Token balance: {} tokens", token_balance);
+    eprintln!("   📋 Token Account used: {}", user_token_account);
+    eprintln!("   📋 Token Program used: {}", token_program_used);
 
     if token_balance == 0 {
-        return Err(anyhow!("Token balance is 0 (account empty or not found after retries)"));
+        eprintln!("   ❌ ERROR: Token balance is 0 (account empty or not found after all attempts)");
+        eprintln!("      - Tried Token 2022 ATA: {}", user_token_account_2022);
+        eprintln!("      - Tried Standard Token ATA: {}", user_token_account_standard);
+        eprintln!("      - Mint: {}", mint);
+        eprintln!("      - Wallet: {}", user_wallet);
+        eprintln!("      - 💡 Tip: Check if token account exists on Solana Explorer");
+        return Err(anyhow!("Token balance is 0 (account empty or not found after all attempts)"));
     }
 
     // Calculate sell amount based on sell_percent
+    eprintln!("   🔍 Step 3: Calculating sell amount...");
+    eprintln!("      - Token balance: {}", token_balance);
+    eprintln!("      - Sell percent: {}%", config.sell_percent);
     let sell_amount = (token_balance as f64 * (config.sell_percent / 100.0)) as u64;
+    eprintln!("      - Calculated sell amount: {} tokens", sell_amount);
     if sell_amount == 0 {
+        eprintln!("      - ❌ ERROR: Sell amount is 0 (balance: {}, percent: {}%)", token_balance, config.sell_percent);
         return Err(anyhow!("Sell amount is 0"));
     }
+    eprintln!("   ✅ Sell amount calculated: {} tokens ({}% of {})", sell_amount, config.sell_percent, token_balance);
 
     // Reconstruct PumpBuyAccounts from position
-    let associated_bonding_curve = get_associated_token_address(
+    eprintln!("   🔍 Step 4: Reconstructing PumpBuyAccounts...");
+    // Use the same token program that was used for user_token_account
+    let associated_bonding_curve = get_associated_token_address_with_program_id(
         &bonding_curve,
         &mint,
+        &token_program_used, // Use the token program that worked for user account
     );
+    eprintln!("      - Associated Bonding Curve: {}", associated_bonding_curve);
     
     let creator = Pubkey::from_str(&position.creator)?;
+    eprintln!("      - Creator: {}", creator);
+    
+    // Extract Creator Vault directly from buy transaction (Account 9) - this is the correct one!
+    eprintln!("      - Extracting Creator Vault from buy transaction...");
+    let creator_vault = if position.signature.starts_with("MOCK_") {
+        // If it's a mock signature, derive from creator PDA as fallback
+        eprintln!("      - ⚠️  Mock signature detected, deriving from PDA...");
+        let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+        derived_vault
+    } else {
+        // Extract Creator Vault directly from buy transaction (Account 9 in buy instruction)
+        match extract_creator_vault_from_buy_tx(rpc, &position.signature).await {
+            Ok(vault) => {
+                eprintln!("      - ✅ Creator Vault extracted from buy TX: {}", vault);
+                vault
+            }
+            Err(e) => {
+                eprintln!("      - ⚠️  Failed to extract Creator Vault from buy TX: {}", e);
+                eprintln!("      - 🔄 Falling back to PDA derivation...");
+                let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+                eprintln!("      - ✅ Creator Vault PDA (fallback): {}", derived_vault);
+                derived_vault
+            }
+        }
+    };
     
     let accounts = PumpBuyAccounts {
         mint,
         bonding_curve,
         associated_bonding_curve,
-        creator_vault: creator, // Simplified - creator_vault is typically the creator
+        creator_vault, // Use Creator Vault extracted from buy transaction
         event_authority: config.event_authority,
         global_volume: config.global_volume,
         global: config.global_account,
@@ -2452,39 +3022,66 @@ async fn execute_sell(
         creator,
         associated_bonding_curve_instruction: None,
     };
+    eprintln!("      - ✅ PumpBuyAccounts reconstructed");
+    eprintln!("         - Global: {}", accounts.global);
+    eprintln!("         - Fee Recipient: {}", accounts.fee_recipient);
+    eprintln!("         - Event Authority: {}", accounts.event_authority);
+    eprintln!("         - Global Volume: {}", accounts.global_volume);
 
     let user_wallet = wallet.pubkey();
 
     // Build sell instruction
-    eprintln!("   🏗️ Building sell instruction...");
+    eprintln!("   🔍 Step 5: Building sell instruction...");
+    eprintln!("      - Accounts: {:?}", accounts);
+    eprintln!("      - User wallet: {}", user_wallet);
+    eprintln!("      - User token account: {}", user_token_account);
+    eprintln!("      - Sell amount: {} tokens", sell_amount);
     let sell_ix = build_sell_instruction(
         &accounts,
         &user_wallet,
         &user_token_account,
         sell_amount,
     ).await?;
-    eprintln!("   ✅ Sell instruction built");
+    eprintln!("   ✅ Sell instruction built successfully");
+    eprintln!("      - Program ID: {}", sell_ix.program_id);
+    eprintln!("      - Number of accounts: {}", sell_ix.accounts.len());
+    eprintln!("      - Instruction data length: {} bytes", sell_ix.data.len());
 
     // Build transaction
-    eprintln!("   🧱 Building transaction...");
-    let recent_blockhash = get_cached_blockhash(rpc).await?;
+    eprintln!("   🔍 Step 6: Building transaction...");
+    eprintln!("      - Fetching latest blockhash...");
+    let recent_blockhash = rpc.get_latest_blockhash().await?;
+    eprintln!("      - ✅ Blockhash: {}", recent_blockhash);
     
     // Calculate priority fee (dynamic or static) for sell transaction
+    eprintln!("      - Calculating priority fee...");
     let priority_fee = if config.enable_dynamic_priority_fee {
+        eprintln!("         - Using dynamic priority fee...");
         match config.calculate_dynamic_priority_fee(rpc).await {
-            Ok(fee) => fee,
-            Err(_) => config.priority_fee,
+            Ok(fee) => {
+                eprintln!("         - ✅ Dynamic fee calculated: {} lamports", fee);
+                fee
+            },
+            Err(e) => {
+                eprintln!("         - ⚠️  Dynamic fee calculation failed: {}, using static: {}", e, config.priority_fee);
+                config.priority_fee
+            }
         }
     } else {
+        eprintln!("         - Using static priority fee: {} lamports", config.priority_fee);
         config.priority_fee
     };
     
     // Build instructions - Helius tip must be last instruction (like Jito tip in buy)
+    eprintln!("      - Building instruction list...");
     let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
         ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
         sell_ix,
     ];
+    eprintln!("         - [0] Compute Budget (CU limit: {})", config.compute_units);
+    eprintln!("         - [1] Compute Budget (CU price: {} lamports)", priority_fee);
+    eprintln!("         - [2] Sell instruction");
     
     // Add Helius tip instruction LAST (required: minimum 200,000 lamports)
     // Helius requires tip to one of their wallets when using Helius Sender
@@ -2497,43 +3094,125 @@ async fn execute_sell(
         helius_tip_amount,
     );
     instructions.push(helius_tip_ix);
-    eprintln!("   💰 Added Helius tip (last instruction): {} lamports to {}", helius_tip_amount, helius_tip_account);
+    eprintln!("         - [3] Helius tip: {} lamports to {}", helius_tip_amount, helius_tip_account);
+    eprintln!("      - ✅ Total instructions: {}", instructions.len());
 
+    eprintln!("      - Compiling message...");
     let msg = v0::Message::try_compile(
         &user_wallet,
         &instructions,
         &[],
         recent_blockhash,
     )?;
+    eprintln!("      - ✅ Message compiled");
 
+    eprintln!("      - Creating versioned transaction...");
     let tx = VersionedTransaction::try_new(
         VersionedMessage::V0(msg),
         &[wallet],
     )?;
+    eprintln!("   ✅ Transaction built successfully");
+
+    // Check if mock_sell mode is enabled
+    if config.mock_sell {
+        eprintln!("   🧪 MOCK SELL MODE: Skipping transaction submission");
+        
+        // In mock mode, we don't send the transaction, but we can still validate the instruction
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        
+        // Generate a mock signature for testing (but mark it clearly as MOCK)
+        use solana_sdk::signature::Signature;
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut mock_sig_bytes = [0u8; 64];
+        rng.fill(&mut mock_sig_bytes);
+        let mock_sig = Signature::from(mock_sig_bytes);
+        let mock_signature = format!("MOCK_SELL_{}", mock_sig.to_string());
+        
+        eprintln!("   ✅ Mock sell instruction validated successfully");
+        eprintln!("      - Mock signature: {}", mock_signature);
+        eprintln!("      - Tokens to sell: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
+        eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
+        
+        // Update tracker with mock sell
+        eprintln!("   🔍 Step 8: Updating tracker (mock mode)...");
+        if let Ok(mut tracker_opt) = tracker.write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                eprintln!("      - Marking position as sold in tracker (mock)...");
+                if let Err(e) = tracker.mark_as_sold(&position.mint, mock_signature.clone()) {
+                    eprintln!("      - ❌ Failed to mark position as sold in tracker: {}", e);
+                } else {
+                    eprintln!("      - ✅ Position marked as sold in tracker (mock)");
+                }
+            } else {
+                eprintln!("      - ⚠️  Tracker is None - skipping update");
+            }
+        } else {
+            eprintln!("      - ❌ Failed to acquire tracker write lock");
+        }
+        
+        // Send mock sell event
+        eprintln!("   🔍 Step 9: Sending sell event (mock)...");
+        let _ = event_tx.send(TokenEvent::Sold {
+            mint: position.mint.clone(),
+            signature: mock_signature.clone(),
+            reason: format!("{} (MOCK)", reason),
+            pnl: None,
+            timestamp: Utc::now(),
+        });
+        eprintln!("      - ✅ Event sent");
+        
+        eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+        eprintln!("║         MOCK SELL PROCESS COMPLETED SUCCESSFULLY              ║");
+        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+        eprintln!("   🎉 Mock sell process completed successfully!");
+        eprintln!("   📋 Summary:");
+        eprintln!("      - Mint: {}", position.mint);
+        eprintln!("      - Mock Signature: {}", mock_signature);
+        eprintln!("      - Reason: {} (MOCK)", reason);
+        eprintln!("      - Tokens to sell: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
+        eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
+        eprintln!("   ⚠️  NOTE: This was a MOCK sell - no real transaction was sent!");
+        
+        return Ok(mock_signature);
+    }
 
     // Send transaction using same submission mode as buy
-    eprintln!("   🚀 Sending sell transaction via {:?}", config.submission_mode);
+    eprintln!("   🔍 Step 7: Sending sell transaction...");
+    eprintln!("      - Submission mode: {:?}", config.submission_mode);
     let tx_sig = match config.submission_mode {
         crate::config::SubmissionMode::Helius => {
+            eprintln!("      - Sending via Helius...");
             match send_helius_transaction(tx).await {
                 Ok(sig) => {
-                    eprintln!("   ✅ Sell transaction sent successfully! Signature: {}", sig);
+                    eprintln!("      - ✅ Sell transaction sent successfully via Helius!");
+                    eprintln!("      - Signature: {}", sig);
                     sig
                 }
                 Err(e) => {
-                    eprintln!("   ❌ Sell transaction failed: {}", e);
+                    eprintln!("      - ❌ Sell transaction failed via Helius: {}", e);
+                    eprintln!("      - Error details: {:?}", e);
                     return Err(anyhow!("Sell transaction failed: {}", e));
                 }
             }
         }
         crate::config::SubmissionMode::Jito => {
+            eprintln!("      - Sending via Jito...");
+            eprintln!("      - Jito tip: {} lamports", config.jito_tip);
             let bundle_id = send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?;
+            eprintln!("      - ✅ Sell transaction sent via Jito!");
+            eprintln!("      - Bundle ID: {}", bundle_id);
             return Ok(format!("Jito: {}", bundle_id));
         }
         crate::config::SubmissionMode::Rpc => {
-            rpc.send_transaction(&tx).await?.to_string()
+            eprintln!("      - Sending via RPC...");
+            let sig = rpc.send_transaction(&tx).await?;
+            eprintln!("      - ✅ Sell transaction sent via RPC!");
+            eprintln!("      - Signature: {}", sig);
+            sig.to_string()
         }
         crate::config::SubmissionMode::All => {
+            eprintln!("      - Sending via ALL methods (Helius, Jito, RPC)...");
             // Try all methods
             let tx_helius = tx.clone();
             let tx_jito = tx.clone();
@@ -2543,34 +3222,80 @@ async fn execute_sell(
             let jito_tip = config.jito_tip;
             let rpc_url = config.rpc_url.clone();
 
+            eprintln!("         - Spawning Helius task...");
             let helius_task = tokio::spawn(async move {
-                send_helius_transaction(tx_helius).await
+                eprintln!("         - [Helius Task] Starting...");
+                let result = send_helius_transaction(tx_helius).await;
+                eprintln!("         - [Helius Task] Result: {:?}", result);
+                result
             });
+            eprintln!("         - Spawning Jito task...");
             let jito_task = tokio::spawn(async move {
-                send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await
+                eprintln!("         - [Jito Task] Starting...");
+                let result = send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await;
+                eprintln!("         - [Jito Task] Result: {:?}", result);
+                result
             });
+            eprintln!("         - Spawning RPC task...");
             let rpc_task = tokio::spawn(async move {
+                eprintln!("         - [RPC Task] Starting...");
                 let rpc_client = RpcClient::new(rpc_url);
-                rpc_client.send_transaction(&tx_rpc).await
+                let result = rpc_client.send_transaction(&tx_rpc).await;
+                eprintln!("         - [RPC Task] Result: {:?}", result);
+                result
             });
 
+            eprintln!("      - Waiting for first successful submission...");
             tokio::select! {
                 res = helius_task => {
+                    eprintln!("      - Helius completed first");
                     match res {
-                        Ok(Ok(sig)) => sig,
-                        _ => return Err(anyhow!("All submission methods failed")),
+                        Ok(Ok(sig)) => {
+                            eprintln!("      - ✅ Helius succeeded! Signature: {}", sig);
+                            sig
+                        },
+                        Ok(Err(e)) => {
+                            eprintln!("      - ❌ Helius failed: {}", e);
+                            return Err(anyhow!("All submission methods failed (Helius: {})", e));
+                        },
+                        Err(e) => {
+                            eprintln!("      - ❌ Helius task error: {}", e);
+                            return Err(anyhow!("All submission methods failed (Helius task: {})", e));
+                        }
                     }
                 }
                 res = jito_task => {
+                    eprintln!("      - Jito completed first");
                     match res {
-                        Ok(Ok(bundle_id)) => return Ok(format!("Jito: {}", bundle_id)),
-                        _ => return Err(anyhow!("All submission methods failed")),
+                        Ok(Ok(bundle_id)) => {
+                            eprintln!("      - ✅ Jito succeeded! Bundle ID: {}", bundle_id);
+                            return Ok(format!("Jito: {}", bundle_id));
+                        },
+                        Ok(Err(e)) => {
+                            eprintln!("      - ❌ Jito failed: {}", e);
+                            return Err(anyhow!("All submission methods failed (Jito: {})", e));
+                        },
+                        Err(e) => {
+                            eprintln!("      - ❌ Jito task error: {}", e);
+                            return Err(anyhow!("All submission methods failed (Jito task: {})", e));
+                        }
                     }
                 }
                 res = rpc_task => {
+                    eprintln!("      - RPC completed first");
                     match res {
-                        Ok(Ok(sig)) => sig.to_string(),
-                        _ => return Err(anyhow!("All submission methods failed")),
+                        Ok(Ok(sig)) => {
+                            eprintln!("      - ✅ RPC succeeded! Signature: {}", sig);
+                            sig.to_string()
+                        },
+                        Ok(Err(e)) => {
+                            eprintln!("      - ❌ RPC failed: {}", e);
+                            return Err(anyhow!("All submission methods failed (RPC: {})", e));
+                        },
+                        Err(e) => {
+                            eprintln!("      - ❌ RPC task error: {}", e);
+                            return Err(anyhow!("All submission methods failed (RPC task: {})", e));
+                        }
                     }
                 }
             }
@@ -2578,24 +3303,90 @@ async fn execute_sell(
     };
 
     let signature = tx_sig.to_string();
-    eprintln!("   ✅ Sell completed! Signature: {}", signature);
+    eprintln!("   ✅ Sell transaction submitted! Signature: {}", signature);
+
+    // Verify transaction status
+    eprintln!("   🔍 Step 7.5: Verifying transaction status...");
+    let sig_pubkey = match solana_sdk::signature::Signature::from_str(&signature) {
+        Ok(sig) => sig,
+        Err(e) => {
+            eprintln!("      - ⚠️  Invalid signature format: {}", e);
+            return Err(anyhow!("Invalid signature format"));
+        }
+    };
+    
+    // Wait a bit for transaction to be confirmed
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    
+    // Check transaction status
+    let max_verification_attempts = 10;
+    let mut transaction_confirmed = false;
+    let mut transaction_error: Option<String> = None;
+    
+    for attempt in 1..=max_verification_attempts {
+        eprintln!("      - Verification attempt {}/{}...", attempt, max_verification_attempts);
+        match rpc.get_signature_status(&sig_pubkey).await {
+            Ok(Some(status_result)) => {
+                // status_result is Result<(), TransactionError>
+                match status_result {
+                    Ok(_) => {
+                        transaction_confirmed = true;
+                        eprintln!("      - ✅ Transaction confirmed successfully!");
+                        break;
+                    }
+                    Err(err) => {
+                        transaction_error = Some(format!("{:?}", err));
+                        eprintln!("      - ❌ Transaction failed: {:?}", err);
+                        break;
+                    }
+                }
+            }
+            Ok(None) => {
+                eprintln!("      - ⏳ Transaction not yet confirmed, waiting...");
+            }
+            Err(e) => {
+                eprintln!("      - ⚠️  Error checking status: {}", e);
+            }
+        }
+        
+        if attempt < max_verification_attempts {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    
+    if !transaction_confirmed {
+        if let Some(err) = transaction_error {
+            eprintln!("   ❌ Transaction failed on blockchain: {}", err);
+            return Err(anyhow!("Sell transaction failed on blockchain: {}", err));
+        } else {
+            eprintln!("   ⚠️  Could not verify transaction status (may still be pending)");
+            eprintln!("   💡 Check transaction manually: https://solscan.io/tx/{}", signature);
+        }
+    }
 
     // Calculate PnL (simplified - would need current token price)
     // For now, we'll set PnL to None as we'd need to fetch the actual SOL received from the sell
     let pnl: Option<f64> = None;
 
     // Update tracker
+    eprintln!("   🔍 Step 8: Updating tracker...");
     if let Ok(mut tracker_opt) = tracker.write() {
         if let Some(tracker) = tracker_opt.as_mut() {
+            eprintln!("      - Marking position as sold in tracker...");
             if let Err(e) = tracker.mark_as_sold(&position.mint, signature.clone()) {
-                eprintln!("   ⚠️  Failed to mark position as sold in tracker: {}", e);
+                eprintln!("      - ❌ Failed to mark position as sold in tracker: {}", e);
             } else {
-                eprintln!("   ✅ Position marked as sold in tracker");
+                eprintln!("      - ✅ Position marked as sold in tracker");
             }
+        } else {
+            eprintln!("      - ⚠️  Tracker is None - skipping update");
         }
+    } else {
+        eprintln!("      - ❌ Failed to acquire tracker write lock");
     }
 
     // Send event
+    eprintln!("   🔍 Step 9: Sending sell event...");
     let _ = event_tx.send(TokenEvent::Sold {
         mint: position.mint.clone(),
         signature: signature.clone(),
@@ -2603,8 +3394,110 @@ async fn execute_sell(
         pnl,
         timestamp: Utc::now(),
     });
+    eprintln!("      - ✅ Event sent");
 
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║              SELL PROCESS COMPLETED SUCCESSFULLY              ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     eprintln!("   🎉 Sell process completed successfully!");
+    eprintln!("   📋 Summary:");
+    eprintln!("      - Mint: {}", position.mint);
+    eprintln!("      - Signature: {}", signature);
+    eprintln!("      - Reason: {}", reason);
+    eprintln!("      - Tokens sold: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
+    eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
     Ok(signature)
+}
+
+/// Ultra-fast PnL monitor - updates every 100ms for live display
+async fn monitor_pnl_ultra_fast(
+    config: Arc<std::sync::RwLock<Config>>,
+    _rpc: RpcClient,
+    tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(100)); // Update every 100ms (10x/sec)
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    
+    loop {
+        interval.tick().await;
+        
+        // Get config values
+        let (sol_price_usd, _) = {
+            let cfg = config.read().unwrap();
+            (cfg.sol_price_usd, cfg.helius_api_key.clone())
+        };
+        
+        // Get active positions
+        let positions_to_update = {
+            if let Ok(tracker_guard) = tracker.read() {
+                if let Some(tracker_ref) = tracker_guard.as_ref() {
+                    tracker_ref.get_active_positions_for_pnl()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+        
+        if positions_to_update.is_empty() {
+            continue;
+        }
+        
+        // Batch update all positions (parallel for speed)
+        use std::str::FromStr;
+        use solana_sdk::pubkey::Pubkey;
+        
+        let mut update_tasks = Vec::new();
+        
+        for (mint, bonding_curve_str) in positions_to_update {
+            let mint_clone = mint.clone();
+            let bc_str = bonding_curve_str.clone();
+            let config_clone = config.clone();
+            let tracker_clone = tracker.clone();
+            let sol_price = sol_price_usd;
+            
+            let task = tokio::spawn(async move {
+                // Create RPC client for this task
+                let task_rpc = {
+                    let cfg = config_clone.read().unwrap();
+                    cfg.create_rpc_client()
+                };
+                
+                // Parse bonding curve
+                let bonding_curve = match Pubkey::from_str(&bc_str) {
+                    Ok(pk) => pk,
+                    Err(_) => return,
+                };
+                
+                // Fetch current price (fast, with retry)
+                match fetch_bonding_curve_mc(
+                    &task_rpc,
+                    &bonding_curve,
+                    sol_price,
+                ).await {
+                    Ok((curve, _, _)) => {
+                        let current_price = curve.get_token_price_sol();
+                        
+                        // Update PnL in tracker (fast, no disk write)
+                        if let Ok(mut tracker_guard) = tracker_clone.write() {
+                            if let Some(tracker) = tracker_guard.as_mut() {
+                                let _ = tracker.update_position_pnl_fast(&mint_clone, current_price);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Silently fail - will retry on next cycle
+                    }
+                }
+            });
+            
+            update_tasks.push(task);
+        }
+        
+        // Wait for all updates to complete (but don't block too long)
+        let timeout = tokio::time::timeout(Duration::from_secs(1), futures_util::future::join_all(update_tasks));
+        let _ = timeout.await;
+    }
 }
 

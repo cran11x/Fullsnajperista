@@ -2,7 +2,7 @@
 // This allows integration tests to import from the crate
 
 pub mod accounts;
-pub mod blockhash_cache;
+// pub mod blockhash_cache;
 pub mod bot_core;
 pub mod buy;
 pub mod sell;

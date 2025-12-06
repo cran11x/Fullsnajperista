@@ -78,56 +78,52 @@ pub fn render(
 
     // Form container with better alignment
     ui.group(|ui| {
-        ui.set_min_width(600.0);
+        ui.set_min_width(700.0);
         
-        // Mint address input - responsive width (increased size)
+        // Mint address input - MUCH larger and more visible
         let available_width = ui.available_width();
-        let input_width = (available_width * 0.8).max(500.0).min(800.0);
+        let input_width = available_width - 180.0;
         
-        ui.horizontal(|ui| {
-            ui.set_width(120.0); // Fixed label width for alignment
+        ui.vertical(|ui| {
             ui.label(egui::RichText::new("Mint Address:")
-                .size(15.0)
+                .size(18.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(10.0);
-            let mint_response = ui.add(
+            ui.add_space(8.0);
+            let mint_response = ui.add_sized(
+                egui::vec2(input_width, 50.0), // Fixed height for larger text box
                 egui::TextEdit::singleline(&mut state.mint_input)
-                    .hint_text("Enter token mint address...")
-                    .desired_width(input_width)
+                    .hint_text("Enter token mint address (base58)...")
+                    .font(egui::FontId::proportional(16.0))
+                    .margin(egui::vec2(12.0, 12.0)) // More padding inside
             );
             if mint_response.changed() {
                 state.status_message = None;
             }
         });
-        ui.add_space(12.0);
+        ui.add_space(20.0);
 
-        // SOL amount input (optional) - responsive width
-        ui.horizontal(|ui| {
-            ui.set_width(120.0); // Fixed label width for alignment
+        // SOL amount input (optional) - MUCH larger
+        ui.vertical(|ui| {
             ui.label(egui::RichText::new("SOL Amount:")
-                .size(15.0)
+                .size(18.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             let config_read = config.read().unwrap();
             let default_sol = config_read.buy_amount_lamports() as f64 / 1e9;
-            let sol_hint = format!("Default: {:.6} SOL", default_sol);
+            let sol_hint = format!("Default: {:.6} SOL (leave empty to use default)", default_sol);
             
-            let sol_input_width = (available_width * 0.4).max(250.0).min(400.0);
-            let sol_response = ui.add(
+            let sol_response = ui.add_sized(
+                egui::vec2(input_width, 50.0), // Fixed height for larger text box
                 egui::TextEdit::singleline(&mut state.sol_amount_input)
                     .hint_text(&sol_hint)
-                    .desired_width(sol_input_width)
+                    .font(egui::FontId::proportional(16.0))
+                    .margin(egui::vec2(12.0, 12.0)) // More padding inside
             );
             if sol_response.changed() {
                 state.status_message = None;
             }
-            
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("(leave empty for default)")
-                .size(12.0)
-                .color(egui::Color32::from_rgb(160, 170, 185)));
         });
         ui.add_space(20.0);
 

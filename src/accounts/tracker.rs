@@ -35,6 +35,13 @@ pub struct TokenBuy {
     pub bonding_curve: Option<String>,      // Bonding curve address for monitoring
     pub sold: bool,                         // Flag if position is sold
     pub sell_signature: Option<String>,     // Sell transaction signature if sold
+
+    // 🆕 NEW: Ultra Live PnL tracking
+    pub current_price_sol: Option<f64>,      // Current token price in SOL
+    pub current_value_sol: Option<f64>,      // Current position value in SOL
+    pub pnl_sol: Option<f64>,                // Profit/Loss in SOL
+    pub pnl_percent: Option<f64>,            // Profit/Loss percentage
+    pub last_pnl_update: Option<DateTime<Utc>>, // Last update timestamp
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,6 +436,111 @@ impl TokenTracker {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
         }
     }
+
+    /// Update token_amount for a position (from wallet balance check)
+    pub fn update_token_amount(&mut self, mint: &str, token_amount: u64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.token_amount = Some(token_amount);
+            // Don't save JSON on every balance update to avoid excessive disk writes
+            // JSON will be saved on next buy/sell operation
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Update position PnL with current price (ultra-fast, no disk write)
+    pub fn update_position_pnl_fast(&mut self, mint: &str, current_price_sol: f64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.current_price_sol = Some(current_price_sol);
+            buy.last_pnl_update = Some(Utc::now());
+            
+            // Calculate current value if we have token amount
+            if let Some(token_amount) = buy.token_amount {
+                // FORMULA EXPLANATION:
+                // get_token_price_sol() = virtual_sol_reserves / virtual_token_reserves
+                // where virtual_sol_reserves is in lamports (1e9 per SOL)
+                // and virtual_token_reserves is in raw token units (9 decimals based on tests)
+                // So: price = (SOL * 1e9) / (tokens * 1e9) = SOL per token (9 decimals)
+                //
+                // token_amount from balance is in raw token units with 6 decimals (1e6 per token)
+                // So we need to convert: tokens_actual = token_amount / 1e6
+                // Then: current_value = tokens_actual * current_price_sol
+                // This gives: (token_amount / 1e6) * current_price_sol
+                let tokens_actual = token_amount as f64 / 1e6; // Convert 6-decimal raw to actual tokens
+                let current_value_gross = tokens_actual * current_price_sol;
+                buy.current_value_sol = Some(current_value_gross);
+                
+                // Calculate PnL with pump.fun fees:
+                // - Buy fee: 1% - our_buy_sol is what we SENT (real cost), but we got tokens worth our_buy_sol * 0.99
+                // - Sell fee: 1% - need to deduct from current value
+                // Real entry cost = our_buy_sol (what we sent)
+                // Effective tokens value at entry = our_buy_sol * 0.99 (after buy fee)
+                // Current value after sell fee = current_value_gross * 0.99
+                // Net PnL = (current_value_gross * 0.99) - our_buy_sol
+                let current_value_net = current_value_gross * 0.99; // After 1% sell fee
+                // Real cost is what we sent (our_buy_sol), not what we got in tokens
+                let real_entry_cost = buy.our_buy_sol; // This is what we actually spent
+                let pnl = current_value_net - real_entry_cost;
+                buy.pnl_sol = Some(pnl);
+                
+                // Calculate PnL percentage based on real entry cost, accounting for fees
+                // Real entry cost = our_buy_sol (what we sent)
+                // Effective entry value = our_buy_sol * 0.99 (what we got in tokens after buy fee)
+                // Current value after sell fee = current_value_gross * 0.99
+                // PnL % should be based on what we actually spent vs what we'd get
+                if buy.our_buy_sol > 0.0 {
+                    // PnL % = (net_value - real_cost) / real_cost * 100
+                    buy.pnl_percent = Some((pnl / buy.our_buy_sol) * 100.0);
+                }
+                
+                // DEBUG: Print PnL calculation details (only for first few updates to avoid spam)
+                static UPDATE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let count = UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 10 {
+                    let entry_price_per_token = if tokens_actual > 0.0 { buy.our_buy_sol / tokens_actual } else { 0.0 };
+                    let effective_entry_value = buy.our_buy_sol * 0.99; // What we got in tokens after 1% buy fee
+                    let current_price_net = current_price_sol * 0.99; // After 1% sell fee
+                    let pct_from_sol = if buy.our_buy_sol > 0.0 { (pnl / buy.our_buy_sol) * 100.0 } else { 0.0 };
+                    
+                    eprintln!("🔍 PnL DEBUG [{}] for {}:", count + 1, &mint[..8]);
+                    eprintln!("   token_amount (raw, 6 decimals): {}", token_amount);
+                    eprintln!("   tokens_actual (converted from 6dec): {:.6}", tokens_actual);
+                    eprintln!("   current_price_sol (SOL per token, 9 decimals): {:.12}", current_price_sol);
+                    eprintln!("   our_buy_sol (invested): {:.6} SOL", buy.our_buy_sol);
+                    eprintln!("   entry_price_per_token: {:.12} SOL/token", entry_price_per_token);
+                    eprintln!("   Real entry cost (what we sent): {:.6} SOL", buy.our_buy_sol);
+                    eprintln!("   Effective entry value (after 1% buy fee): {:.6} SOL", effective_entry_value);
+                    eprintln!("   Current value (gross): {:.6} SOL", current_value_gross);
+                    eprintln!("   Current value (net after 1% sell fee): {:.6} SOL", current_value_net);
+                    eprintln!("   PnL (net): {:.6} SOL ({:.2}%)", pnl, pct_from_sol);
+                    eprintln!("   Current price (gross): {:.12}, (net after 1% fee): {:.12}", current_price_sol, current_price_net);
+                    eprintln!("   Formula: current_value = (token_amount / 1e6) * current_price_sol");
+                }
+            } else {
+                // DEBUG: Show when token_amount is missing
+                static MISSING_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let count = MISSING_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 5 {
+                    eprintln!("⚠️  PnL DEBUG: token_amount is None for {} (cannot calculate PnL)", &mint[..8]);
+                }
+            }
+            
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Get all active positions with bonding curves (for batch PnL update)
+    pub fn get_active_positions_for_pnl(&self) -> Vec<(String, String)> {
+        self.stats.buys.iter()
+            .filter(|buy| !buy.sold && buy.bonding_curve.is_some())
+            .map(|buy| {
+                (buy.mint.clone(), buy.bonding_curve.clone().unwrap())
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -467,6 +579,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -523,6 +640,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -593,6 +715,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         let buy2 = TokenBuy {
@@ -617,6 +744,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -654,6 +786,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -690,6 +827,11 @@ mod tests {
             bonding_curve: None,
             sold: false,
             sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());

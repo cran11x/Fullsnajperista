@@ -589,6 +589,18 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         }
         
         ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.mock_sell, egui::RichText::new("🧪 Mock Sell (Test mode - no real transactions)")
+                .size(13.0)).changed() {
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
+        if config_clone.mock_sell {
+            ui.label(egui::RichText::new("⚠️  Mock sell mode: Sell transactions will be simulated, not sent to blockchain")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(255, 210, 110)));
+        }
+        
+        ui.add_space(6.0);
         if ui.checkbox(&mut config_clone.one_shot_mode, egui::RichText::new("One Shot Mode")
                 .size(13.0)).changed() {
             apply_config_live(&config, &control_tx, &config_clone);

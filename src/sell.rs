@@ -1,5 +1,5 @@
 // sell.rs - SELL INSTRUCTION BUILDER
-// FIXED: Matching Buy instruction account structure (Token Program @ 8, Creator Vault @ 9, + Volumes)
+// Updated: Account structure matches new Sell instruction format (14 accounts: Global, Fee Recipient, Mint, Bonding Curve, Associated Bonding Curve, Associated User, User, System Program, Creator Vault, Token Program, Event Authority, Pump Program, Fee Config, Fee Program)
 
 use anyhow::Result;
 use solana_sdk::{
@@ -57,47 +57,27 @@ pub async fn build_sell_instruction(
     // data.push(0x00); // Removed extra byte
 
     // CRITICAL: Use RECALCULATED PDAs, not values from accounts
-    // Account order updated to match successful Buy/Sell transactions (V2):
+    // Account order updated to match new Sell instruction structure (14 accounts):
     // 0: Global
-    // 1: Fee Recipient
+    // 1: Fee Recipient (Writable)
     // 2: Mint
-    // 3: Bonding Curve
-    // 4: Associated Bonding Curve
-    // 5: User Token Account
-    // 6: User Wallet (signer)
+    // 3: Bonding Curve (Writable)
+    // 4: Associated Bonding Curve (Writable)
+    // 5: Associated User / User Token Account (Writable)
+    // 6: User Wallet (Writable, Signer, FP)
     // 7: System Program
-    // 8: Associated Token Program / Token Program 2022 (Readonly)
-    // 9: Creator Vault
+    // 8: Creator Vault (Writable)
+    // 9: Token Program 2022 (Program)
     // 10: Event Authority
-    // 11: Pump Program
-    // 12: Global Volume
-    // 13: User Volume
-    // 14: Fee Config
-    // 15: Fee Program
+    // 11: Pump.fun Program (Program)
+    // 12: Fee Config (Writable)
+    // 13: Fee Program (Program)
 
-    // Verify Creator Vault (Account 9) logic similar to Buy
-    // Also handle case where creator_vault matches creator (simplification in bot_core)
-    let final_creator_vault = if accounts.creator_vault == accounts.bonding_curve 
-        || accounts.creator_vault == pdas.bonding_curve 
-        || accounts.creator_vault == accounts.creator {
-        
-        if accounts.creator_vault == accounts.creator {
-            eprintln!("   ⚠️  Creator Vault matches Creator (simplified input) - Deriving PDA...");
-        } else {
-            eprintln!("   ❌ Creator Vault matches Bonding Curve! This is an ERROR.");
-        }
-
-        if accounts.creator != Pubkey::default() {
-            let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&accounts.creator);
-            eprintln!("   ✅ Recalculated Creator Vault using creator {}: {}", accounts.creator, derived_vault);
-            derived_vault
-        } else {
-            eprintln!("   ⚠️  Cannot derive Creator Vault: Creator is default. Using input: {}", accounts.creator_vault);
-            accounts.creator_vault
-        }
-    } else {
-        accounts.creator_vault
-    };
+    // Creator Vault (Account 8) - use directly from accounts
+    // Already properly set in bot_core.rs from the original buy transaction
+    // DO NOT re-derive - use the exact same Creator Vault from the buy transaction
+    let final_creator_vault = accounts.creator_vault;
+    eprintln!("   Account 8 (Creator Vault): {} (from accounts - using original from buy TX)", final_creator_vault);
 
     // Use Token Program 2022 by default as Pump.fun uses it, or fallback to standard
     let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
@@ -115,46 +95,81 @@ pub async fn build_sell_instruction(
         accounts: vec![
             // Account 0: Global (PDA, RECALCULATED)
             AccountMeta::new(pdas.global, false),
-            // Account 1: Fee Recipient (hardcoded)
+            // Account 1: Fee Recipient (hardcoded, Writable)
             AccountMeta::new(pdas.fee_recipient, false),
             // Account 2: Mint (from accounts)
             AccountMeta::new_readonly(accounts.mint, false),
-            // Account 3: Bonding Curve (PDA, RECALCULATED)
+            // Account 3: Bonding Curve (PDA, RECALCULATED, Writable)
             AccountMeta::new(pdas.bonding_curve, false),
-            // Account 4: Associated Bonding Curve (RECALCULATED)
+            // Account 4: Associated Bonding Curve (RECALCULATED, Writable)
             AccountMeta::new(recalculate_abc, false),
-            // Account 5: User Token Account (current user's token account)
+            // Account 5: Associated User / User Token Account (Writable)
             AccountMeta::new(*user_token_account, false),
-            // Account 6: User Wallet (signer)
+            // Account 6: User Wallet (Writable, Signer)
             AccountMeta::new(*user_wallet, true),
-            // Account 7: System Program (readonly)
+            // Account 7: System Program
             AccountMeta::new_readonly(system_program::id(), false),
-            // Account 8: Token Program (readonly) - Usually Token 2022 for Pump.fun
-            AccountMeta::new_readonly(token_program_2022_id, false),
-            // Account 9: Creator Vault
+            // Account 8: Creator Vault (Writable)
             AccountMeta::new(final_creator_vault, false),
+            // Account 9: Token Program 2022 (Program)
+            AccountMeta::new_readonly(token_program_2022_id, false),
             // Account 10: Event Authority (PDA, RECALCULATED)
             AccountMeta::new_readonly(pdas.event_authority, false),
-            // Account 11: Pump Program (readonly)
+            // Account 11: Pump.fun Program (Program)
             AccountMeta::new_readonly(pump_program, false),
-            // Account 12: Global Volume (hardcoded)
-            AccountMeta::new_readonly(pdas.global_volume, false),
-            // Account 13: User Volume (PDA, RECALCULATED)
-            AccountMeta::new_readonly(pdas.user_volume, false),
-            // Account 14: Fee Config (hardcoded)
-            AccountMeta::new_readonly(pdas.fee_config, false),
-            // Account 15: Fee Program (hardcoded)
-            AccountMeta::new_readonly(pdas.fee_program, false),
+            // Account 12: Fee Config (Writable)
+            AccountMeta::new(pdas.fee_config, false),
+            // Account 13: Fee Program (Program - WRITABLE as per successful transaction)
+            AccountMeta::new(pdas.fee_program, false),
         ],
         data,
     };
 
     // Debug: Log sell instruction details
-    eprintln!("🔍 SELL INSTRUCTION BUILT:");
-    eprintln!("   Token Amount: {}", token_amount);
-    eprintln!("   Min SOL Output: 0 (100% slippage)");
-    eprintln!("   Accounts: {} (updated to match V2)", instruction.accounts.len());
-    eprintln!("   Token Program used: {}", token_program_2022_id);
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║              SELL INSTRUCTION BUILT                          ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    eprintln!("🔍 SELL INSTRUCTION DETAILS:");
+    eprintln!("   📊 Parameters:");
+    eprintln!("      - Token Amount: {} tokens", token_amount);
+    eprintln!("      - Min SOL Output: 0 (accept any amount - 100% slippage)");
+    eprintln!("      - Program ID: {}", pump_program);
+    eprintln!("      - Token Program: {}", token_program_2022_id);
+    eprintln!("   📋 Accounts ({} total):", instruction.accounts.len());
+    
+    let account_labels = vec![
+        (0, "Global"),
+        (1, "Fee Recipient"),
+        (2, "Mint"),
+        (3, "Bonding Curve"),
+        (4, "Associated Bonding Curve"),
+        (5, "Associated User (User Token Account)"),
+        (6, "User (User Wallet)"),
+        (7, "System Program"),
+        (8, "Creator Vault"),
+        (9, "Token Program 2022"),
+        (10, "Event Authority"),
+        (11, "Pump.fun Program"),
+        (12, "Fee Config"),
+        (13, "Fee Program"),
+    ];
+    
+    for (idx, account) in instruction.accounts.iter().enumerate() {
+        let label = account_labels.iter()
+            .find(|(i, _)| *i == idx)
+            .map(|(_, l)| *l)
+            .unwrap_or("Unknown");
+        
+        let signer_str = if account.is_signer { " [SIGNER]" } else { "" };
+        let writable_str = if account.is_writable { " [WRITABLE]" } else { " [READONLY]" };
+        eprintln!("      [{}] {} ({}){}{}", idx, account.pubkey, label, signer_str, writable_str);
+    }
+    eprintln!("   📦 Instruction Data:");
+    eprintln!("      - Length: {} bytes", instruction.data.len());
+    eprintln!("      - Discriminator: {:?}", &instruction.data[0..8]);
+    eprintln!("      - Token amount (bytes 8-16): {:?}", &instruction.data[8..16]);
+    eprintln!("      - Min SOL out (bytes 16-24): {:?}", &instruction.data[16..24]);
+    eprintln!("   ✅ Sell instruction built successfully");
     
     Ok(instruction)
 }
@@ -250,7 +265,7 @@ mod tests {
 
         // Verify instruction structure
         assert_eq!(ix.program_id, Pubkey::from_str(PUMP_PROGRAM_ID).unwrap());
-        assert_eq!(ix.accounts.len(), 16); // Updated length
+        assert_eq!(ix.accounts.len(), 14); // Updated to match real transactions
 
         // Verify discriminator in data
         assert_eq!(ix.data[0..8], SELL_DISCRIMINATOR);

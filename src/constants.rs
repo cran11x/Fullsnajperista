@@ -11,7 +11,8 @@ pub const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 pub const BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 
 /// Sell instruction discriminator
-pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0x57, 0x77, 0x35, 0x8a, 0x92];
+/// Updated to match successful transaction: [33, e6, 85, a4, 01, 7f, 83, ad]
+pub const SELL_DISCRIMINATOR: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
 
 /// Global Volume Leaderboard (Account 13 in Buy instruction)
 /// Used instead of User Volume PDA in recent program versions

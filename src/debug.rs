@@ -15,7 +15,7 @@ use base64::{engine::general_purpose, Engine as _};
 use solana_sdk::message::VersionedMessage;
 use solana_sdk::transaction::VersionedTransaction;
 
-use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
+use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR, SELL_DISCRIMINATOR};
 use crate::pda_derivation;
 use solana_sdk::system_program;
 
@@ -842,3 +842,169 @@ impl PdaVerificationReport {
     }
 }
 
+/// Extract sell instruction from a transaction signature
+pub async fn extract_sell_instruction_from_tx(
+    rpc: &RpcClient,
+    signature: &str,
+) -> Result<BuyInstructionInfo> {
+    let sig = Signature::from_str(signature)?;
+    
+    let tx = rpc.get_transaction_with_config(
+        &sig,
+        solana_client::rpc_config::RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            max_supported_transaction_version: Some(0),
+            commitment: Some(CommitmentConfig::confirmed()),
+        }
+    ).await?;
+
+    if let solana_transaction_status::EncodedTransaction::Binary(encoded, _) = &tx.transaction.transaction {
+        let tx_bytes = general_purpose::STANDARD.decode(encoded)?;
+        let versioned_tx: VersionedTransaction = bincode::deserialize(&tx_bytes)?;
+        
+        let account_keys = match &versioned_tx.message {
+            VersionedMessage::Legacy(msg) => &msg.account_keys,
+            VersionedMessage::V0(msg) => &msg.account_keys,
+        };
+
+        let instructions = match &versioned_tx.message {
+            VersionedMessage::Legacy(msg) => &msg.instructions,
+            VersionedMessage::V0(msg) => &msg.instructions,
+        };
+
+        let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
+
+        eprintln!("   Looking for Pump program: {}", pump_program);
+        eprintln!("   Total instructions in transaction: {}", instructions.len());
+        
+        // Log all programs in transaction
+        eprintln!("   Programs in transaction:");
+        for (ix_idx, ix) in instructions.iter().enumerate() {
+            let program_id_idx = ix.program_id_index as usize;
+            if let Some(&program_id) = account_keys.get(program_id_idx) {
+                eprintln!("      [{}] Program: {} (data len: {})", ix_idx, program_id, ix.data.len());
+            }
+        }
+
+        // Find sell instruction
+        let mut found_pump_instructions = 0;
+        for (ix_idx, ix) in instructions.iter().enumerate() {
+            let program_id_idx = ix.program_id_index as usize;
+            if let Some(&program_id) = account_keys.get(program_id_idx) {
+                if program_id == pump_program {
+                    found_pump_instructions += 1;
+                    if ix.data.len() >= 8 {
+                        let discriminator = &ix.data[0..8];
+                        
+                        eprintln!("   Found Pump instruction [{}]: discriminator={:02x?}", ix_idx, discriminator);
+                        eprintln!("   Expected SELL discriminator: {:02x?}", SELL_DISCRIMINATOR);
+                        
+                        // Check for sell discriminator - may have multiple variants
+                        let is_sell = discriminator == &SELL_DISCRIMINATOR
+                            || discriminator == &[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]; // Alternative sell discriminator
+                        eprintln!("   Is sell: {}", is_sell);
+                    
+                    if is_sell {
+                        let num_required_signatures = match &versioned_tx.message {
+                            VersionedMessage::Legacy(msg) => msg.header.num_required_signatures as usize,
+                            VersionedMessage::V0(msg) => msg.header.num_required_signatures as usize,
+                        };
+                        
+                        let mut accounts = Vec::new();
+                        for (idx, &account_idx) in ix.accounts.iter().enumerate() {
+                            if let Some(&pubkey) = account_keys.get(account_idx as usize) {
+                                let is_signer = (account_idx as usize) < num_required_signatures;
+                                let readonly_accounts = vec![
+                                    system_program::id(),
+                                    Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap_or_default(),
+                                    Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap_or_default(),
+                                    pump_program,
+                                ];
+                                let is_writable = !readonly_accounts.contains(&pubkey);
+                                
+                                // Use sell-specific labels
+                                let label = match idx {
+                                    0 => Some("Global".to_string()),
+                                    1 => Some("Fee Recipient".to_string()),
+                                    2 => Some("Mint".to_string()),
+                                    3 => Some("Bonding Curve".to_string()),
+                                    4 => Some("Associated Bonding Curve".to_string()),
+                                    5 => Some("Associated User (User Token Account)".to_string()),
+                                    6 => Some("User (User Wallet)".to_string()),
+                                    7 => Some("System Program".to_string()),
+                                    8 => Some("Creator Vault".to_string()),
+                                    9 => Some("Token Program 2022".to_string()),
+                                    10 => Some("Event Authority".to_string()),
+                                    11 => Some("Pump.fun Program".to_string()),
+                                    12 => Some("Fee Config".to_string()),
+                                    13 => Some("Fee Program".to_string()),
+                                    _ => None,
+                                };
+                                
+                                accounts.push(AccountInfo {
+                                    index: idx,
+                                    pubkey,
+                                    is_signer,
+                                    is_writable,
+                                    label,
+                                });
+                            }
+                        }
+
+                        let data = ix.data.clone();
+                        let mut discriminator = [0u8; 8];
+                        discriminator.copy_from_slice(&data[0..8]);
+                        
+                        let token_amount = if data.len() >= 16 {
+                            Some(u64::from_le_bytes(data[8..16].try_into().unwrap()))
+                        } else {
+                            None
+                        };
+                        
+                        let min_sol_out = if data.len() >= 24 {
+                            Some(u64::from_le_bytes(data[16..24].try_into().unwrap()))
+                        } else {
+                            None
+                        };
+
+                        println!("🔍 SELL INSTRUCTION FOUND:");
+                        println!("   Transaction: {}", signature);
+                        println!("   Accounts ({}):", accounts.len());
+                        for acc in &accounts {
+                            let label = acc.label.as_ref()
+                                .map(|l| format!(" ({})", l))
+                                .unwrap_or_default();
+                            let signer_str = if acc.is_signer { " [SIGNER]" } else { "" };
+                            let writable_str = if acc.is_writable { " [WRITABLE]" } else { " [READONLY]" };
+                            println!("      [{}] {}{}{}{}", acc.index, acc.pubkey, label, signer_str, writable_str);
+                        }
+                        
+                        if let Some(cv) = accounts.get(8) {
+                            println!();
+                            println!("🎯 CREATOR VAULT (Account 8): {}", cv.pubkey);
+                        }
+
+                        return Ok(BuyInstructionInfo {
+                            program_id: pump_program,
+                            accounts,
+                            data,
+                            discriminator,
+                            token_amount,
+                            max_sol_cost: min_sol_out,
+                        });
+                    } else {
+                        eprintln!("   Not a sell instruction (discriminator mismatch)");
+                    }
+                    } else {
+                        eprintln!("   Pump instruction [{}] has insufficient data (len: {})", ix_idx, ix.data.len());
+                    }
+                }
+            }
+        }
+        
+        eprintln!("   Total Pump instructions found: {}", found_pump_instructions);
+        Err(anyhow!("Sell instruction not found in transaction (found {} Pump instructions)", found_pump_instructions))
+    } else {
+        Err(anyhow!("Transaction encoding not supported"))
+    }
+}

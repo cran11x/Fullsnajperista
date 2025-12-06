@@ -1,6 +1,9 @@
 // main.rs - Main entry point for Pump.fun Sniper Bot GUI
+// Temporarily disabled windows_subsystem to see debug output
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 pub mod accounts;
-pub mod blockhash_cache;
+// pub mod blockhash_cache;
 pub mod bot_core;
 pub mod buy;
 pub mod sell;
@@ -39,7 +42,26 @@ fn main() -> Result<()> {
                     .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string())
             );
             
-            if args.len() >= 4 {
+            if args.len() >= 4 && args[2] == "sell" {
+                // Debug mode: analyze sell transaction
+                // Usage: cargo run -- debug sell <tx_sig>
+                let tx_sig = &args[3];
+                
+                println!("🔍 Analyzing SELL transaction: {}", tx_sig);
+                match debug::extract_sell_instruction_from_tx(&rpc, tx_sig).await {
+                    Ok(instruction) => {
+                        println!("✅ Sell instruction extracted successfully");
+                        if let Some(cv) = instruction.get_account_pubkey(8) {
+                            println!();
+                            println!("🎯 CREATOR VAULT (Account 8): {}", cv);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to extract sell instruction: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else if args.len() >= 4 {
                 // Debug mode: compare two transactions
                 // Usage: cargo run -- debug <successful_sig> <failed_sig>
                 let successful_sig = &args[2];
@@ -55,7 +77,7 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             } else {
-                // Debug mode: analyze single transaction
+                // Debug mode: analyze single transaction (buy)
                 // Usage: cargo run -- debug <tx_sig>
                 let tx_sig = &args[2];
                 
@@ -154,7 +176,11 @@ fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([600.0, 400.0]) // Minimum width to fit all 7 tabs
-            .with_title("Pump.fun Sniper Bot - DEBUG BUILD"),
+            .with_title(if cfg!(debug_assertions) {
+                "Pump.fun Sniper Bot - DEBUG BUILD"
+            } else {
+                "Pump.fun Sniper Bot"
+            }),
         ..Default::default()
     };
     

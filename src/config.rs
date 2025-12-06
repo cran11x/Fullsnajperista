@@ -32,6 +32,7 @@ pub struct Config {
     pub max_dev_tokens: usize,
     pub enable_tracker: bool,
     pub mock_buy: bool,
+    pub mock_sell: bool,
     pub target_mint_address: Option<Pubkey>,
     pub pump_program_id: Pubkey,
     pub global_account: Pubkey,
@@ -171,6 +172,11 @@ impl Config {
             .unwrap_or(true);
 
         let mock_buy = std::env::var("MOCK_BUY")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let mock_sell = std::env::var("MOCK_SELL")
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
             .unwrap_or(false);
@@ -360,6 +366,7 @@ impl Config {
             max_dev_tokens,
             enable_tracker,
             mock_buy,
+            mock_sell,
             target_mint_address,
             pump_program_id,
             global_account,
@@ -527,6 +534,7 @@ impl Default for Config {
             max_dev_tokens: 10,
             enable_tracker: true,
             mock_buy: false,
+            mock_sell: false,
             target_mint_address: None,
             pump_program_id: Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap(),
             global_account: Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf").unwrap(),
