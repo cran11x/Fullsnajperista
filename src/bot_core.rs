@@ -1703,11 +1703,11 @@ async fn process_and_buy(
     }
     
     // Verify transaction execution
-    let buy_succeeded = if submission_result.is_ok() {
+    let (buy_succeeded, failure_reason) = if submission_result.is_ok() {
         if let Some(sig_str) = &actual_signature {
             if sig_str.starts_with("Jito:") {
                 eprintln!("  Verification: Jito bundle (cannot verify immediately)");
-                true
+                (true, None)
             } else {
                 let sig = match solana_sdk::signature::Signature::from_str(&sig_str) {
                     Ok(s) => s,
@@ -1720,25 +1720,25 @@ async fn process_and_buy(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 
                 match verify_transaction_success(rpc, &sig, &user_ata).await {
-                    Ok(true) => {
+                    Ok(None) => {
                         eprintln!("  Verification: ✅ Buy succeeded");
-                        true
+                        (true, None)
                     }
-                    Ok(false) => {
-                        eprintln!("  Verification: ❌ Buy failed");
-                        false
+                    Ok(Some(reason)) => {
+                        eprintln!("  Verification: ❌ Buy failed: {}", reason);
+                        (false, Some(reason))
                     }
                     Err(e) => {
                         eprintln!("  Verification: ⚠️  Could not verify ({})", e);
-                        true
+                        (true, None)
                     }
                 }
             }
         } else {
-            false
+            (false, Some("No signature returned".to_string()))
         }
     } else {
-        false
+        (false, None)
     };
     
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
@@ -1835,7 +1835,10 @@ async fn process_and_buy(
         }
         
         match submission_result {
-            Ok(_) => Err(anyhow!("Transaction submission succeeded but buy verification failed")),
+            Ok(_) => {
+                let reason = failure_reason.unwrap_or_else(|| "Unknown verification failure".to_string());
+                Err(anyhow!("Transaction submission succeeded but buy verification failed: {}", reason))
+            },
             Err(e) => Err(e),
         }
     }
@@ -1846,7 +1849,7 @@ async fn verify_transaction_success(
     rpc: &RpcClient,
     signature: &solana_sdk::signature::Signature,
     expected_token_account: &Pubkey,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     // Try to get transaction status
     let tx_result = rpc.get_transaction_with_config(
         signature,
@@ -1866,7 +1869,7 @@ async fn verify_transaction_success(
                     eprintln!("   Transaction error: {:?}", err);
                     // Log inner instructions if available for debugging
                     eprintln!("   Transaction failed, checking if ATA creation was the issue...");
-                    return Ok(false);
+                    return Ok(Some(format!("Transaction on-chain error: {:?}", err)));
                 }
                 
                 // Check if token account was created (indicates buy succeeded)
@@ -1876,17 +1879,17 @@ async fn verify_transaction_success(
                     // But we should also check the token balance
                     if let Ok(token_account_data) = spl_token::state::Account::unpack(&account.data) {
                         if token_account_data.amount > 0 {
-                            return Ok(true);
+                            return Ok(None);
                         }
                     }
                 }
                 
                 // Transaction succeeded but we can't verify token account
                 // Assume success if transaction didn't error
-                Ok(true)
+                Ok(None)
             } else {
                 // No metadata - can't verify
-                Ok(false)
+                Ok(Some("No transaction metadata found".to_string()))
             }
         }
         Err(e) => {
@@ -2166,7 +2169,7 @@ async fn monitor_positions(
         eprintln!("      - Stop Loss: {}%", stop_loss_percent);
         eprintln!("      - Take Profit MC: ${:.2}", take_profit_mc_usd);
         eprintln!("      - Sell Percent: {}%", sell_percent);
-        eprintln!("      - Monitor Interval: {}s", monitor_interval);
+        eprintln!("      - Monitor Interval: 100ms (Ultra Fast)");
 
         // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
         let user_wallet = wallet.pubkey();
@@ -2429,7 +2432,9 @@ async fn monitor_positions(
         }
 
         // Wait before next check
-        tokio::time::sleep(Duration::from_secs(monitor_interval)).await;
+        // ULTRA FAST MONITORING: Check every 100ms regardless of config
+        // This ensures we catch price movements instantly
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
