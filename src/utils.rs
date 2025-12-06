@@ -127,6 +127,52 @@ pub fn clamp<T: PartialOrd>(value: T, min: T, max: T) -> T {
     }
 }
 
+/// Get actual transaction fee from signature
+pub async fn get_transaction_fee(
+    rpc: &solana_client::nonblocking::rpc_client::RpcClient,
+    signature: &str,
+) -> Result<u64> {
+    use solana_sdk::signature::Signature;
+    use std::str::FromStr;
+    
+    let sig = Signature::from_str(signature)?;
+    
+    // Fetch transaction with meta
+    let tx = rpc.get_transaction_with_config(
+        &sig,
+        solana_client::rpc_config::RpcTransactionConfig {
+            encoding: Some(solana_transaction_status::UiTransactionEncoding::Json),
+            commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        },
+    ).await?;
+    
+    // Extract fee from meta
+    if let Some(meta) = tx.transaction.meta {
+        Ok(meta.fee)
+    } else {
+        Err(anyhow::anyhow!("Transaction meta not found"))
+    }
+}
+
+/// Fetch SOL price from Jupiter API (reliable and free)
+pub async fn fetch_sol_price_usd() -> Result<f64> {
+    let client = get_shared_http_client();
+    let response = client
+        .get("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112")
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+        
+    if let Some(price_str) = response["data"]["So11111111111111111111111111111111111111112"]["price"].as_str() {
+        let price = price_str.parse::<f64>()?;
+        Ok(price)
+    } else {
+        Err(anyhow::anyhow!("Failed to parse price from Jupiter response"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

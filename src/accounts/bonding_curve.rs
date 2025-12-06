@@ -55,7 +55,15 @@ impl BondingCurveAccount {
             return 0.0;
         }
         // Price per token in SOL (not in lamports)
-        self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64
+        // Formula: (virtual_sol_reserves / virtual_token_reserves) / 1000
+        // Explanation: 
+        // - virtual_sol_reserves is in lamports (1e9)
+        // - virtual_token_reserves is in raw units (1e6)
+        // - Ratio R = lamports / raw_units
+        // - Price (SOL/Token) = (lamports / 1e9) / (raw_units / 1e6)
+        // - Price = (lamports / raw_units) * (1e6 / 1e9)
+        // - Price = R / 1000
+        (self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64) / 1000.0
     }
 
     /// Display bonding curve state
@@ -173,7 +181,7 @@ mod tests {
     fn test_token_price() {
         let curve = BondingCurveAccount {
             discriminator: 1,
-            virtual_token_reserves: 1_000_000_000_000,
+            virtual_token_reserves: 1_000_000_000_000, // 1,000,000 tokens (6 decimals)
             virtual_sol_reserves: 50_000_000_000, // 50 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 25_000_000_000,
@@ -181,9 +189,9 @@ mod tests {
             complete: false,
         };
 
-        // Price = 50 / 1000 = 0.05 SOL per token (in SOL, not lamports)
+        // Price = 50 / 1,000,000 = 0.00005 SOL per token
         let price = curve.get_token_price_sol();
-        assert!((price - 0.05).abs() < 0.0001, "Expected 0.05 but got {}", price);
+        assert!((price - 0.00005).abs() < 0.0000001, "Expected 0.00005 but got {}", price);
     }
 
     #[test]
@@ -240,11 +248,11 @@ mod tests {
 
     #[test]
     fn test_token_price_calculation() {
-        // Test various price scenarios
+        // Test various price scenarios (assuming 6 decimals for tokens)
         let test_cases = vec![
-            (1_000_000_000_000, 10_000_000_000, 0.01), // 10 SOL / 1000 tokens = 0.01 SOL per token
-            (1_000_000_000_000, 100_000_000_000, 0.1), // 100 SOL / 1000 tokens = 0.1 SOL per token
-            (500_000_000_000, 25_000_000_000, 0.05),   // 25 SOL / 500 tokens = 0.05 SOL per token
+            (1_000_000_000_000, 10_000_000_000, 0.00001), // 10 SOL / 1M tokens = 0.00001 SOL per token
+            (1_000_000_000_000, 100_000_000_000, 0.0001), // 100 SOL / 1M tokens = 0.0001 SOL per token
+            (500_000_000_000, 25_000_000_000, 0.00005),   // 25 SOL / 0.5M tokens = 0.00005 SOL per token
         ];
 
         for (token_reserves, sol_reserves, expected_price) in test_cases {
@@ -259,7 +267,7 @@ mod tests {
             };
 
             let price = curve.get_token_price_sol();
-            assert!((price - expected_price).abs() < 0.000001, 
+            assert!((price - expected_price).abs() < 0.0000001, 
                 "Expected price {} but got {} for reserves {} / {}", 
                 expected_price, price, sol_reserves, token_reserves);
         }

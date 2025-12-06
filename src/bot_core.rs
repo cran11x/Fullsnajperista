@@ -1471,6 +1471,7 @@ async fn process_and_buy(
                             pnl_sol: None,
                             pnl_percent: None,
                             last_pnl_update: None,
+                            buy_fees_sol: Some(0.0),
                         };
                         
                         match tracker.record_buy(buy) {
@@ -1769,6 +1770,12 @@ async fn process_and_buy(
                     .map(|s| s.clone())
                     .unwrap_or_else(|| init_signature.clone());
                 
+                // Calculate total fees for PnL accuracy
+                let priority_fee_sol = priority_fee as f64 / 1e9;
+                let jito_tip_sol = config.jito_tip as f64 / 1e9;
+                let base_fee_sol = 0.000005; // 5000 lamports base fee
+                let total_buy_fees = priority_fee_sol + jito_tip_sol + base_fee_sol;
+
                 let buy = TokenBuy {
                     token_number,
                     mint: mint.to_string(),
@@ -1800,6 +1807,7 @@ async fn process_and_buy(
                     pnl_sol: None,
                     pnl_percent: None,
                     last_pnl_update: None,
+                    buy_fees_sol: Some(total_buy_fees),
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -2675,6 +2683,7 @@ pub async fn execute_manual_buy(
                     pnl_sol: None,
                     pnl_percent: None,
                     last_pnl_update: None,
+                    buy_fees_sol: Some(0.00002), // Estimate for manual buy
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -3370,6 +3379,9 @@ async fn execute_sell(
 
     // Update tracker
     eprintln!("   🔍 Step 8: Updating tracker...");
+    
+    let mut buy_data = None;
+    
     if let Ok(mut tracker_opt) = tracker.write() {
         if let Some(tracker) = tracker_opt.as_mut() {
             eprintln!("      - Marking position as sold in tracker...");
@@ -3377,12 +3389,76 @@ async fn execute_sell(
                 eprintln!("      - ❌ Failed to mark position as sold in tracker: {}", e);
             } else {
                 eprintln!("      - ✅ Position marked as sold in tracker");
+                
+                // Clone necessary data for report to avoid holding lock during async call
+                // Data: (our_buy_sol, buy_fees, pnl_sol, pnl_percent, current_value_sol, mint)
+                buy_data = Some((
+                    position.our_buy_sol,
+                    position.buy_fees_sol.unwrap_or(0.00002),
+                    position.pnl_sol.unwrap_or(0.0),
+                    position.pnl_percent.unwrap_or(0.0),
+                    position.current_value_sol.unwrap_or(0.0),
+                    position.mint.clone()
+                ));
             }
         } else {
             eprintln!("      - ⚠️  Tracker is None - skipping update");
         }
     } else {
         eprintln!("      - ❌ Failed to acquire tracker write lock");
+    }
+
+    // Generate Trade Report (outside lock to allow async calls)
+    if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, mint_str)) = buy_data {
+        // Calculate actual sell fees based on what we just submitted
+        let sell_prio_fee_sol = priority_fee as f64 / 1e9;
+        let sell_helius_tip_sol = helius_tip_amount as f64 / 1e9;
+        let sell_base_fee_sol = 0.000005;
+        
+        // Fetch ACTUAL transaction fee from blockchain for ULTRA precision
+        let actual_network_fee = match crate::utils::get_transaction_fee(&rpc, &signature).await {
+            Ok(fee) => fee as f64 / 1e9,
+            Err(e) => {
+                eprintln!("      - ⚠️  Failed to fetch actual fee from chain, using calculated: {}", e);
+                sell_prio_fee_sol + sell_base_fee_sol
+            }
+        };
+        
+        let sell_fees_actual = actual_network_fee + sell_helius_tip_sol;
+        
+        let buy_cost_total = our_buy_sol + buy_fees;
+        
+        // Recalculate PnL with ACTUAL sell fees
+        let sell_value_gross = current_value_sol;
+        let sell_value_after_curve_fee = sell_value_gross * 0.99;
+        
+        // Net Wallet Return = (Value from Curve) - (Gas Fees Paid)
+        let net_return = sell_value_after_curve_fee - sell_fees_actual;
+        
+        // Final PnL = Net Return - Total Buy Cost
+        let final_pnl_sol = net_return - buy_cost_total;
+        let final_pnl_percent = if buy_cost_total > 0.0 { (final_pnl_sol / buy_cost_total) * 100.0 } else { 0.0 };
+        
+        eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+        eprintln!("║                    💰 TRADE REPORT 💰                         ║");
+        eprintln!("╠═══════════════════════════════════════════════════════════════╣");
+        eprintln!("║ Token:        {:46} ║", mint_str);
+        eprintln!("║ ------------------------------------------------------------- ║");
+        eprintln!("║ 📉 ENTRY COST (Total):     {:>12.6} SOL                   ║", buy_cost_total);
+        eprintln!("║    - Invested in Curve:    {:>12.6} SOL                   ║", our_buy_sol);
+        eprintln!("║    - Buy Fees (Gas+Prio):  {:>12.6} SOL                   ║", buy_fees);
+        eprintln!("║ ------------------------------------------------------------- ║");
+        eprintln!("║ 📈 EXIT VALUE (Net):       {:>12.6} SOL                   ║", net_return);
+        eprintln!("║    - Gross from Curve:     {:>12.6} SOL                   ║", sell_value_gross);
+        eprintln!("║    - Sell Fees (Gas+Tip):  {:>12.6} SOL                   ║", sell_fees_actual);
+        eprintln!("║ ------------------------------------------------------------- ║");
+        eprintln!("║ 💎 PROFIT/LOSS:            {:>12.6} SOL                   ║", final_pnl_sol);
+        if final_pnl_sol >= 0.0 {
+            eprintln!("║ 📊 ROI:                   🟢 {:>11.2} %                     ║", final_pnl_percent);
+        } else {
+            eprintln!("║ 📊 ROI:                   🔴 {:>11.2} %                     ║", final_pnl_percent);
+        }
+        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     }
 
     // Send event

@@ -42,6 +42,9 @@ pub struct TokenBuy {
     pub pnl_sol: Option<f64>,                // Profit/Loss in SOL
     pub pnl_percent: Option<f64>,            // Profit/Loss percentage
     pub last_pnl_update: Option<DateTime<Utc>>, // Last update timestamp
+    
+    // 🆕 NEW: Transaction fees tracking (for ultra-precision)
+    pub buy_fees_sol: Option<f64>,           // Total fees paid for buy (Priority + Network)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -471,27 +474,31 @@ impl TokenTracker {
                 let current_value_gross = tokens_actual * current_price_sol;
                 buy.current_value_sol = Some(current_value_gross);
                 
-                // Calculate PnL with pump.fun fees:
-                // - Buy fee: 1% - our_buy_sol is what we SENT (real cost), but we got tokens worth our_buy_sol * 0.99
-                // - Sell fee: 1% - need to deduct from current value
-                // Real entry cost = our_buy_sol (what we sent)
-                // Effective tokens value at entry = our_buy_sol * 0.99 (after buy fee)
-                // Current value after sell fee = current_value_gross * 0.99
-                // Net PnL = (current_value_gross * 0.99) - our_buy_sol
-                let current_value_net = current_value_gross * 0.99; // After 1% sell fee
-                // Real cost is what we sent (our_buy_sol), not what we got in tokens
-                let real_entry_cost = buy.our_buy_sol; // This is what we actually spent
-                let pnl = current_value_net - real_entry_cost;
+                // Calculate PnL with ALL fees (Ultra Precision Mode):
+                // 1. Buy Fees (already paid):
+                //    - pump.fun 1% (deducted from received tokens)
+                //    - network fee + priority fee + jito tip (deducted from wallet)
+                //
+                // 2. Sell Fees (to be paid):
+                //    - pump.fun 1% (deducted from SOL received)
+                //    - network fee + priority fee (deducted from wallet)
+                
+                // Real Cost Basis = Amount Sent to Curve + Buy Fees (Gas + Priority + Jito)
+                // If buy_fees_sol is not set, we estimate it (0.000015 SOL based on tx history)
+                let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015); 
+                let cost_basis = buy.our_buy_sol + buy_fees;
+                
+                // Estimated Sell Value = (Gross Value * 0.99) - Estimated Sell Fees
+                // Sell usually has lower priority fee, estimating 0.00001 SOL base + minimal priority
+                let estimated_sell_fees = 0.00001; 
+                let current_value_net = (current_value_gross * 0.99) - estimated_sell_fees;
+                
+                let pnl = current_value_net - cost_basis;
                 buy.pnl_sol = Some(pnl);
                 
-                // Calculate PnL percentage based on real entry cost, accounting for fees
-                // Real entry cost = our_buy_sol (what we sent)
-                // Effective entry value = our_buy_sol * 0.99 (what we got in tokens after buy fee)
-                // Current value after sell fee = current_value_gross * 0.99
-                // PnL % should be based on what we actually spent vs what we'd get
-                if buy.our_buy_sol > 0.0 {
-                    // PnL % = (net_value - real_cost) / real_cost * 100
-                    buy.pnl_percent = Some((pnl / buy.our_buy_sol) * 100.0);
+                // Calculate PnL percentage based on TOTAL cost basis
+                if cost_basis > 0.0 {
+                    buy.pnl_percent = Some((pnl / cost_basis) * 100.0);
                 }
                 
                 // DEBUG: Print PnL calculation details (only for first few updates to avoid spam)
@@ -499,23 +506,19 @@ impl TokenTracker {
                 let count = UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if count < 10 {
                     let entry_price_per_token = if tokens_actual > 0.0 { buy.our_buy_sol / tokens_actual } else { 0.0 };
-                    let effective_entry_value = buy.our_buy_sol * 0.99; // What we got in tokens after 1% buy fee
-                    let current_price_net = current_price_sol * 0.99; // After 1% sell fee
-                    let pct_from_sol = if buy.our_buy_sol > 0.0 { (pnl / buy.our_buy_sol) * 100.0 } else { 0.0 };
                     
                     eprintln!("🔍 PnL DEBUG [{}] for {}:", count + 1, &mint[..8]);
                     eprintln!("   token_amount (raw, 6 decimals): {}", token_amount);
                     eprintln!("   tokens_actual (converted from 6dec): {:.6}", tokens_actual);
                     eprintln!("   current_price_sol (SOL per token, 9 decimals): {:.12}", current_price_sol);
-                    eprintln!("   our_buy_sol (invested): {:.6} SOL", buy.our_buy_sol);
-                    eprintln!("   entry_price_per_token: {:.12} SOL/token", entry_price_per_token);
-                    eprintln!("   Real entry cost (what we sent): {:.6} SOL", buy.our_buy_sol);
-                    eprintln!("   Effective entry value (after 1% buy fee): {:.6} SOL", effective_entry_value);
+                    eprintln!("   our_buy_sol (invested in curve): {:.6} SOL", buy.our_buy_sol);
+                    eprintln!("   buy_fees (gas + priority): {:.6} SOL", buy_fees);
+                    eprintln!("   TOTAL COST BASIS: {:.6} SOL", cost_basis);
                     eprintln!("   Current value (gross): {:.6} SOL", current_value_gross);
-                    eprintln!("   Current value (net after 1% sell fee): {:.6} SOL", current_value_net);
-                    eprintln!("   PnL (net): {:.6} SOL ({:.2}%)", pnl, pct_from_sol);
-                    eprintln!("   Current price (gross): {:.12}, (net after 1% fee): {:.12}", current_price_sol, current_price_net);
-                    eprintln!("   Formula: current_value = (token_amount / 1e6) * current_price_sol");
+                    eprintln!("   Est. Sell Fees: {:.6} SOL", estimated_sell_fees);
+                    eprintln!("   Current value (net after 1% + gas): {:.6} SOL", current_value_net);
+                    eprintln!("   PnL (net): {:.6} SOL ({:.2}%)", pnl, buy.pnl_percent.unwrap_or(0.0));
+                    eprintln!("   Formula: ((tokens * price * 0.99) - sell_gas) - (buy_sol + buy_gas)");
                 }
             } else {
                 // DEBUG: Show when token_amount is missing
