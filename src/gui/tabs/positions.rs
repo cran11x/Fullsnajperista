@@ -262,7 +262,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                         egui::vec2(col_action, row_height),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            ui.spacing_mut().item_spacing.x = 8.0;
+                                            ui.spacing_mut().item_spacing.x = 6.0;
                                             
                                             if ui.button("📈 Chart").clicked() {
                                                 let url = format!(
@@ -270,6 +270,14 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                                     pos.bonding_curve.as_ref().unwrap_or(&pos.mint)
                                                 );
                                                 let _ = open::that(url);
+                                            }
+                                            
+                                            if ui.button("🔍 Solscan").clicked() {
+                                                let _ = open::that(format!("https://solscan.io/token/{}", pos.mint));
+                                            }
+                                            
+                                            if ui.button("📊 Axiom").clicked() {
+                                                let _ = open::that(format!("https://axiom.trade/meme/{}?chain=sol", pos.mint));
                                             }
                                             
                                             if ui.add(
@@ -393,6 +401,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                             egui::vec2(col_token, row_height),
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
+                                                ui.spacing_mut().item_spacing.x = 6.0;
                                                 let mint_short = format_address_safe(&pos.mint);
                                                 if ui.link(egui::RichText::new(mint_short)
                                                     .size(12.0)
@@ -400,6 +409,9 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                                     .color(egui::Color32::from_rgb(140, 180, 200))
                                                 ).clicked() {
                                                     let _ = open::that(format!("https://solscan.io/token/{}", pos.mint));
+                                                }
+                                                if ui.small_button("📊").clicked() {
+                                                    let _ = open::that(format!("https://axiom.trade/meme/{}?chain=sol", pos.mint));
                                                 }
                                             }
                                         );

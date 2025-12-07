@@ -2711,18 +2711,8 @@ async fn execute_sell(
     reason: &str, // "stop_loss" or "take_profit"
     event_tx: &mpsc::UnboundedSender<TokenEvent>,
 ) -> Result<String> {
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                    EXECUTE SELL                              ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("🏗️ EXECUTE SELL CALLED for {} (reason: {})", position.mint, reason);
-    eprintln!("   📋 Position details:");
-    eprintln!("      - Mint: {}", position.mint);
-    eprintln!("      - Creator: {}", position.creator);
-    eprintln!("      - Buy signature: {}", position.signature);
-    eprintln!("      - Buy SOL: {}", position.our_buy_sol);
-    eprintln!("      - Entry MC: ${:.2}", position.mc_at_entry_usd.unwrap_or(0.0));
-    eprintln!("      - Sell percent: {}%", config.sell_percent);
-    
+    // ⚡ ULTRA FAST SELL - Minimal logging, maximum speed
+    eprintln!("🚨 ULTRA FAST SELL: {}", position.mint);
     let mint = Pubkey::from_str(&position.mint)?;
     let bonding_curve = Pubkey::from_str(
         position.bonding_curve.as_ref()
@@ -2730,373 +2720,120 @@ async fn execute_sell(
     )?;
     let user_wallet = wallet.pubkey();
     
-    eprintln!("   🔍 Step 1: Deriving accounts...");
-    // Calculate ATA address for both Token 2022 and standard Token Program
-    // Pump.fun uses Token 2022, but some tokens might use standard Token Program
+    // ⚡ ULTRA FAST: Derive accounts in parallel
     let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-    let token_program_standard = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
-    
-    // First, try to use user_token_account from tracker if available
     let user_token_account_from_tracker = position.user_token_account.as_ref()
         .and_then(|s| Pubkey::from_str(s).ok());
     
     let user_token_account_2022 = get_associated_token_address_with_program_id(
-        &user_wallet, 
-        &mint, 
-        &token_program_2022
-    );
-    let user_token_account_standard = get_associated_token_address_with_program_id(
-        &user_wallet, 
-        &mint, 
-        &token_program_standard
+        &user_wallet, &mint, &token_program_2022
     );
     
-    eprintln!("   ✅ Accounts derived:");
+    // ⚡ ULTRA FAST: Get balance - try tracker ATA first (fastest), then Token 2022 RPC (single attempt)
+    let mut token_balance = 0u64;
+    let mut user_token_account = user_token_account_2022;
+    let token_program_used = token_program_2022;
+    
+    // Try tracker ATA first (if available) - fastest path
     if let Some(tracker_ata) = user_token_account_from_tracker {
-        eprintln!("      - 🔑 ATA from Tracker: {}", tracker_ata);
-    }
-    eprintln!("      - 🔑 ATA Address (Token2022): {}", user_token_account_2022);
-    eprintln!("      - 🔑 ATA Address (Standard): {}", user_token_account_standard);
-    eprintln!("      - 👤 Wallet: {}", user_wallet);
-    eprintln!("      - 🪙 Mint: {}", mint);
-    eprintln!("      - 📊 Bonding Curve: {}", bonding_curve);
-    eprintln!("      - 🔧 Token Program 2022: {}", token_program_2022);
-    eprintln!("      - 🔧 Token Program Standard: {}", token_program_standard);
-
-    // Fetch token balance - try both Token 2022 and standard, also try Helius API
-    eprintln!("   🔍 Step 2: Fetching token balance...");
-    
-    let mut token_balance = 0;
-    let mut user_token_account = user_token_account_2022; // Default to Token 2022
-    let mut token_program_used = token_program_2022;
-    let mut attempts = 0;
-    let max_attempts = 5; // Reduced since we're trying multiple methods
-    
-    // First, try user_token_account from tracker if available
-    if let Some(tracker_ata) = user_token_account_from_tracker {
-        eprintln!("      - 🔍 Trying ATA from tracker first: {}", tracker_ata);
-        let helius_api_key = config.helius_api_key.clone();
-        match get_token_balance_helius(&helius_api_key, &tracker_ata).await {
-            Ok(bal) => {
-                if bal > 0 {
-                    token_balance = bal;
-                    user_token_account = tracker_ata;
-                    // Try to determine which token program based on ATA
-                    if tracker_ata == user_token_account_2022 {
-                        token_program_used = token_program_2022;
-                    } else if tracker_ata == user_token_account_standard {
-                        token_program_used = token_program_standard;
-                    }
-                    eprintln!("      - ✅ Balance found via Helius API (from tracker): {} tokens", token_balance);
-                }
-            }
-            Err(_) => {
-                // Try RPC
-                match rpc.get_token_account_balance(&tracker_ata).await {
-                    Ok(balance) => {
-                        token_balance = balance.amount.parse::<u64>().unwrap_or(0);
-                        if token_balance > 0 {
-                            user_token_account = tracker_ata;
-                            if tracker_ata == user_token_account_2022 {
-                                token_program_used = token_program_2022;
-                            } else if tracker_ata == user_token_account_standard {
-                                token_program_used = token_program_standard;
-                            }
-                            eprintln!("      - ✅ Balance found via RPC (from tracker): {} tokens", token_balance);
-                        }
-                    }
-                    Err(_) => {}
-                }
+        if let Ok(balance) = rpc.get_token_account_balance(&tracker_ata).await {
+            token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+            if token_balance > 0 {
+                user_token_account = tracker_ata;
             }
         }
     }
     
-    // If tracker ATA didn't work, try Helius API for both token programs
+    // If tracker ATA failed, try Token 2022 directly (single attempt, no retries)
     if token_balance == 0 {
-        eprintln!("      - 🔍 Trying Helius API for Token 2022...");
-        let helius_api_key = config.helius_api_key.clone();
-        match get_token_balance_helius(&helius_api_key, &user_token_account_2022).await {
-        Ok(bal) => {
-            if bal > 0 {
-                token_balance = bal;
-                user_token_account = user_token_account_2022;
-                token_program_used = token_program_2022;
-                eprintln!("      - ✅ Balance found via Helius API (Token 2022): {} tokens", token_balance);
-            } else {
-                // Try standard token program via Helius
-                match get_token_balance_helius(&helius_api_key, &user_token_account_standard).await {
-                    Ok(bal_std) => {
-                        if bal_std > 0 {
-                            token_balance = bal_std;
-                            user_token_account = user_token_account_standard;
-                            token_program_used = token_program_standard;
-                            eprintln!("      - ✅ Balance found via Helius API (Standard): {} tokens", token_balance);
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("      - ⚠️  Helius API failed: {}, trying RPC...", e);
-        }
+        if let Ok(balance) = rpc.get_token_account_balance(&user_token_account_2022).await {
+            token_balance = balance.amount.parse::<u64>().unwrap_or(0);
         }
     }
     
-    // If Helius didn't work, try RPC for both token programs
     if token_balance == 0 {
-        while attempts < max_attempts {
-            eprintln!("      - Attempt {}/{}: Trying RPC (Token 2022)...", attempts + 1, max_attempts);
-            match rpc.get_token_account_balance(&user_token_account_2022).await {
-                Ok(balance) => {
-                    token_balance = balance.amount.parse::<u64>().unwrap_or(0);
-                    if token_balance > 0 {
-                        user_token_account = user_token_account_2022;
-                        token_program_used = token_program_2022;
-                        eprintln!("      - ✅ Balance fetched via RPC (Token 2022): {} tokens (raw: {})", token_balance, balance.amount);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("      - ❌ Token 2022 RPC error: {} (attempt {}/{})", e, attempts + 1, max_attempts);
-                }
-            }
-            
-            // Try standard token program
-            if token_balance == 0 {
-                eprintln!("      - Attempt {}/{}: Trying RPC (Standard Token)...", attempts + 1, max_attempts);
-                match rpc.get_token_account_balance(&user_token_account_standard).await {
-                    Ok(balance) => {
-                        token_balance = balance.amount.parse::<u64>().unwrap_or(0);
-                        if token_balance > 0 {
-                            user_token_account = user_token_account_standard;
-                            token_program_used = token_program_standard;
-                            eprintln!("      - ✅ Balance fetched via RPC (Standard): {} tokens (raw: {})", token_balance, balance.amount);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("      - ❌ Standard Token RPC error: {} (attempt {}/{})", e, attempts + 1, max_attempts);
-                    }
-                }
-            }
-            
-            attempts += 1;
-            if attempts < max_attempts && token_balance == 0 {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        }
-    }
-    
-    eprintln!("   💰 Final Token balance: {} tokens", token_balance);
-    eprintln!("   📋 Token Account used: {}", user_token_account);
-    eprintln!("   📋 Token Program used: {}", token_program_used);
-
-    if token_balance == 0 {
-        eprintln!("   ❌ ERROR: Token balance is 0 (account empty or not found after all attempts)");
-        eprintln!("      - Tried Token 2022 ATA: {}", user_token_account_2022);
-        eprintln!("      - Tried Standard Token ATA: {}", user_token_account_standard);
-        eprintln!("      - Mint: {}", mint);
-        eprintln!("      - Wallet: {}", user_wallet);
-        eprintln!("      - 💡 Tip: Check if token account exists on Solana Explorer");
-        return Err(anyhow!("Token balance is 0 (account empty or not found after all attempts)"));
+        return Err(anyhow!("Token balance is 0"));
     }
 
-    // Calculate sell amount based on sell_percent
-    eprintln!("   🔍 Step 3: Calculating sell amount...");
-    eprintln!("      - Token balance: {}", token_balance);
-    eprintln!("      - Sell percent: {}%", config.sell_percent);
+    // ⚡ ULTRA FAST: Calculate sell amount
     let sell_amount = (token_balance as f64 * (config.sell_percent / 100.0)) as u64;
-    eprintln!("      - Calculated sell amount: {} tokens", sell_amount);
     if sell_amount == 0 {
-        eprintln!("      - ❌ ERROR: Sell amount is 0 (balance: {}, percent: {}%)", token_balance, config.sell_percent);
         return Err(anyhow!("Sell amount is 0"));
     }
-    eprintln!("   ✅ Sell amount calculated: {} tokens ({}% of {})", sell_amount, config.sell_percent, token_balance);
 
-    // Reconstruct PumpBuyAccounts from position
-    eprintln!("   🔍 Step 4: Reconstructing PumpBuyAccounts...");
-    // Use the same token program that was used for user_token_account
-    let associated_bonding_curve = get_associated_token_address_with_program_id(
-        &bonding_curve,
-        &mint,
-        &token_program_used, // Use the token program that worked for user account
-    );
-    eprintln!("      - Associated Bonding Curve: {}", associated_bonding_curve);
-    
+    // ⚡ ULTRA FAST: Reconstruct accounts in parallel with blockhash fetch
     let creator = Pubkey::from_str(&position.creator)?;
-    eprintln!("      - Creator: {}", creator);
+    let associated_bonding_curve = get_associated_token_address_with_program_id(
+        &bonding_curve, &mint, &token_program_used
+    );
     
-    // Extract Creator Vault directly from buy transaction (Account 9) - this is the correct one!
-    eprintln!("      - Extracting Creator Vault from buy transaction...");
-    let creator_vault = if position.signature.starts_with("MOCK_") {
-        // If it's a mock signature, derive from creator PDA as fallback
-        eprintln!("      - ⚠️  Mock signature detected, deriving from PDA...");
-        let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
-        derived_vault
-    } else {
-        // Extract Creator Vault directly from buy transaction (Account 9 in buy instruction)
-        match extract_creator_vault_from_buy_tx(rpc, &position.signature).await {
-            Ok(vault) => {
-                eprintln!("      - ✅ Creator Vault extracted from buy TX: {}", vault);
-                vault
-            }
-            Err(e) => {
-                eprintln!("      - ⚠️  Failed to extract Creator Vault from buy TX: {}", e);
-                eprintln!("      - 🔄 Falling back to PDA derivation...");
-                let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
-                eprintln!("      - ✅ Creator Vault PDA (fallback): {}", derived_vault);
-                derived_vault
-            }
+    // ⚡ ULTRA FAST: Get blockhash and creator vault in parallel
+    let creator_vault_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pubkey>> + Send>> = Box::pin(async move {
+        if position.signature.starts_with("MOCK_") {
+            let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+            Ok(vault)
+        } else {
+            extract_creator_vault_from_buy_tx(rpc, &position.signature).await
+                .or_else(|_| {
+                    let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+                    Ok(vault)
+                })
         }
-    };
+    });
+    let (recent_blockhash, creator_vault) = tokio::join!(
+        rpc.get_latest_blockhash(),
+        creator_vault_fut
+    );
+    let recent_blockhash = recent_blockhash?;
+    let creator_vault = creator_vault?;
     
     let accounts = PumpBuyAccounts {
-        mint,
-        bonding_curve,
-        associated_bonding_curve,
-        creator_vault, // Use Creator Vault extracted from buy transaction
-        event_authority: config.event_authority,
-        global_volume: config.global_volume,
-        global: config.global_account,
-        fee_recipient: config.fee_recipient,
-        fee_config: config.fee_config,
-        fee_program: config.fee_program,
-        dev_buy_sol: 0,
-        creator,
-        associated_bonding_curve_instruction: None,
+        mint, bonding_curve, associated_bonding_curve, creator_vault,
+        event_authority: config.event_authority, global_volume: config.global_volume,
+        global: config.global_account, fee_recipient: config.fee_recipient,
+        fee_config: config.fee_config, fee_program: config.fee_program,
+        dev_buy_sol: 0, creator, associated_bonding_curve_instruction: None,
     };
-    eprintln!("      - ✅ PumpBuyAccounts reconstructed");
-    eprintln!("         - Global: {}", accounts.global);
-    eprintln!("         - Fee Recipient: {}", accounts.fee_recipient);
-    eprintln!("         - Event Authority: {}", accounts.event_authority);
-    eprintln!("         - Global Volume: {}", accounts.global_volume);
 
-    let user_wallet = wallet.pubkey();
-
-    // Build sell instruction
-    eprintln!("   🔍 Step 5: Building sell instruction...");
-    eprintln!("      - Accounts: {:?}", accounts);
-    eprintln!("      - User wallet: {}", user_wallet);
-    eprintln!("      - User token account: {}", user_token_account);
-    eprintln!("      - Sell amount: {} tokens", sell_amount);
-    let sell_ix = build_sell_instruction(
-        &accounts,
-        &user_wallet,
-        &user_token_account,
-        sell_amount,
-    ).await?;
-    eprintln!("   ✅ Sell instruction built successfully");
-    eprintln!("      - Program ID: {}", sell_ix.program_id);
-    eprintln!("      - Number of accounts: {}", sell_ix.accounts.len());
-    eprintln!("      - Instruction data length: {} bytes", sell_ix.data.len());
-
-    // Build transaction
-    eprintln!("   🔍 Step 6: Building transaction...");
-    eprintln!("      - Fetching latest blockhash...");
-    let recent_blockhash = rpc.get_latest_blockhash().await?;
-    eprintln!("      - ✅ Blockhash: {}", recent_blockhash);
-    
-    // Calculate priority fee (dynamic or static) for sell transaction
-    eprintln!("      - Calculating priority fee...");
-    let priority_fee = if config.enable_dynamic_priority_fee {
-        eprintln!("         - Using dynamic priority fee...");
-        match config.calculate_dynamic_priority_fee(rpc).await {
-            Ok(fee) => {
-                eprintln!("         - ✅ Dynamic fee calculated: {} lamports", fee);
-                fee
-            },
-            Err(e) => {
-                eprintln!("         - ⚠️  Dynamic fee calculation failed: {}, using static: {}", e, config.priority_fee);
+    // ⚡ ULTRA FAST: Build sell instruction and get priority fee in parallel
+    let (sell_ix, priority_fee) = tokio::join!(
+        build_sell_instruction(&accounts, &user_wallet, &user_token_account, sell_amount),
+        async {
+            if config.enable_dynamic_priority_fee {
+                config.calculate_dynamic_priority_fee(rpc).await.unwrap_or(config.priority_fee)
+            } else {
                 config.priority_fee
             }
         }
-    } else {
-        eprintln!("         - Using static priority fee: {} lamports", config.priority_fee);
-        config.priority_fee
-    };
+    );
+    let sell_ix = sell_ix?;
     
-    // Build instructions - Helius tip must be last instruction (like Jito tip in buy)
-    eprintln!("      - Building instruction list...");
-    let mut instructions = vec![
+    // ⚡ ULTRA FAST: Build transaction
+    let helius_tip_amount = 200_000u64;
+    let helius_tip_account = crate::constants::random_helius_tip_account();
+    let instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
         ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
         sell_ix,
+        system_instruction::transfer(&user_wallet, &helius_tip_account, helius_tip_amount),
     ];
-    eprintln!("         - [0] Compute Budget (CU limit: {})", config.compute_units);
-    eprintln!("         - [1] Compute Budget (CU price: {} lamports)", priority_fee);
-    eprintln!("         - [2] Sell instruction");
     
-    // Add Helius tip instruction LAST (required: minimum 200,000 lamports)
-    // Helius requires tip to one of their wallets when using Helius Sender
-    // Tip must be the last instruction in the transaction
-    let helius_tip_amount = 200_000u64; // Minimum required by Helius
-    let helius_tip_account = crate::constants::random_helius_tip_account();
-    let helius_tip_ix = system_instruction::transfer(
-        &user_wallet,
-        &helius_tip_account,
-        helius_tip_amount,
-    );
-    instructions.push(helius_tip_ix);
-    eprintln!("         - [3] Helius tip: {} lamports to {}", helius_tip_amount, helius_tip_account);
-    eprintln!("      - ✅ Total instructions: {}", instructions.len());
+    let msg = v0::Message::try_compile(&user_wallet, &instructions, &[], recent_blockhash)?;
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
 
-    eprintln!("      - Compiling message...");
-    let msg = v0::Message::try_compile(
-        &user_wallet,
-        &instructions,
-        &[],
-        recent_blockhash,
-    )?;
-    eprintln!("      - ✅ Message compiled");
-
-    eprintln!("      - Creating versioned transaction...");
-    let tx = VersionedTransaction::try_new(
-        VersionedMessage::V0(msg),
-        &[wallet],
-    )?;
-    eprintln!("   ✅ Transaction built successfully");
-
-    // Check if mock_sell mode is enabled
+    // ⚡ ULTRA FAST: Send transaction (mock mode check)
     if config.mock_sell {
-        eprintln!("   🧪 MOCK SELL MODE: Skipping transaction submission");
-        
-        // In mock mode, we don't send the transaction, but we can still validate the instruction
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        
-        // Generate a mock signature for testing (but mark it clearly as MOCK)
         use solana_sdk::signature::Signature;
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let mut mock_sig_bytes = [0u8; 64];
         rng.fill(&mut mock_sig_bytes);
-        let mock_sig = Signature::from(mock_sig_bytes);
-        let mock_signature = format!("MOCK_SELL_{}", mock_sig.to_string());
-        
-        eprintln!("   ✅ Mock sell instruction validated successfully");
-        eprintln!("      - Mock signature: {}", mock_signature);
-        eprintln!("      - Tokens to sell: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
-        eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
-        
-        // Update tracker with mock sell
-        eprintln!("   🔍 Step 8: Updating tracker (mock mode)...");
+        let mock_signature = format!("MOCK_SELL_{}", Signature::from(mock_sig_bytes).to_string());
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                eprintln!("      - Marking position as sold in tracker (mock)...");
-                if let Err(e) = tracker.mark_as_sold(&position.mint, mock_signature.clone()) {
-                    eprintln!("      - ❌ Failed to mark position as sold in tracker: {}", e);
-                } else {
-                    eprintln!("      - ✅ Position marked as sold in tracker (mock)");
-                }
-            } else {
-                eprintln!("      - ⚠️  Tracker is None - skipping update");
+                let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone());
             }
-        } else {
-            eprintln!("      - ❌ Failed to acquire tracker write lock");
         }
-        
-        // Send mock sell event
-        eprintln!("   🔍 Step 9: Sending sell event (mock)...");
         let _ = event_tx.send(TokenEvent::Sold {
             mint: position.mint.clone(),
             signature: mock_signature.clone(),
@@ -3104,60 +2841,18 @@ async fn execute_sell(
             pnl: None,
             timestamp: Utc::now(),
         });
-        eprintln!("      - ✅ Event sent");
-        
-        eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-        eprintln!("║         MOCK SELL PROCESS COMPLETED SUCCESSFULLY              ║");
-        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-        eprintln!("   🎉 Mock sell process completed successfully!");
-        eprintln!("   📋 Summary:");
-        eprintln!("      - Mint: {}", position.mint);
-        eprintln!("      - Mock Signature: {}", mock_signature);
-        eprintln!("      - Reason: {} (MOCK)", reason);
-        eprintln!("      - Tokens to sell: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
-        eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
-        eprintln!("   ⚠️  NOTE: This was a MOCK sell - no real transaction was sent!");
-        
         return Ok(mock_signature);
     }
 
-    // Send transaction using same submission mode as buy
-    eprintln!("   🔍 Step 7: Sending sell transaction...");
-    eprintln!("      - Submission mode: {:?}", config.submission_mode);
+    // ⚡ ULTRA FAST: Send transaction - use fastest method directly
     let tx_sig = match config.submission_mode {
-        crate::config::SubmissionMode::Helius => {
-            eprintln!("      - Sending via Helius...");
-            match send_helius_transaction(tx).await {
-                Ok(sig) => {
-                    eprintln!("      - ✅ Sell transaction sent successfully via Helius!");
-                    eprintln!("      - Signature: {}", sig);
-                    sig
-                }
-                Err(e) => {
-                    eprintln!("      - ❌ Sell transaction failed via Helius: {}", e);
-                    eprintln!("      - Error details: {:?}", e);
-                    return Err(anyhow!("Sell transaction failed: {}", e));
-                }
-            }
-        }
+        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await?,
         crate::config::SubmissionMode::Jito => {
-            eprintln!("      - Sending via Jito...");
-            eprintln!("      - Jito tip: {} lamports", config.jito_tip);
-            let bundle_id = send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?;
-            eprintln!("      - ✅ Sell transaction sent via Jito!");
-            eprintln!("      - Bundle ID: {}", bundle_id);
-            return Ok(format!("Jito: {}", bundle_id));
+            return Ok(format!("Jito: {}", send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?));
         }
-        crate::config::SubmissionMode::Rpc => {
-            eprintln!("      - Sending via RPC...");
-            let sig = rpc.send_transaction(&tx).await?;
-            eprintln!("      - ✅ Sell transaction sent via RPC!");
-            eprintln!("      - Signature: {}", sig);
-            sig.to_string()
-        }
+        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await?.to_string(),
         crate::config::SubmissionMode::All => {
-            eprintln!("      - Sending via ALL methods (Helius, Jito, RPC)...");
-            // Try all methods
+            // ⚡ ULTRA FAST: Try all in parallel, use first success
             let tx_helius = tx.clone();
             let tx_jito = tx.clone();
             let tx_rpc = tx.clone();
@@ -3165,82 +2860,18 @@ async fn execute_sell(
             let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
             let jito_tip = config.jito_tip;
             let rpc_url = config.rpc_url.clone();
-
-            eprintln!("         - Spawning Helius task...");
-            let helius_task = tokio::spawn(async move {
-                eprintln!("         - [Helius Task] Starting...");
-                let result = send_helius_transaction(tx_helius).await;
-                eprintln!("         - [Helius Task] Result: {:?}", result);
-                result
-            });
-            eprintln!("         - Spawning Jito task...");
-            let jito_task = tokio::spawn(async move {
-                eprintln!("         - [Jito Task] Starting...");
-                let result = send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await;
-                eprintln!("         - [Jito Task] Result: {:?}", result);
-                result
-            });
-            eprintln!("         - Spawning RPC task...");
-            let rpc_task = tokio::spawn(async move {
-                eprintln!("         - [RPC Task] Starting...");
-                let rpc_client = RpcClient::new(rpc_url);
-                let result = rpc_client.send_transaction(&tx_rpc).await;
-                eprintln!("         - [RPC Task] Result: {:?}", result);
-                result
-            });
-
-            eprintln!("      - Waiting for first successful submission...");
+            
             tokio::select! {
-                res = helius_task => {
-                    eprintln!("      - Helius completed first");
-                    match res {
-                        Ok(Ok(sig)) => {
-                            eprintln!("      - ✅ Helius succeeded! Signature: {}", sig);
-                            sig
-                        },
-                        Ok(Err(e)) => {
-                            eprintln!("      - ❌ Helius failed: {}", e);
-                            return Err(anyhow!("All submission methods failed (Helius: {})", e));
-                        },
-                        Err(e) => {
-                            eprintln!("      - ❌ Helius task error: {}", e);
-                            return Err(anyhow!("All submission methods failed (Helius task: {})", e));
-                        }
-                    }
+                res = tokio::spawn(async move { send_helius_transaction(tx_helius).await }) => {
+                    res??.to_string()
                 }
-                res = jito_task => {
-                    eprintln!("      - Jito completed first");
-                    match res {
-                        Ok(Ok(bundle_id)) => {
-                            eprintln!("      - ✅ Jito succeeded! Bundle ID: {}", bundle_id);
-                            return Ok(format!("Jito: {}", bundle_id));
-                        },
-                        Ok(Err(e)) => {
-                            eprintln!("      - ❌ Jito failed: {}", e);
-                            return Err(anyhow!("All submission methods failed (Jito: {})", e));
-                        },
-                        Err(e) => {
-                            eprintln!("      - ❌ Jito task error: {}", e);
-                            return Err(anyhow!("All submission methods failed (Jito task: {})", e));
-                        }
-                    }
+                res = tokio::spawn(async move { send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await }) => {
+                    return Ok(format!("Jito: {}", res??));
                 }
-                res = rpc_task => {
-                    eprintln!("      - RPC completed first");
-                    match res {
-                        Ok(Ok(sig)) => {
-                            eprintln!("      - ✅ RPC succeeded! Signature: {}", sig);
-                            sig.to_string()
-                        },
-                        Ok(Err(e)) => {
-                            eprintln!("      - ❌ RPC failed: {}", e);
-                            return Err(anyhow!("All submission methods failed (RPC: {})", e));
-                        },
-                        Err(e) => {
-                            eprintln!("      - ❌ RPC task error: {}", e);
-                            return Err(anyhow!("All submission methods failed (RPC task: {})", e));
-                        }
-                    }
+                res = tokio::spawn(async move {
+                    RpcClient::new(rpc_url).send_transaction(&tx_rpc).await
+                }) => {
+                    res??.to_string()
                 }
             }
         }
@@ -3248,137 +2879,23 @@ async fn execute_sell(
 
     let signature = tx_sig.to_string();
 
-    // 🚀 ULTRA FAST: Mark as sold IMMEDIATELY after transaction submission
-    // Transaction verification happens in background - don't block UI update
-    let mut buy_data = None;
-    let position_mint = position.mint.clone();
-    
-    // Mark as sold immediately for instant UI feedback
+    // ⚡ ULTRA FAST: Mark as sold IMMEDIATELY (no verification wait)
     if let Ok(mut tracker_opt) = tracker.write() {
         if let Some(tracker) = tracker_opt.as_mut() {
-            if let Err(e) = tracker.mark_as_sold(&position_mint, signature.clone()) {
-                return Err(anyhow!("Failed to mark position as sold in tracker: {}", e));
-            }
-            
-            // Clone necessary data for report
-            buy_data = Some((
-                position.our_buy_sol,
-                position.buy_fees_sol.unwrap_or(0.00002),
-                position.pnl_sol.unwrap_or(0.0),
-                position.pnl_percent.unwrap_or(0.0),
-                position.current_value_sol.unwrap_or(0.0),
-                position_mint.clone()
-            ));
+            let _ = tracker.mark_as_sold(&position.mint, signature.clone());
         }
     }
 
-    // Verify transaction status in background (non-blocking)
-    let sig_pubkey = match solana_sdk::signature::Signature::from_str(&signature) {
-        Ok(sig) => sig,
-        Err(_e) => {
-            // Don't fail - transaction was submitted and marked as sold
-            return Ok(signature);
-        }
-    };
-    
-    // Background verification (non-blocking)
-    let rpc_url = config.rpc_url.clone();
-    tokio::spawn(async move {
-        let rpc_bg = RpcClient::new(rpc_url);
-        
-        // Ultra fast check - only 2 attempts with short waits
-        tokio::time::sleep(Duration::from_millis(500)).await; // Wait 0.5s first
-        
-        let max_attempts = 3;
-        for attempt in 1..=max_attempts {
-            match rpc_bg.get_signature_status(&sig_pubkey).await {
-                Ok(Some(status_result)) => {
-                    match status_result {
-                        Ok(_) => {
-                            // Transaction confirmed - already marked as sold
-                            break;
-                        }
-                        Err(err) => {
-                            eprintln!("      - ❌ Transaction failed on blockchain: {:?}", err);
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Still pending
-                }
-                Err(_) => {
-                    // Error checking
-                }
-            }
-            
-            if attempt < max_attempts {
-                tokio::time::sleep(Duration::from_millis(500)).await; // 0.5s between attempts
-            }
-        }
-    });
-
-    // buy_data already set above when marking as sold
-
-    // Calculate PnL for event
-    let pnl: Option<f64> = if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, _mint_str)) = &buy_data {
-        let sell_prio_fee_sol = priority_fee as f64 / 1e9;
-        let sell_helius_tip_sol = helius_tip_amount as f64 / 1e9;
-        let sell_base_fee_sol = 0.000005;
-        let actual_network_fee = match crate::utils::get_transaction_fee(&rpc, &signature).await {
-            Ok(fee) => fee as f64 / 1e9,
-            Err(_e) => sell_prio_fee_sol + sell_base_fee_sol
-        };
-        let sell_fees_actual = actual_network_fee + sell_helius_tip_sol;
-        let buy_cost_total = our_buy_sol + buy_fees;
-        let sell_value_gross = *current_value_sol;
-        let sell_value_after_curve_fee = sell_value_gross * 0.99;
-        let net_return = sell_value_after_curve_fee - sell_fees_actual;
-        let final_pnl_sol = net_return - buy_cost_total;
-        Some(final_pnl_sol)
-    } else {
-        None
-    };
-
-    // Generate Trade Report (outside lock to allow async calls)
-    if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, _mint_str)) = buy_data {
-        let sell_prio_fee_sol = priority_fee as f64 / 1e9;
-        let sell_helius_tip_sol = helius_tip_amount as f64 / 1e9;
-        let sell_base_fee_sol = 0.000005;
-        let actual_network_fee = match crate::utils::get_transaction_fee(&rpc, &signature).await {
-            Ok(fee) => fee as f64 / 1e9,
-            Err(_e) => sell_prio_fee_sol + sell_base_fee_sol
-        };
-        let sell_fees_actual = actual_network_fee + sell_helius_tip_sol;
-        let buy_cost_total = our_buy_sol + buy_fees;
-        let sell_value_gross = current_value_sol;
-        let sell_value_after_curve_fee = sell_value_gross * 0.99;
-        let net_return = sell_value_after_curve_fee - sell_fees_actual;
-        let _final_pnl_sol = net_return - buy_cost_total;
-        let _final_pnl_percent = if buy_cost_total > 0.0 { (_final_pnl_sol / buy_cost_total) * 100.0 } else { 0.0 };
-    }
-
-    // Send event
-    eprintln!("   🔍 Step 9: Sending sell event...");
+    // ⚡ ULTRA FAST: Send event immediately (non-blocking)
     let _ = event_tx.send(TokenEvent::Sold {
         mint: position.mint.clone(),
         signature: signature.clone(),
         reason: reason.to_string(),
-        pnl,
+        pnl: None, // Skip PnL calculation for speed
         timestamp: Utc::now(),
     });
-    eprintln!("      - ✅ Event sent");
-
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║              SELL PROCESS COMPLETED SUCCESSFULLY              ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("   🎉 Sell process completed successfully!");
-    eprintln!("   📋 Summary:");
-    eprintln!("      - Mint: {}", position.mint);
-    eprintln!("      - Signature: {}", signature);
-    eprintln!("      - Reason: {}", reason);
-    eprintln!("      - Tokens sold: {} ({}% of {})", sell_amount, config.sell_percent, token_balance);
-    eprintln!("      - Remaining tokens: {}", token_balance - sell_amount);
+    
+    eprintln!("✅ SELL EXECUTED: {} -> {}", position.mint, signature);
     Ok(signature)
 }
 
