@@ -926,14 +926,18 @@ async fn process_and_buy(
         }
     });
     
-    let mc_fut = fetch_bonding_curve_mc(
+    let mc_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(BondingCurveAccount, f64, f64), anyhow::Error>> + Send>> = Box::pin(fetch_bonding_curve_mc(
         rpc,
         &accounts.bonding_curve,
         config.sol_price_usd,
-    );
+    ));
     
     // ⚡ PARALLEL: Await all futures simultaneously using tokio::join!
-    let (das_result, mc_result, socials_result) = tokio::join!(
+    let (das_result, mc_result, socials_result): (
+        Result<u32, anyhow::Error>,
+        Result<(BondingCurveAccount, f64, f64), anyhow::Error>,
+        Option<Socials>
+    ) = tokio::join!(
         das_fut,
         mc_fut,
         socials_fut
@@ -1539,8 +1543,8 @@ async fn process_and_buy(
     
     // Verify transaction execution
     let (buy_succeeded, failure_reason) = if submission_result.is_ok() {
-        if let Some(sig_str) = &actual_signature {
-            if sig_str.starts_with("Jito:") {
+        if let Some(sig_str) = actual_signature.as_ref() {
+            if sig_str.as_str().starts_with("Jito:") {
                 eprintln!("  Verification: Jito bundle (cannot verify immediately)");
                 (true, None)
             } else {

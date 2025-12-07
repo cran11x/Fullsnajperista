@@ -319,3 +319,66 @@ mod tests {
         // with a mock RPC that returns known bonding curve data
     }
 }
+
+/// Token-specific global account structure (from pump.fun program)
+/// Note: This is different from the program-level GlobalAccount in global.rs
+#[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
+pub struct TokenGlobalAccount {
+    pub discriminator: u64,
+    pub initialized: bool,
+    pub mint: Pubkey,
+    pub mint_authority: Pubkey,
+    pub virtual_token_reserves: u64,
+    pub virtual_sol_reserves: u64,
+    pub real_token_reserves: u64,
+    pub real_sol_reserves: u64,
+    pub token_total_supply: u64,
+    pub bonding_curve_bump: u8,
+    pub associated_bonding_curve: Pubkey,
+    pub complete: bool,
+    pub global_authority: u8,
+}
+
+impl TokenGlobalAccount {
+    pub fn new(
+        discriminator: u64,
+        initialized: bool,
+        mint: Pubkey,
+        mint_authority: Pubkey,
+        virtual_token_reserves: u64,
+        virtual_sol_reserves: u64,
+        real_token_reserves: u64,
+        real_sol_reserves: u64,
+        token_total_supply: u64,
+        bonding_curve_bump: u8,
+        associated_bonding_curve: Pubkey,
+        complete: bool,
+        global_authority: u8,
+    ) -> Self {
+        Self {
+            discriminator,
+            initialized,
+            mint,
+            mint_authority,
+            virtual_token_reserves,
+            virtual_sol_reserves,
+            real_token_reserves,
+            real_sol_reserves,
+            token_total_supply,
+            bonding_curve_bump,
+            associated_bonding_curve,
+            complete,
+            global_authority,
+        }
+    }
+
+    /// Get initial buy price (token amount for given SOL amount)
+    /// This is a simplified calculation - adjust based on actual pump.fun formula
+    pub fn get_initial_buy_price(&self, sol_lamports: u64) -> u64 {
+        if self.virtual_sol_reserves == 0 || self.virtual_token_reserves == 0 {
+            return 0;
+        }
+        // Simplified calculation: tokens = (sol * virtual_token_reserves) / virtual_sol_reserves
+        (sol_lamports as u128 * self.virtual_token_reserves as u128 / self.virtual_sol_reserves as u128) as u64
+    }
+}
