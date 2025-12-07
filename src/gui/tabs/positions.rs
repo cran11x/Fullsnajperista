@@ -277,6 +277,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                             }
                                             
                                             if ui.button("📊 Axiom").clicked() {
+                                                // Axiom uses mint address, not bonding curve
                                                 let _ = open::that(format!("https://axiom.trade/meme/{}?chain=sol", pos.mint));
                                             }
                                             
@@ -411,6 +412,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                                     let _ = open::that(format!("https://solscan.io/token/{}", pos.mint));
                                                 }
                                                 if ui.small_button("📊").clicked() {
+                                                    // Axiom uses mint address, not bonding curve
                                                     let _ = open::that(format!("https://axiom.trade/meme/{}?chain=sol", pos.mint));
                                                 }
                                             }
