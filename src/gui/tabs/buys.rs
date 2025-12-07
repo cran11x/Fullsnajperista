@@ -42,10 +42,35 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                     tracker_to_use.get_recent_buys(50)
                 })).unwrap_or_else(|_| Vec::new());
                 
-                ui.label(egui::RichText::new(format!("Total buys recorded: {}", total_buys))
-                    .size(17.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(180, 200, 255)));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Total buys recorded: {}", total_buys))
+                        .size(17.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(180, 200, 255)));
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("🗑️ Clear All")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(egui::Color32::WHITE)
+                            )
+                            .fill(egui::Color32::from_rgb(200, 80, 80))
+                            .rounding(egui::Rounding::same(4.0))
+                        ).clicked() {
+                            if let Ok(mut tracker_guard) = tracker.write() {
+                                if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                    if let Err(e) = tracker_ref.clear_all_buys() {
+                                        eprintln!("❌ Failed to clear buys: {}", e);
+                                    } else {
+                                        eprintln!("✅ All buys cleared");
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
                 ui.add_space(20.0);
                 
                 if buys.is_empty() {

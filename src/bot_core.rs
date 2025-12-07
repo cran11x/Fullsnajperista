@@ -87,6 +87,7 @@ pub async fn run_bot(
     let monitor_event_tx = event_tx.clone();
     
     tokio::spawn(async move {
+        eprintln!("🚀 Starting auto-sell position monitor...");
         monitor_positions(
             monitor_config,
             monitor_wallet,
@@ -94,6 +95,7 @@ pub async fn run_bot(
             monitor_tracker,
             monitor_event_tx,
         ).await;
+        eprintln!("⚠️  WARNING: Auto-sell monitor loop exited unexpectedly!");
     });
     
     // Start ultra-fast PnL monitor as separate background task
@@ -1103,6 +1105,20 @@ async fn process_and_buy(
                     }
                 }
                 eprintln!("        ✅ PASSED: Initialized ({} bytes)", account.data.len());
+                
+                // Check if bonding curve is complete (token migrated - can't buy anymore)
+                if !account.data.is_empty() {
+                    use borsh::BorshDeserialize;
+                    if let Ok(curve) = BondingCurveAccount::try_from_slice(&account.data[..]) {
+                        if curve.complete {
+                            eprintln!("        ❌ FAILED: Token is COMPLETE (migrated) - cannot buy on bonding curve");
+                            eprintln!();
+                            return Err(anyhow!("SKIP: Token is complete (migrated) - cannot buy on bonding curve"));
+                        }
+                        eprintln!("        ✅ PASSED: Token is active (not complete)");
+                    }
+                }
+                
                 bonding_curve_ready = true;
                 break;
             }
@@ -1846,13 +1862,22 @@ async fn process_and_buy(
                     buy_fees_sol: Some(total_buy_fees),
                 };
                 
-                if let Err(e) = tracker.record_buy(buy) {
+                if let Err(e) = tracker.record_buy(buy.clone()) {
                     eprintln!("  ❌ Tracker error: {}", e);
                 } else {
                     eprintln!("  ✅ Recorded in tracker (Total buys: {})", tracker.total_buys());
                     if let Some(mc) = mc_entry_usd {
                         eprintln!("  📈 Entry MC: ${:.0}", mc);
                     }
+                    eprintln!("  🔍 Position details for auto-sell:");
+                    eprintln!("     - Bonding Curve: {:?}", buy.bonding_curve);
+                    eprintln!("     - User Token Account: {:?}", buy.user_token_account);
+                    eprintln!("     - MC at Entry: {:?}", buy.mc_at_entry_usd);
+                    eprintln!("     - Sold: {}", buy.sold);
+                    
+                    // Verify position will be included in get_active_positions
+                    let active_count = tracker.get_active_positions().len();
+                    eprintln!("  📊 Active positions count: {} (should include this one)", active_count);
                 }
             }
         }
@@ -1903,9 +1928,22 @@ async fn verify_transaction_success(
                 // Check if transaction errored
                 if let Some(err) = meta.err {
                     eprintln!("   Transaction error: {:?}", err);
+                    
+                    // Provide helpful error messages for common errors
+                    let error_msg = format!("{:?}", err);
+                    let detailed_msg = if error_msg.contains("Custom(1)") {
+                        format!("Transaction on-chain error: {:?} - This usually means:\n   • Token is complete (migrated) and cannot be bought on bonding curve\n   • Token is not ready for trading yet\n   • Slippage too high or insufficient SOL", err)
+                    } else if error_msg.contains("Custom(0)") {
+                        format!("Transaction on-chain error: {:?} - Insufficient SOL or token reserves", err)
+                    } else {
+                        format!("Transaction on-chain error: {:?}", err)
+                    };
+                    
                     // Log inner instructions if available for debugging
                     eprintln!("   Transaction failed, checking if ATA creation was the issue...");
-                    return Ok(Some(format!("Transaction on-chain error: {:?}", err)));
+                    // Note: inner_instructions is OptionSerializer type, skip detailed logging for now
+                    
+                    return Ok(Some(detailed_msg));
                 }
                 
                 // Check if token account was created (indicates buy succeeded)
@@ -2181,296 +2219,314 @@ async fn monitor_positions(
     }
     
     loop {
-        // Check if auto-sell is enabled
-        let enabled = {
-            let cfg = config.read().unwrap();
-            cfg.enable_auto_sell
-        };
+        // Wrap entire loop iteration in error handling to prevent crashes
+        let loop_result = async {
+            // Check if auto-sell is enabled
+            let enabled = {
+                let cfg = config.read().unwrap();
+                cfg.enable_auto_sell
+            };
 
-        if !enabled {
-            eprintln!("⏸️  Auto-sell is DISABLED - skipping position monitoring");
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            continue;
-        }
-        
-        eprintln!("✅ Auto-sell is ENABLED - checking positions...");
+            if !enabled {
+                eprintln!("⏸️  Auto-sell is DISABLED - skipping position monitoring");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                return Ok::<(), anyhow::Error>(());
+            }
+            
+            eprintln!("✅ Auto-sell is ENABLED - checking positions...");
 
-        // Get config values including Helius API key
-        let (stop_loss_percent, take_profit_mc_usd, monitor_interval, sol_price_usd, helius_api_key, sell_percent) = {
-            let cfg = config.read().unwrap();
-            (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent)
-        };
-        
-        eprintln!("   📋 Auto-sell settings:");
-        eprintln!("      - Stop Loss: {}%", stop_loss_percent);
-        eprintln!("      - Take Profit MC: ${:.2}", take_profit_mc_usd);
-        eprintln!("      - Sell Percent: {}%", sell_percent);
-        eprintln!("      - Monitor Interval: 100ms (Ultra Fast)");
+            // Get config values including Helius API key
+            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, sell_percent) = {
+                let cfg = config.read().unwrap();
+                (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent)
+            };
+            
+            eprintln!("   📋 Auto-sell settings:");
+            eprintln!("      - Stop Loss: {}%", stop_loss_percent);
+            eprintln!("      - Take Profit MC: ${:.2}", take_profit_mc_usd);
+            eprintln!("      - Sell Percent: {}%", sell_percent);
+            eprintln!("      - Monitor Interval: 100ms (Ultra Fast - always)");
 
-        // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
-        let user_wallet = wallet.pubkey();
-        let positions_to_check = {
-            if let Ok(tracker_guard) = tracker.read() {
-                if let Some(tracker_ref) = tracker_guard.as_ref() {
-                    tracker_ref.get_active_positions()
+            // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
+            let user_wallet = wallet.pubkey();
+            let positions_to_check = {
+                if let Ok(tracker_guard) = tracker.read() {
+                    if let Some(tracker_ref) = tracker_guard.as_ref() {
+                        tracker_ref.get_active_positions()
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     Vec::new()
                 }
-            } else {
-                Vec::new()
-            }
-        };
-        
-        if !positions_to_check.is_empty() {
-            use solana_sdk::pubkey::Pubkey;
-            use spl_associated_token_account::get_associated_token_address_with_program_id;
-            use std::str::FromStr;
+            };
             
-            let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-                .unwrap_or_else(|_| spl_token::id());
-            
-            let mut cleaned_count = 0;
-            // Check positions using Helius API (faster and more reliable)
-            for position in positions_to_check {
-                let user_token_account = match &position.user_token_account {
-                    Some(ata_str) => {
-                        match Pubkey::from_str(ata_str) {
-                            Ok(pubkey) => pubkey,
-                            Err(_) => {
-                                let mint = match Pubkey::from_str(&position.mint) {
-                                    Ok(m) => m,
-                                    Err(_) => continue,
-                                };
-                                get_associated_token_address_with_program_id(
-                                    &user_wallet,
-                                    &mint,
-                                    &token_program_2022,
-                                )
+            if !positions_to_check.is_empty() {
+                use solana_sdk::pubkey::Pubkey;
+                use spl_associated_token_account::get_associated_token_address_with_program_id;
+                use std::str::FromStr;
+                
+                let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+                    .unwrap_or_else(|_| spl_token::id());
+                
+                let mut cleaned_count = 0;
+                // Check positions using Helius API (faster and more reliable)
+                for position in positions_to_check {
+                    let user_token_account = match &position.user_token_account {
+                        Some(ata_str) => {
+                            match Pubkey::from_str(ata_str) {
+                                Ok(pubkey) => pubkey,
+                                Err(_) => {
+                                    let mint = match Pubkey::from_str(&position.mint) {
+                                        Ok(m) => m,
+                                        Err(_) => continue,
+                                    };
+                                    get_associated_token_address_with_program_id(
+                                        &user_wallet,
+                                        &mint,
+                                        &token_program_2022,
+                                    )
+                                }
                             }
                         }
-                    }
-                    None => {
-                        let mint = match Pubkey::from_str(&position.mint) {
-                            Ok(m) => m,
-                            Err(_) => continue,
-                        };
-                        get_associated_token_address_with_program_id(
-                            &user_wallet,
-                            &mint,
-                            &token_program_2022,
-                        )
-                    }
-                };
-                
-                // Try Helius API first (faster), fallback to RPC
-                let balance = match get_token_balance_helius(&helius_api_key, &user_token_account).await {
-                    Ok(bal) => bal,
-                    Err(_) => {
-                        // Fallback to RPC if Helius fails
-                        match rpc.get_token_account_balance(&user_token_account).await {
-                            Ok(balance_info) => balance_info.amount.parse().unwrap_or(0),
-                            Err(_) => 0, // Account doesn't exist
+                        None => {
+                            let mint = match Pubkey::from_str(&position.mint) {
+                                Ok(m) => m,
+                                Err(_) => continue,
+                            };
+                            get_associated_token_address_with_program_id(
+                                &user_wallet,
+                                &mint,
+                                &token_program_2022,
+                            )
                         }
-                    }
-                };
-                
-                if balance == 0 {
-                    // Balance is zero - mark as sold
-                    if let Ok(mut tracker_guard) = tracker.write() {
-                        if let Some(tracker) = tracker_guard.as_mut() {
-                            if tracker.mark_position_as_sold(&position.mint).is_ok() {
-                                cleaned_count += 1;
+                    };
+                    
+                    // Try Helius API first (faster), fallback to RPC
+                    let balance = match get_token_balance_helius(&helius_api_key, &user_token_account).await {
+                        Ok(bal) => bal,
+                        Err(_) => {
+                            // Fallback to RPC if Helius fails
+                            match rpc.get_token_account_balance(&user_token_account).await {
+                                Ok(balance_info) => balance_info.amount.parse().unwrap_or(0),
+                                Err(_) => 0, // Account doesn't exist
                             }
                         }
-                    }
-                } else {
-                    // Balance is non-zero - update token_amount in tracker so UI shows current balance
-                    if let Ok(mut tracker_guard) = tracker.write() {
-                        if let Some(tracker) = tracker_guard.as_mut() {
-                            let _ = tracker.update_token_amount(&position.mint, balance);
+                    };
+                    
+                    if balance == 0 {
+                        // Balance is zero - mark as sold
+                        if let Ok(mut tracker_guard) = tracker.write() {
+                            if let Some(tracker) = tracker_guard.as_mut() {
+                                if tracker.mark_position_as_sold(&position.mint).is_ok() {
+                                    cleaned_count += 1;
+                                }
+                            }
+                        }
+                    } else {
+                        // Balance is non-zero - update token_amount in tracker so UI shows current balance
+                        if let Ok(mut tracker_guard) = tracker.write() {
+                            if let Some(tracker) = tracker_guard.as_mut() {
+                                let _ = tracker.update_token_amount(&position.mint, balance);
+                            }
                         }
                     }
                 }
+                
+                if cleaned_count > 0 {
+                    eprintln!("🧹 Cleaned up {} positions with zero balance (live, Helius API)", cleaned_count);
+                }
             }
-            
-            if cleaned_count > 0 {
-                eprintln!("🧹 Cleaned up {} positions with zero balance (live, Helius API)", cleaned_count);
-            }
-        }
 
-        // Get active positions
-        let active_positions = {
-            if let Ok(tracker_guard) = tracker.read() {
-                if let Some(tracker_ref) = tracker_guard.as_ref() {
-                    tracker_ref.get_active_positions()
+            // Get active positions
+            let active_positions = {
+                if let Ok(tracker_guard) = tracker.read() {
+                    if let Some(tracker_ref) = tracker_guard.as_ref() {
+                        tracker_ref.get_active_positions()
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     Vec::new()
                 }
-            } else {
-                Vec::new()
+            };
+
+            if active_positions.is_empty() {
+                eprintln!("   ℹ️  No active positions to monitor");
+                // Still check every 100ms even when no positions - ensures instant detection when position is added
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                return Ok(());
             }
-        };
 
-        if active_positions.is_empty() {
-            eprintln!("   ℹ️  No active positions to monitor");
-            tokio::time::sleep(Duration::from_secs(monitor_interval)).await;
-            continue;
-        }
-
-        eprintln!("\n📊 MONITORING {} POSITION(S):", active_positions.len());
-        
-        // Check each position
-        for (idx, position) in active_positions.iter().enumerate() {
-            eprintln!("   [{}/{}] Checking position...", idx + 1, active_positions.len());
-            eprintln!("      - Mint: {}", position.mint);
+            eprintln!("\n📊 MONITORING {} POSITION(S):", active_positions.len());
             
-            // Skip if we don't have required data
-            let bonding_curve_str = match &position.bonding_curve {
-                Some(bc) => {
-                    eprintln!("      - ✅ Bonding Curve: {}", bc);
-                    bc
-                },
-                None => {
-                    eprintln!("      - ❌ Missing bonding curve - skipping");
-                    continue;
-                }
-            };
-
-            let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    eprintln!("      - ❌ Invalid bonding curve format: {} - skipping", e);
-                    continue;
-                }
-            };
-
-            let entry_mc = match position.mc_at_entry_usd {
-                Some(mc) => {
-                    eprintln!("      - ✅ Entry MC: ${:.2}", mc);
-                    mc
-                },
-                None => {
-                    eprintln!("      - ❌ Missing entry MC - skipping");
-                    continue;
-                }
-            };
-
-            // Fetch current MC
-            eprintln!("      - 🔍 Fetching current MC...");
-            let current_mc_result = fetch_bonding_curve_mc(
-                &rpc,
-                &bonding_curve,
-                sol_price_usd,
-            ).await;
-
-            let current_mc = match current_mc_result {
-                Ok((_, _, mc_usd)) => {
-                    eprintln!("      - ✅ Current MC: ${:.2}", mc_usd);
-                    mc_usd
-                },
-                Err(e) => {
-                    eprintln!("      - ❌ Failed to fetch MC for {}: {}", position.mint, e);
-                    continue;
-                }
-            };
-
-            // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
-            let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
-            let should_sell_stop_loss = current_mc < stop_loss_threshold;
-
-            // Check take profit: current_mc >= take_profit_mc_usd
-            let should_sell_take_profit = current_mc >= take_profit_mc_usd;
-            
-            // Calculate PnL percentage
-            let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
-            let pnl_emoji = if pnl_percent > 0.0 { "🚀" } else { "📉" };
-            
-            eprintln!("      - 📊 Position Status:");
-            eprintln!("         • Current MC: ${:.2} (Entry: ${:.2})", current_mc, entry_mc);
-            eprintln!("         • PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
-            eprintln!("         • Stop Loss Threshold: ${:.2} (-{}%)", stop_loss_threshold, stop_loss_percent);
-            eprintln!("         • Take Profit Threshold: ${:.2}", take_profit_mc_usd);
-            eprintln!("      - 🔍 Sell Conditions:");
-            eprintln!("         • Stop Loss Triggered: {} (Current: ${:.2} < Threshold: ${:.2})", should_sell_stop_loss, current_mc, stop_loss_threshold);
-            eprintln!("         • Take Profit Triggered: {} (Current: ${:.2} >= Threshold: ${:.2})", should_sell_take_profit, current_mc, take_profit_mc_usd);
-
-            if should_sell_stop_loss || should_sell_take_profit {
-                let reason = if should_sell_stop_loss {
-                    "stop_loss"
-                } else {
-                    "take_profit"
-                };
-
-                eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-                eprintln!("║              AUTO-SELL TRIGGERED                           ║");
-                eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-                eprintln!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
-                         reason, position.mint, entry_mc, current_mc);
-                eprintln!("   📊 Position details:");
+            // Check each position
+            for (idx, position) in active_positions.iter().enumerate() {
+                eprintln!("   [{}/{}] Checking position...", idx + 1, active_positions.len());
                 eprintln!("      - Mint: {}", position.mint);
-                eprintln!("      - Entry MC: ${:.2}", entry_mc);
-                eprintln!("      - Current MC: ${:.2}", current_mc);
-                eprintln!("      - MC Change: {:.2}%", ((current_mc - entry_mc) / entry_mc) * 100.0);
-                eprintln!("      - Stop Loss Threshold: ${:.2}", stop_loss_threshold);
-                eprintln!("      - Take Profit Threshold: ${:.2}", take_profit_mc_usd);
-                eprintln!("      - Reason: {}", reason);
-
-                // Clone wallet for execute_sell
-                eprintln!("   🔧 Preparing for sell execution...");
-                let wallet_bytes = wallet.to_bytes();
-                let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                    Ok(kp) => {
-                        eprintln!("      - ✅ Wallet cloned successfully");
-                        kp
+                
+                // Skip if we don't have required data
+                let bonding_curve_str = match &position.bonding_curve {
+                    Some(bc) => {
+                        eprintln!("      - ✅ Bonding Curve: {}", bc);
+                        bc
                     },
-                    Err(e) => {
-                        eprintln!("      - ❌ Failed to clone wallet: {}", e);
+                    None => {
+                        eprintln!("      - ❌ Missing bonding curve - skipping");
                         continue;
                     }
                 };
 
-                // Get config clone to avoid holding lock across await
-                let config_clone = {
-                    let cfg = config.read().unwrap();
-                    (*cfg).clone()
-                };
-                eprintln!("      - ✅ Config cloned");
-                eprintln!("         - Sell percent: {}%", config_clone.sell_percent);
-                eprintln!("         - Submission mode: {:?}", config_clone.submission_mode);
-                eprintln!("         - Priority fee: {} lamports", config_clone.priority_fee);
-
-                // Execute sell
-                eprintln!("   🚀 Executing sell...");
-                match execute_sell(
-                    &config_clone,
-                    &wallet_clone,
-                    &rpc,
-                    &tracker,
-                    &position,
-                    reason,
-                    &event_tx,
-                ).await {
-                    Ok(sig) => {
-                        eprintln!("   ✅ Auto-sell executed successfully!");
-                        eprintln!("      - Mint: {}", position.mint);
-                        eprintln!("      - Signature: {}", sig);
-                        println!("✅ Auto-sell executed: {} - {}", position.mint, sig);
-                    }
+                let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
+                    Ok(pk) => pk,
                     Err(e) => {
-                        eprintln!("   ❌ Auto-sell failed!");
-                        eprintln!("      - Mint: {}", position.mint);
-                        eprintln!("      - Error: {}", e);
-                        eprintln!("      - Error details: {:?}", e);
-                        eprintln!("❌ Auto-sell failed for {}: {}", position.mint, e);
+                        eprintln!("      - ❌ Invalid bonding curve format: {} - skipping", e);
+                        continue;
+                    }
+                };
+
+                let entry_mc = match position.mc_at_entry_usd {
+                    Some(mc) => {
+                        eprintln!("      - ✅ Entry MC: ${:.2}", mc);
+                        mc
+                    },
+                    None => {
+                        eprintln!("      - ❌ Missing entry MC - skipping");
+                        continue;
+                    }
+                };
+
+                // Fetch current MC
+                eprintln!("      - 🔍 Fetching current MC...");
+                let current_mc_result = fetch_bonding_curve_mc(
+                    &rpc,
+                    &bonding_curve,
+                    sol_price_usd,
+                ).await;
+
+                let current_mc = match current_mc_result {
+                    Ok((_, _, mc_usd)) => {
+                        eprintln!("      - ✅ Current MC: ${:.2}", mc_usd);
+                        mc_usd
+                    },
+                    Err(e) => {
+                        eprintln!("      - ❌ Failed to fetch MC for {}: {}", position.mint, e);
+                        continue;
+                    }
+                };
+
+                // Validate entry_mc to avoid division by zero
+                if entry_mc <= 0.0 {
+                    eprintln!("      - ⚠️  Invalid entry MC (${:.2}) - skipping position", entry_mc);
+                    continue;
+                }
+                
+                // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
+                let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
+                let should_sell_stop_loss = current_mc < stop_loss_threshold;
+
+                // Check take profit: current_mc >= take_profit_mc_usd
+                let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+                
+                // Calculate PnL percentage (entry_mc is validated to be > 0)
+                let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
+                let pnl_emoji = if pnl_percent > 0.0 { "🚀" } else { "📉" };
+                
+                eprintln!("      - 📊 Position Status:");
+                eprintln!("         • Current MC: ${:.2} (Entry: ${:.2})", current_mc, entry_mc);
+                eprintln!("         • PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
+                eprintln!("         • Stop Loss Threshold: ${:.2} (-{}%)", stop_loss_threshold, stop_loss_percent);
+                eprintln!("         • Take Profit Threshold: ${:.2}", take_profit_mc_usd);
+                eprintln!("      - 🔍 Sell Conditions:");
+                eprintln!("         • Stop Loss Triggered: {} (Current: ${:.2} < Threshold: ${:.2})", should_sell_stop_loss, current_mc, stop_loss_threshold);
+                eprintln!("         • Take Profit Triggered: {} (Current: ${:.2} >= Threshold: ${:.2})", should_sell_take_profit, current_mc, take_profit_mc_usd);
+
+                if should_sell_stop_loss || should_sell_take_profit {
+                    let reason = if should_sell_stop_loss {
+                        "stop_loss"
+                    } else {
+                        "take_profit"
+                    };
+
+                    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+                    eprintln!("║              AUTO-SELL TRIGGERED                           ║");
+                    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+                    eprintln!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
+                             reason, position.mint, entry_mc, current_mc);
+                    eprintln!("   📊 Position details:");
+                    eprintln!("      - Mint: {}", position.mint);
+                    eprintln!("      - Entry MC: ${:.2}", entry_mc);
+                    eprintln!("      - Current MC: ${:.2}", current_mc);
+                    eprintln!("      - MC Change: {:.2}%", ((current_mc - entry_mc) / entry_mc) * 100.0);
+                    eprintln!("      - Stop Loss Threshold: ${:.2}", stop_loss_threshold);
+                    eprintln!("      - Take Profit Threshold: ${:.2}", take_profit_mc_usd);
+                    eprintln!("      - Reason: {}", reason);
+
+                    // Clone wallet for execute_sell
+                    eprintln!("   🔧 Preparing for sell execution...");
+                    let wallet_bytes = wallet.to_bytes();
+                    let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                        Ok(kp) => {
+                            eprintln!("      - ✅ Wallet cloned successfully");
+                            kp
+                        },
+                        Err(e) => {
+                            eprintln!("      - ❌ Failed to clone wallet: {}", e);
+                            continue;
+                        }
+                    };
+
+                    // Get config clone to avoid holding lock across await
+                    let config_clone = {
+                        let cfg = config.read().unwrap();
+                        (*cfg).clone()
+                    };
+                    eprintln!("      - ✅ Config cloned");
+                    eprintln!("         - Sell percent: {}%", config_clone.sell_percent);
+                    eprintln!("         - Submission mode: {:?}", config_clone.submission_mode);
+                    eprintln!("         - Priority fee: {} lamports", config_clone.priority_fee);
+
+                    // Execute sell
+                    eprintln!("   🚀 Executing sell...");
+                    match execute_sell(
+                        &config_clone,
+                        &wallet_clone,
+                        &rpc,
+                        &tracker,
+                        &position,
+                        reason,
+                        &event_tx,
+                    ).await {
+                        Ok(sig) => {
+                            eprintln!("   ✅ Auto-sell executed successfully!");
+                            eprintln!("      - Mint: {}", position.mint);
+                            eprintln!("      - Signature: {}", sig);
+                            println!("✅ Auto-sell executed: {} - {}", position.mint, sig);
+                        }
+                        Err(e) => {
+                            eprintln!("   ❌ Auto-sell failed!");
+                            eprintln!("      - Mint: {}", position.mint);
+                            eprintln!("      - Error: {}", e);
+                            eprintln!("      - Error details: {:?}", e);
+                            eprintln!("❌ Auto-sell failed for {}: {}", position.mint, e);
+                        }
                     }
                 }
             }
-        }
 
-        // Wait before next check
-        // ULTRA FAST MONITORING: Check every 100ms regardless of config
-        // This ensures we catch price movements instantly
-        tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait before next check
+            // ULTRA FAST MONITORING: Check every 100ms regardless of config
+            // This ensures we catch price movements instantly
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        }.await;
+        
+        // Handle errors gracefully - log and continue
+        if let Err(e) = loop_result {
+            eprintln!("⚠️  Error in auto-sell monitoring loop: {}", e);
+            eprintln!("   Continuing monitoring in 1 second...");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 }
 

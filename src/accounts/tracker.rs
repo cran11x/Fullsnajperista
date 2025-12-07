@@ -430,10 +430,51 @@ impl TokenTracker {
         self.stats.total_buys
     }
 
+    /// Clear all buys (reset tracker)
+    pub fn clear_all_buys(&mut self) -> Result<()> {
+        self.stats.buys.clear();
+        self.stats.total_buys = 0;
+        self.stats.total_sol_spent = 0.0;
+        self.stats.avg_mc_usd = 0.0;
+        self.stats.min_mc_usd = f64::MAX;
+        self.stats.max_mc_usd = 0.0;
+        self.stats.last_buy = self.stats.session_start;
+        
+        // Save empty state
+        self.save_json()?;
+        
+        // Clear CSV file
+        if let Ok(mut file) = std::fs::File::create(&self.csv_path) {
+            use std::io::Write;
+            let _ = writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL");
+        }
+        
+        Ok(())
+    }
+
     /// Get active positions (not sold)
     pub fn get_active_positions(&self) -> Vec<TokenBuy> {
+        let filtered: Vec<TokenBuy> = self.stats.buys.iter()
+            .filter(|buy| {
+                // Show position if it's not sold and has bonding_curve (required for monitoring)
+                // user_token_account is optional - we can still show position and try to sell
+                let is_active = !buy.sold && buy.bonding_curve.is_some();
+                if !is_active {
+                    eprintln!("🔍 Position filtered out: mint={}, sold={}, bonding_curve={:?}", 
+                        buy.mint, buy.sold, buy.bonding_curve.is_some());
+                }
+                is_active
+            })
+            .cloned()
+            .collect();
+        eprintln!("📊 get_active_positions: {} total buys, {} active positions", self.stats.buys.len(), filtered.len());
+        filtered
+    }
+
+    /// Get all sold positions (for display in UI)
+    pub fn get_sold_positions(&self) -> Vec<TokenBuy> {
         self.stats.buys.iter()
-            .filter(|buy| !buy.sold && buy.bonding_curve.is_some() && buy.user_token_account.is_some())
+            .filter(|buy| buy.sold && buy.bonding_curve.is_some())
             .cloned()
             .collect()
     }
@@ -528,7 +569,7 @@ impl TokenTracker {
                 static UPDATE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let count = UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if count < 10 {
-                    let entry_price_per_token = if tokens_actual > 0.0 { buy.our_buy_sol / tokens_actual } else { 0.0 };
+                    let _entry_price_per_token = if tokens_actual > 0.0 { buy.our_buy_sol / tokens_actual } else { 0.0 };
                     
                     eprintln!("🔍 PnL DEBUG [{}] for {}:", count + 1, &mint[..8]);
                     eprintln!("   token_amount (raw, 6 decimals): {}", token_amount);
