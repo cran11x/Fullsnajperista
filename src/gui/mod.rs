@@ -632,7 +632,10 @@ impl GuiApp {
                 }
             };
             if cfg.enable_tracker {
+                use std::io::Write;
                 eprintln!("📊 Initializing tracker (enable_tracker=true)...");
+                std::io::stderr().flush().ok();
+                
                 match crate::accounts::TokenTracker::new() {
                     Ok(tracker) => {
                         match tracker_clone.write() {

@@ -1764,25 +1764,61 @@ async fn process_and_buy(
             Err(_) => (None, None)
         };
         
+        // Calculate total fees for PnL accuracy
+        let priority_fee_sol = priority_fee as f64 / 1e9;
+        let jito_tip_sol = config.jito_tip as f64 / 1e9;
+        let base_fee_sol = 0.000005; // 5000 lamports base fee
+        let total_buy_fees = priority_fee_sol + jito_tip_sol + base_fee_sol;
+
+        // NEW: Fetch actual balance change for precise entry cost
+        let mut invested_sol = config.buy_amount_sol;
+        
+        let buy_signature = actual_signature.as_ref()
+            .map(|s| s.clone())
+            .unwrap_or_else(|| init_signature.clone());
+        
+        // Only try to fetch if we have a real signature (not MOCK)
+        if !buy_signature.starts_with("MOCK") {
+            eprintln!("  🔍 Fetching actual transaction cost from chain...");
+            // Add small delay to ensure transaction is indexed
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            
+            match crate::utils::get_transaction_balance_change(rpc, &buy_signature, &user_wallet).await {
+                    Ok(change_lamports) => {
+                        let change_sol = change_lamports as f64 / 1e9;
+                        // Balance change should be negative for a buy (spending SOL)
+                        if change_sol < 0.0 {
+                            let total_cost = -change_sol;
+                            let actual_invested = total_cost - total_buy_fees;
+                            
+                            // Sanity check: if actual_invested is close to 0 or negative, something is wrong
+                            if actual_invested > 0.001 {
+                                eprintln!("  💰 Actual Cost: {:.6} SOL (vs Config: {:.6})", total_cost, config.buy_amount_sol + total_buy_fees);
+                                eprintln!("  💰 Actual Invested: {:.6} SOL", actual_invested);
+                                invested_sol = actual_invested;
+                            } else {
+                                eprintln!("  ⚠️  Calculated invested amount too low ({:.6}), using config", actual_invested);
+                            }
+                        } else {
+                            eprintln!("  ⚠️  Balance change was positive ({:.6}), expected negative for buy", change_sol);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("  ⚠️  Could not fetch actual cost: {}", e);
+                    }
+            }
+        }
+        
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                let buy_signature = actual_signature.as_ref()
-                    .map(|s| s.clone())
-                    .unwrap_or_else(|| init_signature.clone());
                 
-                // Calculate total fees for PnL accuracy
-                let priority_fee_sol = priority_fee as f64 / 1e9;
-                let jito_tip_sol = config.jito_tip as f64 / 1e9;
-                let base_fee_sol = 0.000005; // 5000 lamports base fee
-                let total_buy_fees = priority_fee_sol + jito_tip_sol + base_fee_sol;
-
                 let buy = TokenBuy {
                     token_number,
                     mint: mint.to_string(),
-                    signature: buy_signature,
+                    signature: buy_signature.clone(),
                     creator: accounts.creator.to_string(),
                     dev_buy_sol,
-                    our_buy_sol: config.buy_amount_sol,
+                    our_buy_sol: invested_sol,
                     timestamp: Utc::now(),
                     has_socials: socials_opt.as_ref().map(|s| s.has_any()).unwrap_or(false),
                     twitter: socials_opt.as_ref().and_then(|s| s.twitter.clone()),

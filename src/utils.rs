@@ -155,6 +155,54 @@ pub async fn get_transaction_fee(
     }
 }
 
+/// Get actual SOL balance change for an account from transaction
+pub async fn get_transaction_balance_change(
+    rpc: &solana_client::nonblocking::rpc_client::RpcClient,
+    signature: &str,
+    account: &solana_sdk::pubkey::Pubkey,
+) -> Result<i64> {
+    use solana_sdk::signature::Signature;
+    use std::str::FromStr;
+    
+    let sig = Signature::from_str(signature)?;
+    let account_str = account.to_string();
+    
+    // Fetch transaction with meta
+    let tx = rpc.get_transaction_with_config(
+        &sig,
+        solana_client::rpc_config::RpcTransactionConfig {
+            encoding: Some(solana_transaction_status::UiTransactionEncoding::Json),
+            commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        },
+    ).await?;
+    
+    if let Some(meta) = tx.transaction.meta {
+        // We need to find the index of the account in the transaction
+        let account_keys = match &tx.transaction.transaction {
+            solana_transaction_status::EncodedTransaction::Json(ui_tx) => {
+                match &ui_tx.message {
+                    solana_transaction_status::UiMessage::Parsed(parsed) => {
+                        parsed.account_keys.iter().map(|k| k.pubkey.clone()).collect::<Vec<_>>()
+                    },
+                    solana_transaction_status::UiMessage::Raw(raw) => {
+                        raw.account_keys.clone()
+                    }
+                }
+            },
+            _ => return Err(anyhow::anyhow!("Unsupported transaction encoding")),
+        };
+        
+        if let Some(idx) = account_keys.iter().position(|k| k == &account_str) {
+            let pre = meta.pre_balances.get(idx).copied().unwrap_or(0);
+            let post = meta.post_balances.get(idx).copied().unwrap_or(0);
+            return Ok(post as i64 - pre as i64);
+        }
+    }
+    
+    Err(anyhow::anyhow!("Account not found or meta missing"))
+}
+
 /// Fetch SOL price from Jupiter API (reliable and free)
 pub async fn fetch_sol_price_usd() -> Result<f64> {
     let client = get_shared_http_client();
@@ -339,4 +387,3 @@ mod tests {
         assert!(result.is_ok());
     }
 }
-

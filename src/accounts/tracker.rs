@@ -70,11 +70,21 @@ pub struct TokenTracker {
 impl TokenTracker {
     /// Create new tracker or load from latest existing JSON file
     pub fn new() -> Result<Self> {
+        use std::io::Write;
+        eprintln!("🔍 DEBUG: TokenTracker::new() called");
+        std::io::stderr().flush().ok();
+        
         // Try to find and load the latest JSON file first
+        eprintln!("🔍 DEBUG: Attempting to load from latest JSON...");
+        std::io::stderr().flush().ok();
+        
         if let Ok(tracker) = Self::load_from_latest_json() {
-            // Removed noisy log: eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
+            eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
+            std::io::stderr().flush().ok();
             return Ok(tracker);
         }
+        eprintln!("🔍 DEBUG: Failed to load from JSON (or none found), creating new session...");
+        std::io::stderr().flush().ok();
         
         // If no existing JSON found, create new tracker
         let session_start = Utc::now();
@@ -108,9 +118,16 @@ impl TokenTracker {
     /// Load tracker from the latest JSON file
     fn load_from_latest_json() -> Result<Self> {
         use std::fs;
+        use std::io::Write;
+        
+        eprintln!("🔍 DEBUG: load_from_latest_json() called");
+        std::io::stderr().flush().ok();
         
         // Find all JSON files matching the pattern
         let current_dir = std::env::current_dir()?;
+        eprintln!("🔍 DEBUG: current_dir: {:?}", current_dir);
+        std::io::stderr().flush().ok();
+        
         let json_files: Vec<_> = fs::read_dir(&current_dir)?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
@@ -127,6 +144,7 @@ impl TokenTracker {
             .collect();
         
         if json_files.is_empty() {
+            eprintln!("🔍 DEBUG: No JSON files found");
             return Err(anyhow::anyhow!("No existing JSON files found"));
         }
         
@@ -135,12 +153,17 @@ impl TokenTracker {
             .max_by_key(|(_, modified)| modified)
             .ok_or_else(|| anyhow::anyhow!("Failed to find latest JSON file"))?;
         
-        // Removed noisy log: eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
+        eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
         
         // Read and deserialize JSON
         let content = fs::read_to_string(latest_json_path)?;
+        eprintln!("🔍 DEBUG: Read {} bytes", content.len());
         let stats: TrackerStats = serde_json::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+            .map_err(|e| {
+                eprintln!("🔍 DEBUG: JSON parse error: {}", e);
+                anyhow::anyhow!("Failed to parse JSON: {}", e)
+            })?;
+        eprintln!("🔍 DEBUG: JSON parsed successfully");
         
         // Extract CSV path from JSON path
         let csv_path = latest_json_path.to_str()
@@ -587,6 +610,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -648,6 +672,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -723,6 +748,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         let buy2 = TokenBuy {
@@ -752,6 +778,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -794,6 +821,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -835,6 +863,7 @@ mod tests {
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
+            buy_fees_sol: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
