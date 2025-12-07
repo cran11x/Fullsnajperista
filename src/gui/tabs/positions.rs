@@ -36,10 +36,36 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                 let active_positions = tracker_ref.get_active_positions();
                 let sold_positions = tracker_ref.get_sold_positions();
                 
-                ui.label(egui::RichText::new(format!("Active positions: {} | Sold: {}", active_positions.len(), sold_positions.len()))
-                    .size(15.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(180, 200, 255)));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Active positions: {} | Sold: {}", active_positions.len(), sold_positions.len()))
+                        .size(15.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(180, 200, 255)));
+                    
+                    if !active_positions.is_empty() {
+                        ui.add_space(20.0);
+                        if ui.add(egui::Button::new(egui::RichText::new("🗑️ Clear Active Positions")
+                                .size(13.0)
+                                .strong())
+                                .fill(egui::Color32::from_rgb(255, 100, 100).linear_multiply(0.2))
+                                .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 100, 100)))
+                                .min_size(egui::vec2(180.0, 32.0))
+                                .rounding(egui::Rounding::same(6.0)))
+                            .clicked() {
+                            // Clear active positions
+                            drop(tracker_opt); // Release read lock
+                            if let Ok(mut tracker_guard) = tracker.write() {
+                                if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                    if let Err(e) = tracker_ref.clear_active_positions() {
+                                        eprintln!("❌ Failed to clear active positions: {}", e);
+                                    } else {
+                                        eprintln!("✅ Cleared all active positions");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
                 ui.add_space(12.0);
                 
                 // Show active positions

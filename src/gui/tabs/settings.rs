@@ -741,6 +741,43 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             });
             
             ui.add_space(10.0);
+            
+            // Dead Coin Sell checkbox
+            if ui.checkbox(&mut config_clone.enable_dead_coin_sell, egui::RichText::new("💀 Sell Dead Coins (No price movement)")
+                    .size(13.0)).changed() {
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+            
+            if config_clone.enable_dead_coin_sell {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Dead Coin Timeout (sec):")
+                        .size(13.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 230, 245)));
+                    ui.add_space(8.0);
+                    let dead_coin_timeout_str = config_clone.dead_coin_timeout_sec.to_string();
+                    let mut timeout_str = dead_coin_timeout_str.clone();
+                    if ui.add(egui::TextEdit::singleline(&mut timeout_str)
+                            .desired_width(100.0))
+                            .changed() {
+                        if let Ok(val) = timeout_str.parse::<u64>() {
+                            if val > 0 {
+                                config_clone.dead_coin_timeout_sec = val;
+                                apply_config_live(&config, &control_tx, &config_clone);
+                                state.last_update_time = Some(std::time::Instant::now());
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("(Sell if no price movement for this duration)")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
+                });
+            }
+            
+            ui.add_space(10.0);
             ui.label(egui::RichText::new("ℹ️  Auto-sell will trigger when:")
                 .size(12.0)
                 .strong()
@@ -751,6 +788,11 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(210, 220, 235)));
+            if config_clone.enable_dead_coin_sell {
+                ui.label(egui::RichText::new(format!("  • No price movement for {} seconds (Dead Coin)", config_clone.dead_coin_timeout_sec))
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(210, 220, 235)));
+            }
         } else {
             ui.add_space(10.0);
             ui.label(egui::RichText::new("⚠️  Auto-sell is disabled")

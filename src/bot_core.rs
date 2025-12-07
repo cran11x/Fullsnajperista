@@ -25,6 +25,7 @@ use rand::seq::SliceRandom;
 use chrono::Utc;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::detection::PumpBuyAccounts;
@@ -863,16 +864,6 @@ async fn process_and_buy(
     // ========================================================================
     // SECTION 1: TOKEN INFO
     // ========================================================================
-    eprintln!();
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                    TOKEN DETECTED                              ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  Mint:           {}", mint);
-    eprintln!("  Creator:        {}", accounts.creator);
-    eprintln!("  Dev Buy:        {:.6} SOL ({:.2} USD)", dev_buy_sol, dev_buy_sol * config.sol_price_usd);
-    eprintln!("  Bonding Curve:  {}", accounts.bonding_curve);
-    eprintln!("  Creator Vault:  {}", accounts.creator_vault);
-    eprintln!();
     
     let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
     let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
@@ -881,26 +872,17 @@ async fn process_and_buy(
     // ========================================================================
     // SECTION 2: FILTER CHECKS
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                    FILTER CHECKS                             ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     // Filter #1: Dev Buy Amount
-    eprintln!("  [1/3] Dev Buy Amount");
-    eprintln!("        Current:  {:.6} SOL ({:.2} USD)", dev_buy_sol, dev_buy_sol * config.sol_price_usd);
-    eprintln!("        Required: {:.6} - {:.6} SOL ({:.2} - {:.2} USD)", min_sol, max_sol, config.min_dev_buy_usd, config.max_dev_buy_usd);
     if dev_buy_sol < min_sol || dev_buy_sol > max_sol {
         let filter_time = filter_start.elapsed().as_millis() as u64;
         {
             let mut m = metrics.write().unwrap();
             m.record_filter(FilterReason::DevBuy, filter_time);
         }
-        eprintln!("        ❌ FAILED: Outside required range");
-        eprintln!();
         return Err(anyhow!("SKIP: Dev buy {:.2} SOL (want {:.2}-{:.2})",
                            dev_buy_sol, min_sol, max_sol));
     }
-    eprintln!("        ✅ PASSED");
     
     let require_socials = config.require_socials;
     let require_twitter = config.require_twitter;
@@ -958,19 +940,14 @@ async fn process_and_buy(
     );
     
     // Filter #2: Creator Token Count
-    eprintln!("  [2/3] Creator Token Count");
     let (creator_count, _das_check_failed) = match das_result {
         Ok(count) => {
-            eprintln!("        Current:  {} tokens", count);
-            eprintln!("        Required: {} - {} tokens", config.min_dev_tokens, config.max_dev_tokens);
             if count < config.min_dev_tokens as u32 {
                 let filter_time = filter_start.elapsed().as_millis() as u64;
                 if let Ok(mut m) = metrics.write() {
                     m.record_filter(FilterReason::CreatorCount, filter_time);
                     m.record_error(ErrorType::Validation);
                 }
-                eprintln!("        ❌ FAILED: Below minimum ({} < {})", count, config.min_dev_tokens);
-                eprintln!();
                 return Err(anyhow!("SKIP: Creator has only {} tokens (min: {})",
                                    count, config.min_dev_tokens));
             }
@@ -980,20 +957,15 @@ async fn process_and_buy(
                     m.record_filter(FilterReason::CreatorCount, filter_time);
                     m.record_error(ErrorType::Validation);
                 }
-                eprintln!("        ❌ FAILED: Above maximum ({} > {})", count, config.max_dev_tokens);
-                eprintln!();
                 return Err(anyhow!("SKIP: Creator has {} tokens (max: {})",
                                    count, config.max_dev_tokens));
             }
-            eprintln!("        ✅ PASSED");
             (count, false)
         }
-        Err(e) => {
+        Err(_e) => {
             let _filter_time = filter_start.elapsed().as_millis() as u64;
             let mut m = metrics.write().unwrap();
             m.record_error(ErrorType::Network);
-            eprintln!("        ⚠️  WARNING: DAS check failed ({})", e);
-            eprintln!("        ⚠️  Continuing anyway (unknown count)");
             (0, true)
         }
     };
@@ -1009,19 +981,12 @@ async fn process_and_buy(
     let token_price_sol = curve.get_token_price_sol();
     
     // Filter #3: Socials
-    eprintln!("  [3/3] Socials");
-    eprintln!("        Required:  socials={}, twitter={}, min_count={}", require_socials, require_twitter, min_socials);
     let socials_opt = if let Some(socials) = socials_result {
-        eprintln!("        Found:     Twitter={}, Website={}, Telegram={}", 
-                 socials.has_twitter(), socials.has_website(), socials.has_telegram());
-        eprintln!("        Total:     {} socials", socials.count());
         if require_socials && !socials.has_any() {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            eprintln!("        ❌ FAILED: No socials found (required)");
-            eprintln!();
             return Err(anyhow!("SKIP: No socials"));
         }
         if require_twitter && !socials.has_twitter() {
@@ -1029,8 +994,6 @@ async fn process_and_buy(
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            eprintln!("        ❌ FAILED: No Twitter found (required)");
-            eprintln!();
             return Err(anyhow!("SKIP: No Twitter"));
         }
         if socials.count() < min_socials {
@@ -1038,11 +1001,8 @@ async fn process_and_buy(
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            eprintln!("        ❌ FAILED: Only {} socials (minimum: {})", socials.count(), min_socials);
-            eprintln!();
             return Err(anyhow!("SKIP: Need {} socials", min_socials));
         }
-        eprintln!("        ✅ PASSED");
         Some(socials)
     } else {
         if require_socials {
@@ -1051,28 +1011,16 @@ async fn process_and_buy(
                 m.record_filter(FilterReason::Socials, filter_time);
                 m.record_error(ErrorType::Network);
             }
-            eprintln!("        ❌ FAILED: Could not verify socials (network error)");
-            eprintln!();
             return Err(anyhow!("SKIP: Could not verify socials"));
         }
-        eprintln!("        ✅ PASSED: Not required");
         None
     };
-    
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  ✅ ALL FILTERS PASSED - Proceeding with buy");
-    eprintln!();
     
     // ========================================================================
     // SECTION 3: ACCOUNT VERIFICATION
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                 ACCOUNT VERIFICATION                           ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     // Verify bonding curve account
-    eprintln!("  [1/3] Bonding Curve Account");
-    eprintln!("        Address: {}", accounts.bonding_curve);
     let mut bonding_curve_ready = false;
     let max_wait_attempts = 5;
     let wait_interval_ms = 100;
@@ -1087,8 +1035,6 @@ async fn process_and_buy(
                             tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                             continue;
                         } else {
-                            eprintln!("        ❌ FAILED: Account not found");
-                            eprintln!();
                             return Err(anyhow!("SKIP: Bonding curve account not found - token not ready"));
                         }
                     }
@@ -1099,23 +1045,17 @@ async fn process_and_buy(
                         tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                         continue;
                     } else {
-                        eprintln!("        ❌ FAILED: Account exists but is empty");
-                        eprintln!();
                         return Err(anyhow!("SKIP: Bonding curve account not ready for trading"));
                     }
                 }
-                eprintln!("        ✅ PASSED: Initialized ({} bytes)", account.data.len());
                 
                 // Check if bonding curve is complete (token migrated - can't buy anymore)
                 if !account.data.is_empty() {
                     use borsh::BorshDeserialize;
                     if let Ok(curve) = BondingCurveAccount::try_from_slice(&account.data[..]) {
                         if curve.complete {
-                            eprintln!("        ❌ FAILED: Token is COMPLETE (migrated) - cannot buy on bonding curve");
-                            eprintln!();
                             return Err(anyhow!("SKIP: Token is complete (migrated) - cannot buy on bonding curve"));
                         }
-                        eprintln!("        ✅ PASSED: Token is active (not complete)");
                     }
                 }
                 
@@ -1127,8 +1067,6 @@ async fn process_and_buy(
                     tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                     continue;
                 } else {
-                    eprintln!("        ❌ FAILED: Account not found");
-                    eprintln!();
                     return Err(anyhow!("SKIP: Bonding curve account not found - token not ready"));
                 }
             }
@@ -1136,8 +1074,6 @@ async fn process_and_buy(
     }
     
     if !bonding_curve_ready {
-        eprintln!("        ❌ FAILED: Account not ready");
-        eprintln!();
         return Err(anyhow!("SKIP: Bonding curve account not ready"));
     }
     
@@ -1167,9 +1103,6 @@ async fn process_and_buy(
     // ========================================================================
     // SECTION 4: BUILD BUY INSTRUCTION
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║              BUILDING BUY INSTRUCTION                         ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     let buy_ix = build_buy_instruction(
         rpc,
@@ -1178,9 +1111,6 @@ async fn process_and_buy(
         &user_ata,
         config.buy_amount_lamports(),
     ).await?;
-    
-    eprintln!("  ✅ Buy instruction built ({} accounts)", buy_ix.accounts.len());
-    eprintln!();
     
     let mut rng = rand::thread_rng();
     use crate::constants::HELIUS_TIP_ACCOUNTS;
@@ -1194,14 +1124,8 @@ async fn process_and_buy(
     // Calculate priority fee (dynamic or static)
     let priority_fee = if config.enable_dynamic_priority_fee {
         match config.calculate_dynamic_priority_fee(rpc).await {
-            Ok(fee) => {
-                eprintln!("  💰 Dynamic priority fee: {} lamports", fee);
-                fee
-            }
-            Err(e) => {
-                eprintln!("  ⚠️  Failed to calculate dynamic fee, using static: {}", e);
-                config.priority_fee
-            }
+            Ok(fee) => fee,
+            Err(_e) => config.priority_fee
         }
     } else {
         config.priority_fee
@@ -1247,8 +1171,6 @@ async fn process_and_buy(
     }
     
     // Verify Associated Bonding Curve account
-    eprintln!("  [2/3] Associated Bonding Curve");
-    eprintln!("        Address: {}", accounts.associated_bonding_curve);
     let mut abc_account_opt = None;
     let max_wait_attempts = 5;
     
@@ -1276,53 +1198,22 @@ async fn process_and_buy(
         let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
         
         if account.data.is_empty() {
-            eprintln!("        ❌ FAILED: Account not initialized");
-            eprintln!();
             return Err(anyhow!("SKIP: Associated Bonding Curve account not initialized - token may not be ready"));
         }
         
         if owner != token_program_2022 && owner != token_program {
-            eprintln!("        ❌ FAILED: Wrong owner ({})", owner);
-            eprintln!();
             return Err(anyhow!("SKIP: Associated Bonding Curve has wrong owner - token may not be ready"));
         }
-        
-        eprintln!("        ✅ PASSED: Initialized ({} bytes)", account.data.len());
     } else {
-        eprintln!("        ❌ FAILED: Account not found");
-        eprintln!();
         return Err(anyhow!("SKIP: Associated Bonding Curve account does not exist - token not ready"));
     }
     
     // Verify User Token Account
-    eprintln!("  [3/3] User Token Account");
-    eprintln!("        Address: {}", user_ata);
-    let user_ata_account = rpc.get_account(&user_ata).await;
-    if let Ok(user_acc) = user_ata_account {
-        let owner = user_acc.owner;
-        let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-        let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
-        
-        if owner != token_program_2022 && owner != token_program {
-            eprintln!("        ⚠️  WARNING: Unexpected owner ({})", owner);
-        } else if !user_acc.data.is_empty() {
-            eprintln!("        ✅ PASSED: Initialized ({} bytes)", user_acc.data.len());
-        } else {
-            eprintln!("        ⚠️  WARNING: Exists but empty (will be initialized)");
-        }
-    } else {
-        eprintln!("        ℹ️  Does not exist (will be created)");
-    }
-    
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!();
+    let _user_ata_account = rpc.get_account(&user_ata).await;
     
     // ========================================================================
     // SECTION 5: PDA VERIFICATION
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                    PDA VERIFICATION                           ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     let mut pda_mismatches = Vec::new();
     
@@ -1339,38 +1230,22 @@ async fn process_and_buy(
         (13, "User Volume", expected_user_volume),  // Index 13 (after Pump Program at 11, Global Volume at 12)
     ];
     
-    for (idx, name, expected) in checks {
+    for (idx, _name, expected) in checks {
         if idx < buy_ix.accounts.len() {
             let actual = buy_ix.accounts[idx].pubkey;
             if actual != expected {
-                eprintln!("  [{}] {} ❌ MISMATCH", idx, name);
-                eprintln!("        Expected: {}", expected);
-                eprintln!("        Got:      {}", actual);
-                pda_mismatches.push((idx, name, actual, expected));
-            } else {
-                eprintln!("  [{}] {} ✅ VERIFIED", idx, name);
+                pda_mismatches.push((idx, _name, actual, expected));
             }
         }
     }
     
     if !pda_mismatches.is_empty() {
-        eprintln!();
-        eprintln!("  ❌ CRITICAL: {} PDA mismatch(es) detected!", pda_mismatches.len());
-        eprintln!("  ❌ Transaction will fail with Error 2006 - aborting!");
-        eprintln!();
         return Err(anyhow!("CRITICAL: {} PDA mismatch(es) detected! This will cause Error 2006.", pda_mismatches.len()));
     }
-    
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  ✅ ALL PDAs VERIFIED");
-    eprintln!();
     
     // ========================================================================
     // SECTION 6: BUILD TRANSACTION
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                 BUILDING TRANSACTION                          ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     instructions.push(buy_ix);
     
@@ -1380,25 +1255,13 @@ async fn process_and_buy(
         config.jito_tip,
     ));
     
-    eprintln!("  Instructions: {} total", instructions.len());
-    eprintln!("    [0] Compute Budget (CU limit)");
-    eprintln!("    [1] Compute Budget (CU price)");
-    eprintln!("    [2] Create ATA");
-    eprintln!("    [3] Buy");
-    eprintln!("    [4] Jito Tip");
-    eprintln!();
-    
     let recent_blockhash = rpc.get_latest_blockhash().await?;
     
     // ========================================================================
     // SECTION 7: SEND TRANSACTION
     // ========================================================================
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                 SENDING TRANSACTION                           ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     
     if config.mock_buy {
-        eprintln!("  🧪 MOCK BUY MODE: Skipping transaction submission");
         
         // In mock mode, we don't send the transaction, but we can still check if we would have succeeded
         // by checking if the token account already exists (from a previous real buy)
@@ -1490,23 +1353,12 @@ async fn process_and_buy(
                             buy_fees_sol: Some(0.0),
                         };
                         
-                        match tracker.record_buy(buy) {
-                            Ok(_) => {
-                                eprintln!("✅ Mock buy recorded in tracker (total buys: {})", tracker.total_buys());
-                            }
-                            Err(e) => {
-                                eprintln!("⚠️  Tracker error (mock buy): {}", e);
-                            }
-                        }
+                        let _ = tracker.record_buy(buy);
                     }
-                    None => {
-                        eprintln!("⚠️  Tracker is None - tracking might be disabled or not initialized");
-                    }
+                    None => {}
                 }
             }
-            Err(e) => {
-                eprintln!("⚠️  Failed to acquire tracker write lock (mock buy): {}", e);
-            }
+            Err(_e) => {}
         }
         
         // Record as successful submission (mock)
@@ -1539,27 +1391,6 @@ async fn process_and_buy(
         return Err(anyhow!("Pre-flight validation failed: {}", e));
     }
     
-    // Log transaction details before sending
-    eprintln!();
-    eprintln!("📤 PRE-SUBMISSION TRANSACTION SUMMARY:");
-    eprintln!("   Instructions: {} total", instructions.len());
-    for (idx, ix) in instructions.iter().enumerate() {
-        eprintln!("      [{}] Program: {}, Accounts: {}, Data: {} bytes", 
-            idx, ix.program_id, ix.accounts.len(), ix.data.len());
-        if ix.program_id.to_string() == crate::constants::PUMP_PROGRAM_ID {
-            eprintln!("         → This is the Pump.fun BUY instruction");
-            eprintln!("         → Accounts in BUY instruction:");
-            for (acc_idx, acc) in ix.accounts.iter().enumerate() {
-                let signer_str = if acc.is_signer { " [SIGNER]" } else { "" };
-                let writable_str = if acc.is_writable { " [WRITABLE]" } else { " [READONLY]" };
-                eprintln!("            [{}] {}{}{}", acc_idx, acc.pubkey, signer_str, writable_str);
-            }
-        }
-    }
-    eprintln!("   Recent Blockhash: {}", recent_blockhash);
-    eprintln!("   Priority Fee: {} lamports", priority_fee);
-    eprintln!("   Jito Tip: {} lamports", config.jito_tip);
-    eprintln!();
     
     let msg = v0::Message::try_compile(
         &user_wallet,
@@ -1572,8 +1403,6 @@ async fn process_and_buy(
         VersionedMessage::V0(msg),
         &[wallet],
     )?;
-    eprintln!("✅ Transaction built successfully, submitting via Helius, Jito, and RPC...");
-    
     let tx_helius = tx.clone();
     let tx_jito = tx.clone();
     let tx_rpc = tx.clone();
@@ -1610,9 +1439,7 @@ async fn process_and_buy(
     // Try all methods in parallel and use the first successful one
     // This ensures we don't give up if one method fails (e.g., Jito rate limit)
     // We use tokio::join! to wait for all, then pick the first successful one
-    eprintln!("🚀 Starting parallel submission: Helius, Jito, RPC...");
     let (helius_res, jito_res, rpc_res) = tokio::join!(helius_task, jito_task, rpc_task);
-    eprintln!("⏱️  All submission methods completed in {}ms", submission_start.elapsed().as_millis());
     
     // Process results and find the first successful one
     let mut results = Vec::new();
@@ -1623,21 +1450,18 @@ async fn process_and_buy(
         Ok(Ok(sig)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Helius, true, submission_time);
-            eprintln!("✅ Helius submission succeeded");
             results.push((Ok(()), SubmissionMethod::Helius, Some(sig)));
         }
         Ok(Err(e)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Helius, false, submission_time);
             m.record_error(ErrorType::Submission);
-            eprintln!("❌ Helius failed: {}", e);
             results.push((Err(anyhow!("Helius failed: {}", e)), SubmissionMethod::Helius, None));
         }
         Err(e) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Helius, false, submission_time);
             m.record_error(ErrorType::Submission);
-            eprintln!("❌ Helius task error: {}", e);
             results.push((Err(anyhow!("Helius task error: {}", e)), SubmissionMethod::Helius, None));
         }
     }
@@ -1647,21 +1471,18 @@ async fn process_and_buy(
         Ok(Ok(bundle_id)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Jito, true, submission_time);
-            eprintln!("✅ Jito submission succeeded");
             results.push((Ok(()), SubmissionMethod::Jito, Some(bundle_id)));
         }
         Ok(Err(e)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Jito, false, submission_time);
             m.record_error(ErrorType::Submission);
-            eprintln!("❌ Jito failed: {}", e);
             results.push((Err(anyhow!("Jito failed: {}", e)), SubmissionMethod::Jito, None));
         }
         Err(e) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Jito, false, submission_time);
             m.record_error(ErrorType::Submission);
-            eprintln!("❌ Jito task error: {}", e);
             results.push((Err(anyhow!("Jito task error: {}", e)), SubmissionMethod::Jito, None));
         }
     }
@@ -1671,14 +1492,12 @@ async fn process_and_buy(
         Ok(Ok(sig)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Rpc, true, submission_time);
-            eprintln!("✅ RPC submission succeeded");
             results.push((Ok(()), SubmissionMethod::Rpc, Some(sig)));
         }
         Ok(Err(e)) => {
             let mut m = metrics.write().unwrap();
             m.record_submission(SubmissionMethod::Rpc, false, submission_time);
             m.record_error(ErrorType::Rpc);
-            eprintln!("❌ RPC failed: {}", e);
             results.push((Err(anyhow!("RPC failed: {}", e)), SubmissionMethod::Rpc, None));
         }
         Err(e) => {
@@ -1736,18 +1555,9 @@ async fn process_and_buy(
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 
                 match verify_transaction_success(rpc, &sig, &user_ata).await {
-                    Ok(None) => {
-                        eprintln!("  Verification: ✅ Buy succeeded");
-                        (true, None)
-                    }
-                    Ok(Some(reason)) => {
-                        eprintln!("  Verification: ❌ Buy failed: {}", reason);
-                        (false, Some(reason))
-                    }
-                    Err(e) => {
-                        eprintln!("  Verification: ⚠️  Could not verify ({})", e);
-                        (true, None)
-                    }
+                    Ok(None) => (true, None),
+                    Ok(Some(reason)) => (false, Some(reason)),
+                    Err(_e) => (true, None)
                 }
             }
         } else {
@@ -1757,13 +1567,7 @@ async fn process_and_buy(
         (false, None)
     };
     
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!();
-    
     if buy_succeeded {
-        eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-        eprintln!("║                    RECORDING BUY                             ║");
-        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
         tokio::time::sleep(Duration::from_millis(300)).await;
         
         let mc_entry_result = fetch_bonding_curve_mc(
@@ -1795,7 +1599,6 @@ async fn process_and_buy(
         
         // Only try to fetch if we have a real signature (not MOCK)
         if !buy_signature.starts_with("MOCK") {
-            eprintln!("  🔍 Fetching actual transaction cost from chain...");
             // Add small delay to ensure transaction is indexed
             tokio::time::sleep(Duration::from_millis(500)).await;
             
@@ -1809,19 +1612,11 @@ async fn process_and_buy(
                             
                             // Sanity check: if actual_invested is close to 0 or negative, something is wrong
                             if actual_invested > 0.001 {
-                                eprintln!("  💰 Actual Cost: {:.6} SOL (vs Config: {:.6})", total_cost, config.buy_amount_sol + total_buy_fees);
-                                eprintln!("  💰 Actual Invested: {:.6} SOL", actual_invested);
                                 invested_sol = actual_invested;
-                            } else {
-                                eprintln!("  ⚠️  Calculated invested amount too low ({:.6}), using config", actual_invested);
                             }
-                        } else {
-                            eprintln!("  ⚠️  Balance change was positive ({:.6}), expected negative for buy", change_sol);
                         }
                     },
-                    Err(e) => {
-                        eprintln!("  ⚠️  Could not fetch actual cost: {}", e);
-                    }
+                    Err(_e) => {}
             }
         }
         
@@ -1862,38 +1657,13 @@ async fn process_and_buy(
                     buy_fees_sol: Some(total_buy_fees),
                 };
                 
-                if let Err(e) = tracker.record_buy(buy.clone()) {
-                    eprintln!("  ❌ Tracker error: {}", e);
-                } else {
-                    eprintln!("  ✅ Recorded in tracker (Total buys: {})", tracker.total_buys());
-                    if let Some(mc) = mc_entry_usd {
-                        eprintln!("  📈 Entry MC: ${:.0}", mc);
-                    }
-                    eprintln!("  🔍 Position details for auto-sell:");
-                    eprintln!("     - Bonding Curve: {:?}", buy.bonding_curve);
-                    eprintln!("     - User Token Account: {:?}", buy.user_token_account);
-                    eprintln!("     - MC at Entry: {:?}", buy.mc_at_entry_usd);
-                    eprintln!("     - Sold: {}", buy.sold);
-                    
-                    // Verify position will be included in get_active_positions
-                    let active_count = tracker.get_active_positions().len();
-                    eprintln!("  📊 Active positions count: {} (should include this one)", active_count);
-                }
+                let _ = tracker.record_buy(buy.clone());
             }
         }
         
         let final_signature = actual_signature.as_ref().map(|s| s.clone()).unwrap_or_else(|| init_signature.clone());
-        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-        eprintln!();
         Ok(Some(final_signature))
     } else {
-        eprintln!("  ❌ Transaction failed or buy did not execute");
-        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-        eprintln!();
-        
-        if config.one_shot_mode {
-            eprintln!("  🎯 One Shot Mode: Stopping bot");
-        }
         
         match submission_result {
             Ok(_) => {
@@ -1927,7 +1697,6 @@ async fn verify_transaction_success(
             if let Some(meta) = tx.transaction.meta {
                 // Check if transaction errored
                 if let Some(err) = meta.err {
-                    eprintln!("   Transaction error: {:?}", err);
                     
                     // Provide helpful error messages for common errors
                     let error_msg = format!("{:?}", err);
@@ -2137,6 +1906,9 @@ async fn monitor_positions(
 ) {
     eprintln!("🔍 Position monitor started");
     
+    // Track last MC value and timestamp for each position (for dead coin detection)
+    let mut position_mc_history: HashMap<String, (f64, Instant)> = HashMap::new();
+    
     // Check wallet holdings on startup
     {
         let helius_api_key = {
@@ -2235,10 +2007,10 @@ async fn monitor_positions(
             
             eprintln!("✅ Auto-sell is ENABLED - checking positions...");
 
-            // Get config values including Helius API key
-            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, sell_percent) = {
+            // Get config values including Helius API key and dead coin settings
+            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
                 let cfg = config.read().unwrap();
-                (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent)
+                (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
             };
             
             eprintln!("   📋 Auto-sell settings:");
@@ -2315,11 +2087,47 @@ async fn monitor_positions(
                     };
                     
                     if balance == 0 {
-                        // Balance is zero - mark as sold
-                        if let Ok(mut tracker_guard) = tracker.write() {
-                            if let Some(tracker) = tracker_guard.as_mut() {
-                                if tracker.mark_position_as_sold(&position.mint).is_ok() {
-                                    cleaned_count += 1;
+                        // Balance is zero - mark as sold, BUT only if:
+                        // 1. Position is not brand new (transaction still processing)
+                        // 2. Position doesn't have a sell_signature (not sold through auto-sell)
+                        //    - If auto-sell is enabled, we should only mark as sold if sell_signature exists
+                        //    - This prevents marking as sold if auto-sell transaction failed or is pending
+                        let is_new_position = {
+                            let now = Utc::now();
+                            let buy_time = position.timestamp;
+                            let time_since_buy = now.signed_duration_since(buy_time);
+                            // Don't mark as sold if buy was less than 5 seconds ago (transaction still processing)
+                            time_since_buy.num_seconds() < 5
+                        };
+                        
+                        // Check if position has sell_signature (sold through auto-sell)
+                        let has_sell_signature = position.sell_signature.is_some();
+                        
+                        // Only mark as sold if:
+                        // - Position is not new AND
+                        // - Either has sell_signature (sold through auto-sell) OR auto-sell is disabled
+                        // This prevents marking as sold if auto-sell transaction failed or is pending
+                        if !is_new_position {
+                            let should_mark_as_sold = {
+                                let cfg = config.read().unwrap();
+                                if cfg.enable_auto_sell {
+                                    // If auto-sell is enabled, only mark as sold if sell_signature exists
+                                    // This means the sell transaction was confirmed
+                                    has_sell_signature
+                                } else {
+                                    // If auto-sell is disabled, mark as sold if balance is zero
+                                    true
+                                }
+                            };
+                            
+                            if should_mark_as_sold {
+                                // Balance is zero and conditions are met - mark as sold
+                                if let Ok(mut tracker_guard) = tracker.write() {
+                                    if let Some(tracker) = tracker_guard.as_mut() {
+                                        if tracker.mark_position_as_sold(&position.mint).is_ok() {
+                                            cleaned_count += 1;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2396,8 +2204,7 @@ async fn monitor_positions(
                     }
                 };
 
-                // Fetch current MC
-                eprintln!("      - 🔍 Fetching current MC...");
+                // 🚀 ULTRA FAST: Fetch current MC (critical for stop loss)
                 let current_mc_result = fetch_bonding_curve_mc(
                     &rpc,
                     &bonding_curve,
@@ -2405,28 +2212,84 @@ async fn monitor_positions(
                 ).await;
 
                 let current_mc = match current_mc_result {
-                    Ok((_, _, mc_usd)) => {
-                        eprintln!("      - ✅ Current MC: ${:.2}", mc_usd);
-                        mc_usd
-                    },
-                    Err(e) => {
-                        eprintln!("      - ❌ Failed to fetch MC for {}: {}", position.mint, e);
+                    Ok((_, _, mc_usd)) => mc_usd,
+                    Err(_) => {
                         continue;
                     }
                 };
 
                 // Validate entry_mc to avoid division by zero
                 if entry_mc <= 0.0 {
-                    eprintln!("      - ⚠️  Invalid entry MC (${:.2}) - skipping position", entry_mc);
                     continue;
                 }
                 
+                // 🚀 PRIORITY: Check stop loss FIRST (most critical - must be ultra fast)
                 // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
                 let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
                 let should_sell_stop_loss = current_mc < stop_loss_threshold;
+                
+                // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
+                if should_sell_stop_loss {
+                    // Remove from dead coin tracking
+                    position_mc_history.remove(&position.mint);
+                    
+                    // Clone wallet and config immediately
+                    let wallet_bytes = wallet.to_bytes();
+                    let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                        Ok(kp) => kp,
+                        Err(_) => continue,
+                    };
+                    
+                    let config_clone = {
+                        let cfg = config.read().unwrap();
+                        (*cfg).clone()
+                    };
+                    
+                    // Execute sell IMMEDIATELY (no delays, no other checks)
+                    let _ = execute_sell(
+                        &config_clone,
+                        &wallet_clone,
+                        &rpc,
+                        &tracker,
+                        &position,
+                        "stop_loss",
+                        &event_tx,
+                    ).await;
+                    
+                    // Continue to next position immediately (don't wait)
+                    continue;
+                }
 
                 // Check take profit: current_mc >= take_profit_mc_usd
                 let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+                
+                // Check dead coin: no price movement for X seconds
+                let should_sell_dead_coin = if enable_dead_coin_sell {
+                    let now = Instant::now();
+                    let mc_change_threshold = 0.01; // 1% change threshold to consider it "moved"
+                    
+                    if let Some((last_mc, last_update_time)) = position_mc_history.get(&position.mint) {
+                        let time_since_update = now.duration_since(*last_update_time);
+                        let mc_change = ((current_mc - last_mc).abs() / last_mc.max(1.0)) * 100.0;
+                        
+                        // If MC hasn't changed significantly and timeout has passed, it's dead
+                        if mc_change < mc_change_threshold && time_since_update.as_secs() >= dead_coin_timeout_sec {
+                            true
+                        } else {
+                            // Update history if MC changed significantly
+                            if mc_change >= mc_change_threshold {
+                                position_mc_history.insert(position.mint.clone(), (current_mc, now));
+                            }
+                            false
+                        }
+                    } else {
+                        // First time seeing this position - initialize history
+                        position_mc_history.insert(position.mint.clone(), (current_mc, now));
+                        false
+                    }
+                } else {
+                    false
+                };
                 
                 // Calculate PnL percentage (entry_mc is validated to be > 0)
                 let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
@@ -2440,55 +2303,40 @@ async fn monitor_positions(
                 eprintln!("      - 🔍 Sell Conditions:");
                 eprintln!("         • Stop Loss Triggered: {} (Current: ${:.2} < Threshold: ${:.2})", should_sell_stop_loss, current_mc, stop_loss_threshold);
                 eprintln!("         • Take Profit Triggered: {} (Current: ${:.2} >= Threshold: ${:.2})", should_sell_take_profit, current_mc, take_profit_mc_usd);
+                if enable_dead_coin_sell {
+                    if let Some((last_mc, last_update)) = position_mc_history.get(&position.mint) {
+                        let time_since_update = Instant::now().duration_since(*last_update);
+                        eprintln!("         • Dead Coin: {} (Last MC: ${:.2}, Time since change: {}s)", should_sell_dead_coin, last_mc, time_since_update.as_secs());
+                    }
+                }
 
-                if should_sell_stop_loss || should_sell_take_profit {
-                    let reason = if should_sell_stop_loss {
-                        "stop_loss"
-                    } else {
+                // Only check take profit and dead coin (stop loss already handled above with priority)
+                if should_sell_take_profit || should_sell_dead_coin {
+                    let reason = if should_sell_take_profit {
                         "take_profit"
+                    } else {
+                        "dead_coin"
                     };
+                    
+                    // Remove from dead coin tracking when selling
+                    if should_sell_dead_coin {
+                        position_mc_history.remove(&position.mint);
+                    }
 
-                    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-                    eprintln!("║              AUTO-SELL TRIGGERED                           ║");
-                    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-                    eprintln!("🔄 Auto-selling {}: {} (Entry MC: ${:.0}, Current MC: ${:.0})",
-                             reason, position.mint, entry_mc, current_mc);
-                    eprintln!("   📊 Position details:");
-                    eprintln!("      - Mint: {}", position.mint);
-                    eprintln!("      - Entry MC: ${:.2}", entry_mc);
-                    eprintln!("      - Current MC: ${:.2}", current_mc);
-                    eprintln!("      - MC Change: {:.2}%", ((current_mc - entry_mc) / entry_mc) * 100.0);
-                    eprintln!("      - Stop Loss Threshold: ${:.2}", stop_loss_threshold);
-                    eprintln!("      - Take Profit Threshold: ${:.2}", take_profit_mc_usd);
-                    eprintln!("      - Reason: {}", reason);
-
-                    // Clone wallet for execute_sell
-                    eprintln!("   🔧 Preparing for sell execution...");
+                    // Clone wallet and config immediately
                     let wallet_bytes = wallet.to_bytes();
                     let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                        Ok(kp) => {
-                            eprintln!("      - ✅ Wallet cloned successfully");
-                            kp
-                        },
-                        Err(e) => {
-                            eprintln!("      - ❌ Failed to clone wallet: {}", e);
-                            continue;
-                        }
+                        Ok(kp) => kp,
+                        Err(_) => continue,
                     };
-
-                    // Get config clone to avoid holding lock across await
+                    
                     let config_clone = {
                         let cfg = config.read().unwrap();
                         (*cfg).clone()
                     };
-                    eprintln!("      - ✅ Config cloned");
-                    eprintln!("         - Sell percent: {}%", config_clone.sell_percent);
-                    eprintln!("         - Submission mode: {:?}", config_clone.submission_mode);
-                    eprintln!("         - Priority fee: {} lamports", config_clone.priority_fee);
 
-                    // Execute sell
-                    eprintln!("   🚀 Executing sell...");
-                    match execute_sell(
+                    // Execute sell (non-blocking for take profit/dead coin)
+                    let _ = execute_sell(
                         &config_clone,
                         &wallet_clone,
                         &rpc,
@@ -2496,21 +2344,7 @@ async fn monitor_positions(
                         &position,
                         reason,
                         &event_tx,
-                    ).await {
-                        Ok(sig) => {
-                            eprintln!("   ✅ Auto-sell executed successfully!");
-                            eprintln!("      - Mint: {}", position.mint);
-                            eprintln!("      - Signature: {}", sig);
-                            println!("✅ Auto-sell executed: {} - {}", position.mint, sig);
-                        }
-                        Err(e) => {
-                            eprintln!("   ❌ Auto-sell failed!");
-                            eprintln!("      - Mint: {}", position.mint);
-                            eprintln!("      - Error: {}", e);
-                            eprintln!("      - Error details: {:?}", e);
-                            eprintln!("❌ Auto-sell failed for {}: {}", position.mint, e);
-                        }
-                    }
+                    ).await;
                 }
             }
 
@@ -3409,153 +3243,115 @@ async fn execute_sell(
     };
 
     let signature = tx_sig.to_string();
-    eprintln!("   ✅ Sell transaction submitted! Signature: {}", signature);
 
-    // Verify transaction status
-    eprintln!("   🔍 Step 7.5: Verifying transaction status...");
+    // 🚀 ULTRA FAST: Mark as sold IMMEDIATELY after transaction submission
+    // Transaction verification happens in background - don't block UI update
+    let mut buy_data = None;
+    let position_mint = position.mint.clone();
+    
+    // Mark as sold immediately for instant UI feedback
+    if let Ok(mut tracker_opt) = tracker.write() {
+        if let Some(tracker) = tracker_opt.as_mut() {
+            if let Err(e) = tracker.mark_as_sold(&position_mint, signature.clone()) {
+                return Err(anyhow!("Failed to mark position as sold in tracker: {}", e));
+            }
+            
+            // Clone necessary data for report
+            buy_data = Some((
+                position.our_buy_sol,
+                position.buy_fees_sol.unwrap_or(0.00002),
+                position.pnl_sol.unwrap_or(0.0),
+                position.pnl_percent.unwrap_or(0.0),
+                position.current_value_sol.unwrap_or(0.0),
+                position_mint.clone()
+            ));
+        }
+    }
+
+    // Verify transaction status in background (non-blocking)
     let sig_pubkey = match solana_sdk::signature::Signature::from_str(&signature) {
         Ok(sig) => sig,
-        Err(e) => {
-            eprintln!("      - ⚠️  Invalid signature format: {}", e);
-            return Err(anyhow!("Invalid signature format"));
+        Err(_e) => {
+            // Don't fail - transaction was submitted and marked as sold
+            return Ok(signature);
         }
     };
     
-    // Wait a bit for transaction to be confirmed
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    
-    // Check transaction status
-    let max_verification_attempts = 10;
-    let mut transaction_confirmed = false;
-    let mut transaction_error: Option<String> = None;
-    
-    for attempt in 1..=max_verification_attempts {
-        eprintln!("      - Verification attempt {}/{}...", attempt, max_verification_attempts);
-        match rpc.get_signature_status(&sig_pubkey).await {
-            Ok(Some(status_result)) => {
-                // status_result is Result<(), TransactionError>
-                match status_result {
-                    Ok(_) => {
-                        transaction_confirmed = true;
-                        eprintln!("      - ✅ Transaction confirmed successfully!");
-                        break;
-                    }
-                    Err(err) => {
-                        transaction_error = Some(format!("{:?}", err));
-                        eprintln!("      - ❌ Transaction failed: {:?}", err);
-                        break;
+    // Background verification (non-blocking)
+    let rpc_url = config.rpc_url.clone();
+    tokio::spawn(async move {
+        let rpc_bg = RpcClient::new(rpc_url);
+        
+        // Ultra fast check - only 2 attempts with short waits
+        tokio::time::sleep(Duration::from_millis(500)).await; // Wait 0.5s first
+        
+        let max_attempts = 3;
+        for attempt in 1..=max_attempts {
+            match rpc_bg.get_signature_status(&sig_pubkey).await {
+                Ok(Some(status_result)) => {
+                    match status_result {
+                        Ok(_) => {
+                            // Transaction confirmed - already marked as sold
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("      - ❌ Transaction failed on blockchain: {:?}", err);
+                            break;
+                        }
                     }
                 }
+                Ok(None) => {
+                    // Still pending
+                }
+                Err(_) => {
+                    // Error checking
+                }
             }
-            Ok(None) => {
-                eprintln!("      - ⏳ Transaction not yet confirmed, waiting...");
-            }
-            Err(e) => {
-                eprintln!("      - ⚠️  Error checking status: {}", e);
+            
+            if attempt < max_attempts {
+                tokio::time::sleep(Duration::from_millis(500)).await; // 0.5s between attempts
             }
         }
-        
-        if attempt < max_verification_attempts {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
-    
-    if !transaction_confirmed {
-        if let Some(err) = transaction_error {
-            eprintln!("   ❌ Transaction failed on blockchain: {}", err);
-            return Err(anyhow!("Sell transaction failed on blockchain: {}", err));
-        } else {
-            eprintln!("   ⚠️  Could not verify transaction status (may still be pending)");
-            eprintln!("   💡 Check transaction manually: https://solscan.io/tx/{}", signature);
-        }
-    }
+    });
 
-    // Calculate PnL (simplified - would need current token price)
-    // For now, we'll set PnL to None as we'd need to fetch the actual SOL received from the sell
-    let pnl: Option<f64> = None;
+    // buy_data already set above when marking as sold
 
-    // Update tracker
-    eprintln!("   🔍 Step 8: Updating tracker...");
-    
-    let mut buy_data = None;
-    
-    if let Ok(mut tracker_opt) = tracker.write() {
-        if let Some(tracker) = tracker_opt.as_mut() {
-            eprintln!("      - Marking position as sold in tracker...");
-            if let Err(e) = tracker.mark_as_sold(&position.mint, signature.clone()) {
-                eprintln!("      - ❌ Failed to mark position as sold in tracker: {}", e);
-            } else {
-                eprintln!("      - ✅ Position marked as sold in tracker");
-                
-                // Clone necessary data for report to avoid holding lock during async call
-                // Data: (our_buy_sol, buy_fees, pnl_sol, pnl_percent, current_value_sol, mint)
-                buy_data = Some((
-                    position.our_buy_sol,
-                    position.buy_fees_sol.unwrap_or(0.00002),
-                    position.pnl_sol.unwrap_or(0.0),
-                    position.pnl_percent.unwrap_or(0.0),
-                    position.current_value_sol.unwrap_or(0.0),
-                    position.mint.clone()
-                ));
-            }
-        } else {
-            eprintln!("      - ⚠️  Tracker is None - skipping update");
-        }
-    } else {
-        eprintln!("      - ❌ Failed to acquire tracker write lock");
-    }
-
-    // Generate Trade Report (outside lock to allow async calls)
-    if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, mint_str)) = buy_data {
-        // Calculate actual sell fees based on what we just submitted
+    // Calculate PnL for event
+    let pnl: Option<f64> = if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, _mint_str)) = &buy_data {
         let sell_prio_fee_sol = priority_fee as f64 / 1e9;
         let sell_helius_tip_sol = helius_tip_amount as f64 / 1e9;
         let sell_base_fee_sol = 0.000005;
-        
-        // Fetch ACTUAL transaction fee from blockchain for ULTRA precision
         let actual_network_fee = match crate::utils::get_transaction_fee(&rpc, &signature).await {
             Ok(fee) => fee as f64 / 1e9,
-            Err(e) => {
-                eprintln!("      - ⚠️  Failed to fetch actual fee from chain, using calculated: {}", e);
-                sell_prio_fee_sol + sell_base_fee_sol
-            }
+            Err(_e) => sell_prio_fee_sol + sell_base_fee_sol
         };
-        
         let sell_fees_actual = actual_network_fee + sell_helius_tip_sol;
-        
         let buy_cost_total = our_buy_sol + buy_fees;
-        
-        // Recalculate PnL with ACTUAL sell fees
+        let sell_value_gross = *current_value_sol;
+        let sell_value_after_curve_fee = sell_value_gross * 0.99;
+        let net_return = sell_value_after_curve_fee - sell_fees_actual;
+        let final_pnl_sol = net_return - buy_cost_total;
+        Some(final_pnl_sol)
+    } else {
+        None
+    };
+
+    // Generate Trade Report (outside lock to allow async calls)
+    if let Some((our_buy_sol, buy_fees, _pnl_sol, _pnl_percent, current_value_sol, _mint_str)) = buy_data {
+        let sell_prio_fee_sol = priority_fee as f64 / 1e9;
+        let sell_helius_tip_sol = helius_tip_amount as f64 / 1e9;
+        let sell_base_fee_sol = 0.000005;
+        let actual_network_fee = match crate::utils::get_transaction_fee(&rpc, &signature).await {
+            Ok(fee) => fee as f64 / 1e9,
+            Err(_e) => sell_prio_fee_sol + sell_base_fee_sol
+        };
+        let sell_fees_actual = actual_network_fee + sell_helius_tip_sol;
+        let buy_cost_total = our_buy_sol + buy_fees;
         let sell_value_gross = current_value_sol;
         let sell_value_after_curve_fee = sell_value_gross * 0.99;
-        
-        // Net Wallet Return = (Value from Curve) - (Gas Fees Paid)
         let net_return = sell_value_after_curve_fee - sell_fees_actual;
-        
-        // Final PnL = Net Return - Total Buy Cost
-        let final_pnl_sol = net_return - buy_cost_total;
-        let final_pnl_percent = if buy_cost_total > 0.0 { (final_pnl_sol / buy_cost_total) * 100.0 } else { 0.0 };
-        
-        eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-        eprintln!("║                    💰 TRADE REPORT 💰                         ║");
-        eprintln!("╠═══════════════════════════════════════════════════════════════╣");
-        eprintln!("║ Token:        {:46} ║", mint_str);
-        eprintln!("║ ------------------------------------------------------------- ║");
-        eprintln!("║ 📉 ENTRY COST (Total):     {:>12.6} SOL                   ║", buy_cost_total);
-        eprintln!("║    - Invested in Curve:    {:>12.6} SOL                   ║", our_buy_sol);
-        eprintln!("║    - Buy Fees (Gas+Prio):  {:>12.6} SOL                   ║", buy_fees);
-        eprintln!("║ ------------------------------------------------------------- ║");
-        eprintln!("║ 📈 EXIT VALUE (Net):       {:>12.6} SOL                   ║", net_return);
-        eprintln!("║    - Gross from Curve:     {:>12.6} SOL                   ║", sell_value_gross);
-        eprintln!("║    - Sell Fees (Gas+Tip):  {:>12.6} SOL                   ║", sell_fees_actual);
-        eprintln!("║ ------------------------------------------------------------- ║");
-        eprintln!("║ 💎 PROFIT/LOSS:            {:>12.6} SOL                   ║", final_pnl_sol);
-        if final_pnl_sol >= 0.0 {
-            eprintln!("║ 📊 ROI:                   🟢 {:>11.2} %                     ║", final_pnl_percent);
-        } else {
-            eprintln!("║ 📊 ROI:                   🔴 {:>11.2} %                     ║", final_pnl_percent);
-        }
-        eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+        let _final_pnl_sol = net_return - buy_cost_total;
+        let _final_pnl_percent = if buy_cost_total > 0.0 { (_final_pnl_sol / buy_cost_total) * 100.0 } else { 0.0 };
     }
 
     // Send event

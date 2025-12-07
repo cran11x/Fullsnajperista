@@ -46,6 +46,8 @@ pub struct Config {
     pub take_profit_mc_usd: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
+    pub enable_dead_coin_sell: bool,
+    pub dead_coin_timeout_sec: u64,
     pub blacklisted_tokens: HashSet<Pubkey>,
     pub blacklisted_creators: HashSet<Pubkey>,
     pub whitelisted_tokens: Option<HashSet<Pubkey>>, // None = svi dozvoljeni
@@ -259,6 +261,16 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| anyhow!("Invalid MONITOR_INTERVAL_SEC"))?;
 
+        let enable_dead_coin_sell = std::env::var("ENABLE_DEAD_COIN_SELL")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let dead_coin_timeout_sec = std::env::var("DEAD_COIN_TIMEOUT_SEC")
+            .unwrap_or_else(|_| "15".to_string())
+            .parse::<u64>()
+            .map_err(|_| anyhow!("Invalid DEAD_COIN_TIMEOUT_SEC"))?;
+
         let enable_dynamic_priority_fee = std::env::var("ENABLE_DYNAMIC_PRIORITY_FEE")
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
@@ -380,6 +392,8 @@ impl Config {
             take_profit_mc_usd,
             sell_percent,
             monitor_interval_sec,
+            enable_dead_coin_sell,
+            dead_coin_timeout_sec,
             blacklisted_tokens,
             blacklisted_creators,
             whitelisted_tokens,
@@ -548,6 +562,8 @@ impl Default for Config {
             take_profit_mc_usd: 24_000.0,
             sell_percent: 100.0,
             monitor_interval_sec: 5,
+            enable_dead_coin_sell: false,
+            dead_coin_timeout_sec: 15,
             blacklisted_tokens: HashSet::new(),
             blacklisted_creators: HashSet::new(),
             whitelisted_tokens: None,

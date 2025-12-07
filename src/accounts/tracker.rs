@@ -454,21 +454,44 @@ impl TokenTracker {
 
     /// Get active positions (not sold)
     pub fn get_active_positions(&self) -> Vec<TokenBuy> {
-        let filtered: Vec<TokenBuy> = self.stats.buys.iter()
+        self.stats.buys.iter()
             .filter(|buy| {
                 // Show position if it's not sold and has bonding_curve (required for monitoring)
                 // user_token_account is optional - we can still show position and try to sell
-                let is_active = !buy.sold && buy.bonding_curve.is_some();
-                if !is_active {
-                    eprintln!("🔍 Position filtered out: mint={}, sold={}, bonding_curve={:?}", 
-                        buy.mint, buy.sold, buy.bonding_curve.is_some());
-                }
-                is_active
+                !buy.sold && buy.bonding_curve.is_some()
             })
             .cloned()
+            .collect()
+    }
+
+    /// Clear only active positions (remove positions that are not sold)
+    pub fn clear_active_positions(&mut self) -> Result<()> {
+        let initial_count = self.stats.buys.len();
+        self.stats.buys.retain(|buy| buy.sold); // Keep only sold positions
+        let removed_count = initial_count - self.stats.buys.len();
+        
+        // Update stats
+        self.stats.total_buys = self.stats.buys.len() as u32;
+        self.stats.total_sol_spent = self.stats.buys.iter().map(|b| b.our_buy_sol).sum();
+        
+        // Recalculate MC stats
+        let mc_values: Vec<f64> = self.stats.buys.iter()
+            .filter_map(|b| b.mc_at_entry_usd)
             .collect();
-        eprintln!("📊 get_active_positions: {} total buys, {} active positions", self.stats.buys.len(), filtered.len());
-        filtered
+        if !mc_values.is_empty() {
+            self.stats.avg_mc_usd = mc_values.iter().sum::<f64>() / mc_values.len() as f64;
+            self.stats.min_mc_usd = mc_values.iter().cloned().fold(f64::MAX, f64::min);
+            self.stats.max_mc_usd = mc_values.iter().cloned().fold(0.0, f64::max);
+        } else {
+            self.stats.avg_mc_usd = 0.0;
+            self.stats.min_mc_usd = f64::MAX;
+            self.stats.max_mc_usd = 0.0;
+        }
+        
+        // Save updated state
+        self.save_json()?;
+        
+        Ok(())
     }
 
     /// Get all sold positions (for display in UI)
