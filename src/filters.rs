@@ -170,18 +170,71 @@ mod tests {
 
     #[test]
     fn test_check_creator_token_count() {
-        let config = create_test_config();
+        let mut config = create_test_config();
+        config.min_dev_tokens = 6;
+        config.max_dev_tokens = 10;
         
-        // Valid count
-        assert!(check_creator_token_count(7, &config));
-        assert!(check_creator_token_count(6, &config));
-        assert!(check_creator_token_count(10, &config));
+        // Valid count (within range)
+        assert!(check_creator_token_count(7, &config), "7 should pass (within 6-10)");
+        assert!(check_creator_token_count(6, &config), "6 should pass (min boundary)");
+        assert!(check_creator_token_count(10, &config), "10 should pass (max boundary)");
 
         // Too low
-        assert!(!check_creator_token_count(5, &config));
+        assert!(!check_creator_token_count(5, &config), "5 should fail (below min 6)");
+        assert!(!check_creator_token_count(0, &config), "0 should fail (below min 6)");
 
         // Too high
-        assert!(!check_creator_token_count(11, &config));
+        assert!(!check_creator_token_count(11, &config), "11 should fail (above max 10)");
+        assert!(!check_creator_token_count(520, &config), "520 should fail (above max 10)");
+        assert!(!check_creator_token_count(8500, &config), "8500 should fail (above max 10)");
+    }
+
+    #[test]
+    fn test_check_creator_token_count_edge_cases() {
+        let mut config = create_test_config();
+        
+        // Test with filter 0-10 (default)
+        config.min_dev_tokens = 0;
+        config.max_dev_tokens = 10;
+        
+        assert!(check_creator_token_count(0, &config), "0 should pass (min is 0)");
+        assert!(check_creator_token_count(5, &config), "5 should pass");
+        assert!(check_creator_token_count(10, &config), "10 should pass (max boundary)");
+        assert!(!check_creator_token_count(11, &config), "11 should fail");
+        assert!(!check_creator_token_count(520, &config), "520 should fail");
+        
+        // Test with filter 1-5
+        config.min_dev_tokens = 1;
+        config.max_dev_tokens = 5;
+        
+        assert!(!check_creator_token_count(0, &config), "0 should fail (below min 1)");
+        assert!(check_creator_token_count(1, &config), "1 should pass");
+        assert!(check_creator_token_count(3, &config), "3 should pass");
+        assert!(check_creator_token_count(5, &config), "5 should pass");
+        assert!(!check_creator_token_count(6, &config), "6 should fail (above max 5)");
+    }
+
+    #[test]
+    fn test_filter_logic_simulation() {
+        // Simulate the filter logic from bot_core.rs
+        let mut config = create_test_config();
+        config.min_dev_tokens = 0;
+        config.max_dev_tokens = 10;
+        
+        // Simulate DAS API returning different counts
+        let test_cases = vec![
+            (0u32, true, "0 tokens should pass (min is 0)"),
+            (5u32, true, "5 tokens should pass"),
+            (10u32, true, "10 tokens should pass (max boundary)"),
+            (11u32, false, "11 tokens should fail (above max)"),
+            (520u32, false, "520 tokens should fail (way above max)"),
+            (8500u32, false, "8500 tokens should fail (way above max)"),
+        ];
+        
+        for (count, should_pass, msg) in test_cases {
+            let passes = count >= config.min_dev_tokens as u32 && count <= config.max_dev_tokens as u32;
+            assert_eq!(passes, should_pass, "{}: count={}, expected={}", msg, count, should_pass);
+        }
     }
 }
 

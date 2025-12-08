@@ -35,6 +35,7 @@ use crate::jito::send_jito_bundle;
 use crate::helius::send_helius_transaction;
 use crate::socials::{check_token_socials, Socials};
 use crate::das_check::check_creator_token_count_das;
+use crate::filters::check_creator_token_count;
 use crate::accounts::{TokenBuy, TokenTracker, SeenTokens, fetch_bonding_curve_mc, BondingCurveAccount};
 use crate::config::Config;
 use crate::constants::PUMP_PROGRAM_ID;
@@ -861,6 +862,10 @@ async fn process_and_buy(
     let dev_buy_lamports = accounts.dev_buy_sol;
     let dev_buy_sol = dev_buy_lamports as f64 / 1e9;
     
+    // Debug: Log config values at start
+    println!("      🔍 DEBUG PROCESS_AND_BUY START: mint={}, creator={}, min_dev_tokens={}, max_dev_tokens={}", 
+             mint, accounts.creator, config.min_dev_tokens, config.max_dev_tokens);
+    
     // ========================================================================
     // SECTION 1: TOKEN INFO
     // ========================================================================
@@ -943,36 +948,51 @@ async fn process_and_buy(
         socials_fut
     );
     
-    // Filter #2: Creator Token Count
-    let (creator_count, _das_check_failed) = match das_result {
+    // Filter #2: Creator Token Count (using filter function from filters.rs)
+    println!("      🔍 DEBUG DEV TOKENS FILTER: min_dev_tokens={}, max_dev_tokens={}", 
+             config.min_dev_tokens, config.max_dev_tokens);
+    let creator_count = match das_result {
         Ok(count) => {
-            if count < config.min_dev_tokens as u32 {
+            println!("      🔍 DEBUG DEV TOKENS FILTER: DAS returned count={} for creator={}", 
+                     count, accounts.creator);
+            
+            // ⚠️ NOTE: DAS API may return 0 for some creators even if they have many tokens.
+            // Instead of skipping, we let it go through the filter. If min_dev_tokens = 0,
+            // tokens with count=0 will pass. If min_dev_tokens > 0, they will be filtered out.
+            // This allows good tokens (like 9taecBUD...) to pass even if DAS returns 0.
+            
+            // Use filter function from filters.rs for consistency
+            if !check_creator_token_count(count, config) {
+                let reason = if count < config.min_dev_tokens as u32 {
+                    format!("Creator has only {} tokens (min: {})", count, config.min_dev_tokens)
+                } else {
+                    format!("Creator has {} tokens (max: {})", count, config.max_dev_tokens)
+                };
+                println!("      ❌ SKIP: Creator token count filter failed - {}", reason);
                 let filter_time = filter_start.elapsed().as_millis() as u64;
                 if let Ok(mut m) = metrics.write() {
                     m.record_filter(FilterReason::CreatorCount, filter_time);
                     m.record_error(ErrorType::Validation);
                 }
-                return Err(anyhow!("SKIP: Creator has only {} tokens (min: {})",
-                                   count, config.min_dev_tokens));
+                return Err(anyhow!("SKIP: {}", reason));
             }
-            if count > config.max_dev_tokens as u32 {
-                let filter_time = filter_start.elapsed().as_millis() as u64;
-                if let Ok(mut m) = metrics.write() {
-                    m.record_filter(FilterReason::CreatorCount, filter_time);
-                    m.record_error(ErrorType::Validation);
-                }
-                return Err(anyhow!("SKIP: Creator has {} tokens (max: {})",
-                                   count, config.max_dev_tokens));
-            }
-            (count, false)
+            println!("      ✅ DEBUG FILTER PASSED: count={} is within range [{}, {}]", 
+                    count, config.min_dev_tokens, config.max_dev_tokens);
+            count
         }
-        Err(_e) => {
-            let _filter_time = filter_start.elapsed().as_millis() as u64;
-            let mut m = metrics.write().unwrap();
-            m.record_error(ErrorType::Network);
-            (0, true)
+        Err(e) => {
+            // DAS check failed - skip token since we can't verify creator token count
+            println!("      ❌ SKIP: DAS API failed - cannot verify creator token count: {}", e);
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::CreatorCount, filter_time);
+                m.record_error(ErrorType::Network);
+            }
+            return Err(anyhow!("SKIP: DAS API failed - {}", e));
         }
     };
+    
+    println!("      🔍 DEBUG: After dev tokens filter, creator_count={}, continuing...", creator_count);
     
     // Process MC result
     let (curve, _mc_sol, mc_usd) = match mc_result {
@@ -1910,6 +1930,9 @@ async fn monitor_positions(
 ) {
     eprintln!("🔍 Position monitor started");
     
+    // Wrap RPC client in Arc for parallel access
+    let rpc_arc = Arc::new(rpc);
+    
     // Track last MC value and timestamp for each position (for dead coin detection)
     let mut position_mc_history: HashMap<String, (f64, Instant)> = HashMap::new();
     
@@ -1951,7 +1974,7 @@ async fn monitor_positions(
                         eprintln!("      - Bonding Curve: {}", bonding_curve);
                         
                         // Try to fetch MC
-                        match fetch_bonding_curve_mc(&rpc, &bonding_curve, sol_price).await {
+                        match fetch_bonding_curve_mc(rpc_arc.as_ref(), &bonding_curve, sol_price).await {
                             Ok((curve, mc_sol, mc_usd)) => {
                                 let token_price = curve.get_token_price_sol();
                                 // Balance is in raw units (like lamports), need to check token decimals
@@ -2009,19 +2032,13 @@ async fn monitor_positions(
                 return Ok::<(), anyhow::Error>(());
             }
             
-            eprintln!("✅ Auto-sell is ENABLED - checking positions...");
+            // Auto-sell monitoring (silent mode - no console spam)
 
             // Get config values including Helius API key and dead coin settings
-            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
+            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, _sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
                 let cfg = config.read().unwrap();
                 (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
             };
-            
-            eprintln!("   📋 Auto-sell settings:");
-            eprintln!("      - Stop Loss: {}%", stop_loss_percent);
-            eprintln!("      - Take Profit MC: ${:.2}", take_profit_mc_usd);
-            eprintln!("      - Sell Percent: {}%", sell_percent);
-            eprintln!("      - Monitor Interval: 100ms (Ultra Fast - always)");
 
             // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
             let user_wallet = wallet.pubkey();
@@ -2083,7 +2100,7 @@ async fn monitor_positions(
                         Ok(bal) => bal,
                         Err(_) => {
                             // Fallback to RPC if Helius fails
-                            match rpc.get_token_account_balance(&user_token_account).await {
+                            match rpc_arc.get_token_account_balance(&user_token_account).await {
                                 Ok(balance_info) => balance_info.amount.parse().unwrap_or(0),
                                 Err(_) => 0, // Account doesn't exist
                             }
@@ -2164,62 +2181,29 @@ async fn monitor_positions(
             };
 
             if active_positions.is_empty() {
-                eprintln!("   ℹ️  No active positions to monitor");
-                // Still check every 100ms even when no positions - ensures instant detection when position is added
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Still check every 50ms even when no positions - ensures instant detection when position is added
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 return Ok(());
             }
-
-            eprintln!("\n📊 MONITORING {} POSITION(S):", active_positions.len());
             
-            // Check each position
-            for (idx, position) in active_positions.iter().enumerate() {
-                eprintln!("   [{}/{}] Checking position...", idx + 1, active_positions.len());
-                eprintln!("      - Mint: {}", position.mint);
-                
+            // 🚀 PARALLEL CHECK: Check all positions simultaneously for ultra-fast detection
+            let mut check_tasks = Vec::new();
+            
+            for position in active_positions.iter() {
                 // Skip if we don't have required data
                 let bonding_curve_str = match &position.bonding_curve {
-                    Some(bc) => {
-                        eprintln!("      - ✅ Bonding Curve: {}", bc);
-                        bc
-                    },
-                    None => {
-                        eprintln!("      - ❌ Missing bonding curve - skipping");
-                        continue;
-                    }
+                    Some(bc) => bc.clone(),
+                    None => continue,
                 };
 
-                let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
+                let bonding_curve = match Pubkey::from_str(&bonding_curve_str) {
                     Ok(pk) => pk,
-                    Err(e) => {
-                        eprintln!("      - ❌ Invalid bonding curve format: {} - skipping", e);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
 
                 let entry_mc = match position.mc_at_entry_usd {
-                    Some(mc) => {
-                        eprintln!("      - ✅ Entry MC: ${:.2}", mc);
-                        mc
-                    },
-                    None => {
-                        eprintln!("      - ❌ Missing entry MC - skipping");
-                        continue;
-                    }
-                };
-
-                // 🚀 ULTRA FAST: Fetch current MC (critical for stop loss)
-                let current_mc_result = fetch_bonding_curve_mc(
-                    &rpc,
-                    &bonding_curve,
-                    sol_price_usd,
-                ).await;
-
-                let current_mc = match current_mc_result {
-                    Ok((_, _, mc_usd)) => mc_usd,
-                    Err(_) => {
-                        continue;
-                    }
+                    Some(mc) => mc,
+                    None => continue,
                 };
 
                 // Validate entry_mc to avoid division by zero
@@ -2227,50 +2211,145 @@ async fn monitor_positions(
                     continue;
                 }
                 
-                // 🚀 PRIORITY: Check stop loss FIRST (most critical - must be ultra fast)
-                // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
-                let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
-                let should_sell_stop_loss = current_mc < stop_loss_threshold;
+                let position_mint = position.mint.clone();
+                let position_clone = position.clone();
+                let rpc_task = Arc::clone(&rpc_arc);
+                let tracker_clone = tracker.clone();
+                let event_tx_clone = event_tx.clone();
+                let config_clone = {
+                    let cfg = config.read().unwrap();
+                    (*cfg).clone()
+                };
+                let wallet_bytes = wallet.to_bytes();
+                let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                    Ok(kp) => kp,
+                    Err(_) => continue,
+                };
                 
-                // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
-                if should_sell_stop_loss {
-                    // Remove from dead coin tracking
-                    position_mc_history.remove(&position.mint);
-                    
-                    // Clone wallet and config immediately
-                    let wallet_bytes = wallet.to_bytes();
-                    let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                        Ok(kp) => kp,
-                        Err(_) => continue,
-                    };
-                    
-                    let config_clone = {
-                        let cfg = config.read().unwrap();
-                        (*cfg).clone()
-                    };
-                    
-                    // Execute sell IMMEDIATELY (no delays, no other checks)
-                    let _ = execute_sell(
-                        &config_clone,
-                        &wallet_clone,
-                        &rpc,
-                        &tracker,
-                        &position,
-                        "stop_loss",
-                        &event_tx,
+                // Spawn parallel task for each position
+                let task = tokio::spawn(async move {
+                    // 🚀 ULTRA FAST: Fetch current MC (critical for stop loss)
+                    let current_mc_result = fetch_bonding_curve_mc(
+                        rpc_task.as_ref(),
+                        &bonding_curve,
+                        sol_price_usd,
                     ).await;
+
+                    let current_mc = match current_mc_result {
+                        Ok((_, _, mc_usd)) => mc_usd,
+                        Err(_) => return None,
+                    };
                     
-                    // Continue to next position immediately (don't wait)
+                    // 🚀 PRIORITY: Check stop loss FIRST (most critical - must be ultra fast)
+                    // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
+                    let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
+                    let should_sell_stop_loss = current_mc < stop_loss_threshold;
+                    
+                    // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
+                    if should_sell_stop_loss {
+                        // Execute sell IMMEDIATELY (no delays, no other checks)
+                        let _ = execute_sell(
+                            &config_clone,
+                            &wallet_clone,
+                            rpc_task.as_ref(),
+                            &tracker_clone,
+                            &position_clone,
+                            "stop_loss",
+                            &event_tx_clone,
+                        ).await;
+                        
+                        return Some(("stop_loss", position_mint));
+                    }
+                    
+                    // Check take profit: current_mc >= take_profit_mc_usd
+                    let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+                    
+                    // Check dead coin: no price movement for X seconds
+                    let should_sell_dead_coin = if enable_dead_coin_sell {
+                        // Note: position_mc_history is not accessible here, so we skip dead coin check in parallel mode
+                        // Dead coin check will be done in sequential pass if needed
+                        false
+                    } else {
+                        false
+                    };
+                    
+                    if should_sell_take_profit || should_sell_dead_coin {
+                        let reason = if should_sell_take_profit {
+                            "take_profit"
+                        } else {
+                            "dead_coin"
+                        };
+                        
+                        // Execute sell (non-blocking for take profit/dead coin)
+                        let _ = execute_sell(
+                            &config_clone,
+                            &wallet_clone,
+                            rpc_task.as_ref(),
+                            &tracker_clone,
+                            &position_clone,
+                            reason,
+                            &event_tx_clone,
+                        ).await;
+                        
+                        return Some((reason, position_mint));
+                    }
+                    
+                    None
+                });
+                
+                check_tasks.push(task);
+            }
+            
+            // Wait for all checks to complete in parallel
+            let results = futures_util::future::join_all(check_tasks).await;
+            
+            // Process results and update dead coin tracking
+            for result in results {
+                if let Ok(Some((reason, mint))) = result {
+                    if reason == "stop_loss" {
+                        position_mc_history.remove(&mint);
+                    }
+                }
+            }
+            
+            // Sequential pass for dead coin detection (requires shared state)
+            for position in active_positions.iter() {
+                // Skip if already sold (check balance)
+                let bonding_curve_str = match &position.bonding_curve {
+                    Some(bc) => bc,
+                    None => continue,
+                };
+
+                let bonding_curve = match Pubkey::from_str(bonding_curve_str) {
+                    Ok(pk) => pk,
+                    Err(_) => continue,
+                };
+
+                let entry_mc = match position.mc_at_entry_usd {
+                    Some(mc) => mc,
+                    None => continue,
+                };
+
+                if entry_mc <= 0.0 {
                     continue;
                 }
+                
+                // Quick MC check for dead coin detection
+                let current_mc_result = fetch_bonding_curve_mc(
+                    rpc_arc.as_ref(),
+                    &bonding_curve,
+                    sol_price_usd,
+                ).await;
 
-                // Check take profit: current_mc >= take_profit_mc_usd
-                let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+                let current_mc = match current_mc_result {
+                    Ok((_, _, mc_usd)) => mc_usd,
+                    Err(_) => continue,
+                };
                 
                 // Check dead coin: no price movement for X seconds
-                let should_sell_dead_coin = if enable_dead_coin_sell {
+                if enable_dead_coin_sell {
                     let now = Instant::now();
-                    let mc_change_threshold = 0.01; // 1% change threshold to consider it "moved"
+                    let mc_change_threshold = 0.01; // 1% change threshold
                     
                     if let Some((last_mc, last_update_time)) = position_mc_history.get(&position.mint) {
                         let time_since_update = now.duration_since(*last_update_time);
@@ -2278,84 +2357,48 @@ async fn monitor_positions(
                         
                         // If MC hasn't changed significantly and timeout has passed, it's dead
                         if mc_change < mc_change_threshold && time_since_update.as_secs() >= dead_coin_timeout_sec {
-                            true
+                            // Remove from dead coin tracking
+                            position_mc_history.remove(&position.mint);
+                            
+                            // Clone wallet and config immediately
+                            let wallet_bytes = wallet.to_bytes();
+                            let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                                Ok(kp) => kp,
+                                Err(_) => continue,
+                            };
+                            
+                            let config_clone = {
+                                let cfg = config.read().unwrap();
+                                (*cfg).clone()
+                            };
+
+                            // Execute sell for dead coin
+                            let _ = execute_sell(
+                                &config_clone,
+                                &wallet_clone,
+                                rpc_arc.as_ref(),
+                                &tracker,
+                                &position,
+                                "dead_coin",
+                                &event_tx,
+                            ).await;
                         } else {
                             // Update history if MC changed significantly
                             if mc_change >= mc_change_threshold {
                                 position_mc_history.insert(position.mint.clone(), (current_mc, now));
                             }
-                            false
                         }
                     } else {
                         // First time seeing this position - initialize history
                         position_mc_history.insert(position.mint.clone(), (current_mc, now));
-                        false
                     }
-                } else {
-                    false
-                };
-                
-                // Calculate PnL percentage (entry_mc is validated to be > 0)
-                let pnl_percent = ((current_mc - entry_mc) / entry_mc) * 100.0;
-                let pnl_emoji = if pnl_percent > 0.0 { "🚀" } else { "📉" };
-                
-                eprintln!("      - 📊 Position Status:");
-                eprintln!("         • Current MC: ${:.2} (Entry: ${:.2})", current_mc, entry_mc);
-                eprintln!("         • PnL: {:+.2}% {}", pnl_percent, pnl_emoji);
-                eprintln!("         • Stop Loss Threshold: ${:.2} (-{}%)", stop_loss_threshold, stop_loss_percent);
-                eprintln!("         • Take Profit Threshold: ${:.2}", take_profit_mc_usd);
-                eprintln!("      - 🔍 Sell Conditions:");
-                eprintln!("         • Stop Loss Triggered: {} (Current: ${:.2} < Threshold: ${:.2})", should_sell_stop_loss, current_mc, stop_loss_threshold);
-                eprintln!("         • Take Profit Triggered: {} (Current: ${:.2} >= Threshold: ${:.2})", should_sell_take_profit, current_mc, take_profit_mc_usd);
-                if enable_dead_coin_sell {
-                    if let Some((last_mc, last_update)) = position_mc_history.get(&position.mint) {
-                        let time_since_update = Instant::now().duration_since(*last_update);
-                        eprintln!("         • Dead Coin: {} (Last MC: ${:.2}, Time since change: {}s)", should_sell_dead_coin, last_mc, time_since_update.as_secs());
-                    }
-                }
-
-                // Only check take profit and dead coin (stop loss already handled above with priority)
-                if should_sell_take_profit || should_sell_dead_coin {
-                    let reason = if should_sell_take_profit {
-                        "take_profit"
-                    } else {
-                        "dead_coin"
-                    };
-                    
-                    // Remove from dead coin tracking when selling
-                    if should_sell_dead_coin {
-                        position_mc_history.remove(&position.mint);
-                    }
-
-                    // Clone wallet and config immediately
-                    let wallet_bytes = wallet.to_bytes();
-                    let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
-                        Ok(kp) => kp,
-                        Err(_) => continue,
-                    };
-                    
-                    let config_clone = {
-                        let cfg = config.read().unwrap();
-                        (*cfg).clone()
-                    };
-
-                    // Execute sell (non-blocking for take profit/dead coin)
-                    let _ = execute_sell(
-                        &config_clone,
-                        &wallet_clone,
-                        &rpc,
-                        &tracker,
-                        &position,
-                        reason,
-                        &event_tx,
-                    ).await;
                 }
             }
 
             // Wait before next check
-            // ULTRA FAST MONITORING: Check every 100ms regardless of config
-            // This ensures we catch price movements instantly
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // 🚀 ULTRA FAST MONITORING: Check every 50ms for instant price drop detection
+            // This ensures we catch -30% drops within 50ms
+            tokio::time::sleep(Duration::from_millis(50)).await;
             Ok(())
         }.await;
         
