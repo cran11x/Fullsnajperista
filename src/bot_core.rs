@@ -1134,6 +1134,7 @@ async fn process_and_buy(
         &user_wallet,
         &user_ata,
         config.buy_amount_lamports(),
+        config.slippage_percent,
     ).await?;
     
     let mut rng = rand::thread_rng();
@@ -1564,7 +1565,8 @@ async fn process_and_buy(
     // Verify transaction execution
     let (buy_succeeded, failure_reason) = if submission_result.is_ok() {
         if let Some(sig_str) = actual_signature.as_ref() {
-            if sig_str.as_str().starts_with("Jito:") {
+            let sig_str: &String = sig_str;
+            if sig_str.starts_with("Jito:") {
                 eprintln!("  Verification: Jito bundle (cannot verify immediately)");
                 (true, None)
             } else {
@@ -2481,6 +2483,7 @@ pub async fn execute_manual_buy(
         &user_wallet,
         &user_ata,
         sol_amount,
+        config.slippage_percent,
     ).await?;
     
     eprintln!("  ✅ Buy instruction built ({} accounts)", buy_ix.accounts.len());

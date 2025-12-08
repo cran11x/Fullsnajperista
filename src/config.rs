@@ -17,6 +17,7 @@ pub struct Config {
     pub helius_api_key: String,
     pub sol_price_usd: f64,
     pub buy_amount_sol: f64,
+    pub slippage_percent: u32, // Slippage tolerance in percent (e.g., 120 = 20% slippage)
     pub priority_fee: u64,
     pub enable_dynamic_priority_fee: bool,
     pub compute_units: u32,
@@ -100,6 +101,17 @@ impl Config {
         let buy_amount_sol = buy_amount_sol_str
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid BUY_AMOUNT_SOL: '{}'", buy_amount_sol_str))?;
+
+        let slippage_percent_str = std::env::var("SLIPPAGE_PERCENT")
+            .unwrap_or_else(|_| "200".to_string()); // Default 200% (100% slippage)
+        let slippage_percent = slippage_percent_str
+            .parse::<u32>()
+            .map_err(|_| anyhow!("Invalid SLIPPAGE_PERCENT: '{}'", slippage_percent_str))?;
+        
+        // Validate slippage is reasonable (between 100% and 500%)
+        if slippage_percent < 100 || slippage_percent > 500 {
+            return Err(anyhow!("SLIPPAGE_PERCENT must be between 100 and 500 (got {})", slippage_percent));
+        }
 
         let priority_fee = std::env::var("PRIORITY_FEE")
             .unwrap_or_else(|_| "11000000".to_string())
@@ -363,6 +375,7 @@ impl Config {
             helius_api_key,
             sol_price_usd,
             buy_amount_sol,
+            slippage_percent,
             priority_fee,
             enable_dynamic_priority_fee,
             compute_units,
@@ -533,6 +546,7 @@ impl Default for Config {
             helius_api_key: "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string(),
             sol_price_usd: 137.0,
             buy_amount_sol: 0.015,
+            slippage_percent: 200, // Default 200% (100% slippage tolerance)
             priority_fee: 11_000_000,
             enable_dynamic_priority_fee: false,
             compute_units: 200_000,

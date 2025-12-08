@@ -64,6 +64,7 @@ pub async fn build_buy_instruction(
     user_wallet: &Pubkey,
     user_token_account: &Pubkey,
     sol_lamports: u64,
+    slippage_percent: u32, // Slippage tolerance in percent (e.g., 120 = 20% slippage)
 ) -> Result<Instruction> {
     // Validate parameters
     validate_buy_params(accounts, user_wallet, user_token_account, sol_lamports)?;
@@ -78,8 +79,8 @@ pub async fn build_buy_instruction(
         return Err(anyhow::anyhow!("Token amount is 0. Check global account configuration."));
     }
 
-    // ⚡ 100% slippage - aggressive buffer to prevent failures on fast-moving tokens
-    let max_sol_cost = (sol_lamports as u128 * 200 / 100) as u64;
+    // ⚡ Configurable slippage buffer to prevent failures on fast-moving tokens
+    let max_sol_cost = (sol_lamports as u128 * slippage_percent as u128 / 100) as u64;
 
     println!("   💰 {} tokens for {} SOL (max: {})",
              token_amount,
@@ -451,6 +452,7 @@ mod tests {
             &user_wallet,
             &user_token_account,
             15_000_000, // 0.015 SOL
+            200, // Default slippage 200%
         ).await;
 
         assert!(instruction.is_ok());
@@ -501,6 +503,7 @@ mod tests {
             &user_wallet,
             &user_token_account,
             15_000_000,
+            200, // Default slippage 200%
         ).await;
         
         // If cache is not set, we should get an error
@@ -520,6 +523,7 @@ mod tests {
             &user_wallet,
             &user_token_account,
             0,
+            200, // Default slippage 200%
         ).await;
         assert!(result.is_err(), "Expected error for zero SOL amount");
     }

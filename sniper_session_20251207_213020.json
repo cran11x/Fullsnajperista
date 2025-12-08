@@ -1,8 +1,8 @@
 {
-  "total_buys": 17,
-  "total_sol_spent": 2.375219487,
+  "total_buys": 18,
+  "total_sol_spent": 2.502727282,
   "session_start": "2025-12-07T21:30:20.783338300Z",
-  "last_buy": "2025-12-08T13:25:59.199483Z",
+  "last_buy": "2025-12-08T19:26:50.493912400Z",
   "buys": [
     {
       "token_number": 2,
@@ -484,7 +484,7 @@
       "detection_method": "instruction",
       "mc_at_detection_usd": 4905.631708435867,
       "mc_at_entry_usd": 5833.0456064534,
-      "token_price_sol": 4.257697522958686e-8,
+      "token_price_sol": 4.2576975229586864e-8,
       "token_amount": 2497838377120,
       "user_token_account": "F4xs5KCsuU6iXfdTdac5YZHDd8YGq3QVTwKNRpRWuXQP",
       "bonding_curve": "271p4HzbtFx3FPxF12YvTPhJL4KA1p6DvLEyMcwjRA2n",
@@ -495,10 +495,39 @@
       "pnl_sol": -0.05222944557913779,
       "pnl_percent": -40.952906691154034,
       "last_pnl_update": "2025-12-08T13:26:11.902252300Z",
-      "buy_fees_sol": 0.012504999999999999
+      "buy_fees_sol": 0.012505
+    },
+    {
+      "token_number": 728,
+      "mint": "7bwGgUzwMSsSyx23FDDzhx3yKBcEBGwXHaVGNGpGpump",
+      "signature": "4TRnEnoeu9nnLPW342TYHH86HxKafnZX6Hyyz3nwUhk96XPTG5qpEBVYw7nZ3qSSE5bU56CtU9bkmwrh31RyhuTJ",
+      "creator": "4vXfiDoWJ5Tgznm8spq2gdSA22RBGpbXp8q4aZ1oaC78",
+      "dev_buy_sol": 4.04,
+      "our_buy_sol": 0.127507795,
+      "timestamp": "2025-12-08T19:26:50.493912400Z",
+      "has_socials": false,
+      "twitter": null,
+      "website": null,
+      "telegram": null,
+      "creator_token_count": 0,
+      "detection_method": "instruction",
+      "mc_at_detection_usd": 5051.1888556130625,
+      "mc_at_entry_usd": 4966.384683657692,
+      "token_price_sol": 3.6250983092391915e-8,
+      "token_amount": 3564784053156,
+      "user_token_account": "CM4h4DsMeFTWoHikCZapV4CKMcEXBvfJYGArET1eLsAL",
+      "bonding_curve": "ACa1enajFyQjiKnjtF8QcphokqF7CcGmavwD221Bd2zb",
+      "sold": true,
+      "sell_signature": "4NL9LjmxsGXWmmDWdbhxU9jwAKW9EB4LkLZQd9bbKaHpy96zmQrDrzMY5YnkZtv9a8pRj95DabbFiJ55JRdp7EBM",
+      "current_price_sol": 2.8145697424364706e-8,
+      "current_value_sol": 0.10033333334332921,
+      "pnl_sol": -0.04069279499010407,
+      "pnl_percent": -29.063625927976133,
+      "last_pnl_update": "2025-12-08T19:32:04.290181600Z",
+      "buy_fees_sol": 0.012505
     }
   ],
-  "avg_mc_usd": 5187.65462385701,
+  "avg_mc_usd": 5175.361849401492,
   "min_mc_usd": 4114.933309707043,
   "max_mc_usd": 6500.0
 }

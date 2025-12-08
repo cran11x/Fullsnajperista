@@ -35,6 +35,7 @@ fn apply_config_live(
 #[derive(Default, Clone)]
 struct SettingsState {
     buy_amount_str: Option<String>,
+    slippage_percent_str: Option<String>,
     priority_fee_str: Option<String>,
     min_dev_buy_str: Option<String>,
     max_dev_buy_str: Option<String>,
@@ -72,6 +73,12 @@ impl SettingsState {
                     self.buy_amount_str = Some(default);
                 }
                 self.buy_amount_str.as_mut().unwrap()
+            }
+            "slippage_percent" => {
+                if self.slippage_percent_str.is_none() {
+                    self.slippage_percent_str = Some(default);
+                }
+                self.slippage_percent_str.as_mut().unwrap()
             }
             "priority_fee" => {
                 if self.priority_fee_str.is_none() {
@@ -485,6 +492,32 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     state.last_update_time = Some(std::time::Instant::now());
                 }
             }
+        });
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Slippage (%):")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let slippage_str = state.get_or_init("slippage_percent", config_clone.slippage_percent.to_string());
+            if ui.add(egui::TextEdit::singleline(slippage_str)
+                    .desired_width(200.0))
+                    .changed() {
+                if let Ok(val) = slippage_str.parse::<u32>() {
+                    if val >= 100 && val <= 500 {
+                        config_clone.slippage_percent = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("(Max: {:.1} SOL for {} SOL buy)", 
+                config_clone.buy_amount_sol * config_clone.slippage_percent as f64 / 100.0,
+                config_clone.buy_amount_sol))
+                .size(11.0)
+                .color(egui::Color32::from_rgb(180, 180, 180)));
         });
         
         ui.horizontal(|ui| {
