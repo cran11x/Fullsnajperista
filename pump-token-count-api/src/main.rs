@@ -1,7 +1,7 @@
 // main.rs - Axum server with background workers
 use anyhow::Result;
 use axum::{
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -17,12 +17,14 @@ mod fallback;
 #[allow(dead_code)] // lib.rs is used for public API
 mod lib;
 mod refresh;
+mod webhook;
 mod ws_listener;
 
 pub use bulk_loader;
 
 use lib::{cache_count, get_creator_count_from_redis};
 use refresh::start_refresh_task;
+use webhook::{get_recent_tokens, handle_helius_webhook, HeliusWebhookPayload};
 use ws_listener::{get_last_update, start_listener};
 
 #[derive(serde::Serialize)]
@@ -100,6 +102,8 @@ async fn main() -> Result<()> {
         .route("/count/:address", get(get_count_handler))
         .route("/health", get(health_handler))
         .route("/stats", get(stats_handler))
+        .route("/webhook", axum::routing::post(webhook_handler))
+        .route("/recent", get(recent_tokens_handler))
         .with_state((redis_pool_api, helius_api_key_api));
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
@@ -243,6 +247,71 @@ async fn stats_handler(
     };
 
     (StatusCode::OK, axum::Json(response))
+}
+
+/// POST /webhook - Handle Helius webhook for CREATE token events
+async fn webhook_handler(
+    axum::extract::State((redis_pool, _)): axum::extract::State<(
+        Arc<ConnectionManager>,
+        String,
+    )>,
+    axum::Json(payload): axum::Json<HeliusWebhookPayload>,
+) -> impl IntoResponse {
+    let mut redis = (*redis_pool).clone();
+
+    match handle_helius_webhook(payload, &mut redis).await {
+        Ok(processed) => {
+            tracing::info!("Webhook processed {} transactions", processed);
+            (StatusCode::OK, axum::Json(serde_json::json!({
+                "success": true,
+                "processed": processed
+            })))
+        }
+        Err(e) => {
+            tracing::error!("Webhook error: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                })),
+            )
+        }
+    }
+}
+
+/// GET /recent?limit=N - Get recent CREATE tokens
+async fn recent_tokens_handler(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    axum::extract::State((redis_pool, _)): axum::extract::State<(
+        Arc<ConnectionManager>,
+        String,
+    )>,
+) -> impl IntoResponse {
+    let mut redis = (*redis_pool).clone();
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(1000); // Max 1000
+
+    match get_recent_tokens(limit, &mut redis).await {
+        Ok(tokens) => (StatusCode::OK, axum::Json(serde_json::json!({
+            "success": true,
+            "count": tokens.len(),
+            "tokens": tokens
+        }))),
+        Err(e) => {
+            tracing::error!("Error getting recent tokens: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                })),
+            )
+        }
+    }
 }
 
 /// Graceful shutdown signal handler

@@ -6,6 +6,7 @@ Ultra-fast Rust API server that provides sub-15ms token count lookups for pump.f
 
 - **< 15ms response time** for Redis cache hits (99.999% of requests)
 - **Real-time updates** via Helius WebSocket listener
+- **Webhook support** for Helius webhook integration (see [WEBHOOK_SETUP.md](./WEBHOOK_SETUP.md))
 - **Daily refresh** from Apify dataset (every 3 hours)
 - **Fallback API** when Redis miss (Enhanced Transactions API → DAS API)
 - **Health monitoring** with WebSocket connection status
@@ -92,6 +93,51 @@ curl http://localhost:3000/stats
 }
 ```
 
+### POST /webhook
+
+Receives Helius webhook payload and processes CREATE token transactions. See [WEBHOOK_SETUP.md](./WEBHOOK_SETUP.md) for detailed setup instructions.
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d @webhook_payload.json
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "processed": 1
+}
+```
+
+### GET /recent?limit=N
+
+Returns N most recent CREATE tokens (default: 100, max: 1000).
+
+**Example:**
+```bash
+curl http://localhost:3000/recent?limit=10
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 10,
+  "tokens": [
+    {
+      "mint": "mint-address",
+      "creator": "creator-address",
+      "signature": "tx-signature",
+      "timestamp": 1234567890,
+      "slot": 123456
+    }
+  ]
+}
+```
+
 ## Architecture
 
 ### Components
@@ -99,8 +145,9 @@ curl http://localhost:3000/stats
 1. **Axum Web Server** - Handles HTTP requests
 2. **Redis Cache** - Stores creator token counts with 30-day TTL
 3. **WebSocket Listener** - Real-time CREATE event tracking from Helius
-4. **Refresh Task** - Downloads Apify dataset every 3 hours and bulk loads to Redis
-5. **Fallback API** - Enhanced Transactions API → DAS API when Redis miss
+4. **Webhook Handler** - Receives Helius webhook payloads for CREATE transactions
+5. **Refresh Task** - Downloads Apify dataset every 3 hours and bulk loads to Redis
+6. **Fallback API** - Enhanced Transactions API → DAS API when Redis miss
 
 ### Critical Fixes Implemented
 
