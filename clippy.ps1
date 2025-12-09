@@ -9,6 +9,10 @@ param(
     [switch]$Fix
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 Write-Host "Tražim Cargo..." -ForegroundColor Cyan
 
 # Pokušaj pronaći cargo
@@ -54,7 +58,12 @@ if ($Fix) {
 
 & $cargo clippy $clippyArgs
 
-if ($LASTEXITCODE -eq 0) {
+$exitCode = $LASTEXITCODE
+
+# Restore original directory
+Pop-Location
+
+if ($exitCode -eq 0) {
     Write-Host ""
     Write-Host "Clippy provera uspjesna! Kod je cist." -ForegroundColor Green
 } else {

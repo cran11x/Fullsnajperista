@@ -468,7 +468,7 @@ impl TokenTracker {
     pub fn clear_active_positions(&mut self) -> Result<()> {
         let initial_count = self.stats.buys.len();
         self.stats.buys.retain(|buy| buy.sold); // Keep only sold positions
-        let removed_count = initial_count - self.stats.buys.len();
+        let _removed_count = initial_count - self.stats.buys.len();
         
         // Update stats
         self.stats.total_buys = self.stats.buys.len() as u32;
@@ -547,6 +547,14 @@ impl TokenTracker {
             
             // Calculate current value if we have token amount
             if let Some(token_amount) = buy.token_amount {
+                // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
+                // This prevents showing incorrect PnL (like 353353%) when entry price is not yet available
+                if buy.token_price_sol.is_none() || buy.token_price_sol.unwrap_or(0.0) <= 0.0 {
+                    // Entry price not set yet - don't calculate PnL to avoid showing incorrect values
+                    // This happens right after buy when entry price is still being calculated from transaction metadata
+                    return Ok(());
+                }
+                
                 // FORMULA EXPLANATION:
                 // get_token_price_sol() = virtual_sol_reserves / virtual_token_reserves
                 // where virtual_sol_reserves is in lamports (1e9 per SOL)

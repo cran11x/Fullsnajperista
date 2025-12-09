@@ -75,26 +75,60 @@ pub async fn build_buy_instruction(
         .map_err(|e| anyhow::anyhow!("Global account not cached. Call preload_global() first: {}", e))?;
     
     // Use current bonding curve price if available, otherwise fallback to initial price
-    let (token_amount, price_source) = if let Some(curve) = bonding_curve {
+    // If bonding curve returns 0 (invalid data), fallback to global account
+    let (token_amount, price_source, use_current_price) = if let Some(curve) = bonding_curve {
         let amount = curve.calculate_token_amount_for_sol(sol_lamports);
-        (amount, "current")
+        if amount > 0 {
+            (amount, "current", true)
+        } else {
+            // Bonding curve returned 0 (invalid reserves) - fallback to global account
+            eprintln!("⚠️  Bonding curve returned 0 tokens (virtual_sol: {}, virtual_token: {}), using global account fallback", 
+                     curve.virtual_sol_reserves, curve.virtual_token_reserves);
+            let amount = global.get_initial_buy_price(sol_lamports);
+            if amount == 0 {
+                eprintln!("⚠️  Global account also returned 0 tokens (initial_virtual_sol: {}, initial_virtual_token: {})", 
+                         global.initial_virtual_sol_reserves, global.initial_virtual_token_reserves);
+            }
+            (amount, "initial", false)
+        }
     } else {
         let amount = global.get_initial_buy_price(sol_lamports);
-        (amount, "initial")
+        if amount == 0 {
+            eprintln!("⚠️  Global account returned 0 tokens (initial_virtual_sol: {}, initial_virtual_token: {})", 
+                     global.initial_virtual_sol_reserves, global.initial_virtual_token_reserves);
+        }
+        (amount, "initial", false)
     };
 
     if token_amount == 0 {
-        return Err(anyhow::anyhow!("Token amount is 0. Check global account configuration."));
+        return Err(anyhow::anyhow!("Token amount is 0. Check global account configuration. Virtual reserves may be invalid. SOL amount: {} lamports", sol_lamports));
     }
 
     // ⚡ Configurable slippage buffer to prevent failures on fast-moving tokens
-    let max_sol_cost = (sol_lamports as u128 * slippage_percent as u128 / 100) as u64;
+    // When using current price, add extra 15% buffer because price can change between fetch and execution
+    let base_max_sol_cost = (sol_lamports as u128 * slippage_percent as u128 / 100) as u64;
+    let max_sol_cost = if use_current_price {
+        // Add 15% extra buffer for current price (price can move between fetch and tx execution)
+        (base_max_sol_cost as u128 * 115 / 100) as u64
+    } else {
+        base_max_sol_cost
+    };
 
-    println!("   💰 {} tokens for {} SOL (max: {}) [using {} price]",
-             token_amount,
-             sol_lamports as f64 / 1e9,
-             max_sol_cost as f64 / 1e9,
-             price_source);
+    if use_current_price && max_sol_cost != base_max_sol_cost {
+        println!("   💰 ~{} tokens (expected) for {} SOL (max: {} with +15% buffer) [using {} price]",
+                 token_amount as f64 / 1e6,
+                 sol_lamports as f64 / 1e9,
+                 max_sol_cost as f64 / 1e9,
+                 price_source);
+        eprintln!("   ⚠️  NOTE: Expected token amount is {} (raw units). Actual amount will be determined by pump.fun program using max_sol_cost and current bonding curve price.", token_amount);
+    } else {
+        println!("   💰 ~{} tokens (expected) for {} SOL (max: {}) [using {} price]",
+                 token_amount as f64 / 1e6,
+                 sol_lamports as f64 / 1e9,
+                 max_sol_cost as f64 / 1e9,
+                 price_source);
+        eprintln!("   ⚠️  NOTE: Expected token amount is {} (raw units). Actual amount will be determined by pump.fun program using max_sol_cost and current bonding curve price.", token_amount);
+    }
 
     let mut data = Vec::with_capacity(32);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
@@ -294,7 +328,11 @@ pub async fn build_buy_instruction(
     eprintln!("   Discriminator: {:02x?}", &instruction.data[0..8]);
     if instruction.data.len() >= 16 {
         let token_amount = u64::from_le_bytes(instruction.data[8..16].try_into().unwrap());
-        eprintln!("   Token Amount: {} ({:.2} tokens)", token_amount, token_amount as f64 / 1e9);
+        // ⚠️ NOTE: This is EXPECTED token amount (for reference only)
+        // Pump.fun program uses max_sol_cost and bonding curve to determine ACTUAL tokens received
+        // Actual amount may differ due to price changes between calculation and execution
+        // Token amount is in raw units with 6 decimals (pump.fun standard)
+        eprintln!("   Token Amount (expected): {} ({:.6} tokens) [NOTE: Actual amount may differ - pump.fun uses max_sol_cost]", token_amount, token_amount as f64 / 1e6);
     }
     if instruction.data.len() >= 24 {
         let max_sol_cost = u64::from_le_bytes(instruction.data[16..24].try_into().unwrap());
@@ -462,6 +500,7 @@ mod tests {
             &user_token_account,
             15_000_000, // 0.015 SOL
             200, // Default slippage 200%
+            None, // No bonding curve in test
         ).await;
 
         assert!(instruction.is_ok());
@@ -513,6 +552,7 @@ mod tests {
             &user_token_account,
             15_000_000,
             200, // Default slippage 200%
+            None, // No bonding curve in test
         ).await;
         
         // If cache is not set, we should get an error
@@ -533,6 +573,7 @@ mod tests {
             &user_token_account,
             0,
             200, // Default slippage 200%
+            None, // No bonding curve in test
         ).await;
         assert!(result.is_err(), "Expected error for zero SOL amount");
     }

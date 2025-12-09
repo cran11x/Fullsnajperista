@@ -11,6 +11,10 @@ param(
     [string]$TxSig2
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 # Pokušaj pronaći cargo
 $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
 if (-not (Test-Path $cargo)) {
@@ -44,7 +48,12 @@ if ($TxSig2) {
     & $cargo run --release -- debug $TxSig1
 }
 
-if ($LASTEXITCODE -ne 0) {
+$exitCode = $LASTEXITCODE
+
+# Restore original directory
+Pop-Location
+
+if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "Debug neuspješan!" -ForegroundColor Red
     exit 1

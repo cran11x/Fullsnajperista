@@ -122,7 +122,7 @@ pub async fn fetch_bonding_curve_mc(
     bonding_curve: &Pubkey,
     sol_price_usd: f64,
 ) -> Result<(BondingCurveAccount, f64, f64)> {
-    let max_attempts = 5;
+    let max_attempts = 3; // Reduced from 5 to 3 for premium RPC
     let mut last_error = None;
 
     for attempt in 1..=max_attempts {
@@ -136,8 +136,8 @@ pub async fn fetch_bonding_curve_mc(
             Err(e) => {
                 last_error = Some(e);
                 if attempt < max_attempts {
-                    // Wait 150ms before retry (account needs time to propagate)
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    // Reduced delay for premium RPC (account propagates faster)
+                    tokio::time::sleep(Duration::from_millis(20)).await; // Reduced from 50ms to 20ms
                 }
             }
         }

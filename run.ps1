@@ -5,6 +5,10 @@ param(
     [string]$BuildProfile = "release"
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 $ErrorActionPreference = "SilentlyContinue"
 
 # Setup cargo path
@@ -28,3 +32,10 @@ if ($BuildProfile -eq "release") {
     Write-Host "Pokretanje debug verzije..." -ForegroundColor Cyan
     & $cargo run
 }
+
+$exitCode = $LASTEXITCODE
+
+# Restore original directory
+Pop-Location
+
+exit $exitCode

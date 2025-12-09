@@ -8,6 +8,10 @@ param(
     [string]$Profile = "debug"  # debug ili release
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 Write-Host "🔍 Tražim Cargo..." -ForegroundColor Cyan
 
 # Pokušaj pronaći cargo
@@ -42,11 +46,10 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host ""
 }
 
-$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exePath = if ($Profile -eq "release") {
-    "$projectDir\target\release\Fullsnajperista.exe"
+    "target\release\Fullsnajperista.exe"
 } else {
-    "$projectDir\target\debug\Fullsnajperista.exe"
+    "target\debug\Fullsnajperista.exe"
 }
 
 Write-Host "🚀 Development Watch Mode" -ForegroundColor Cyan
@@ -79,9 +82,11 @@ if ($Profile -eq "release") {
 }
 
 if ($LASTEXITCODE -eq 0) {
-    Start-App -ExePath $exePath
+    $fullExePath = Join-Path $scriptDir $exePath
+    Start-App -ExePath $fullExePath
 } else {
     Write-Host "❌ Build neuspješan!" -ForegroundColor Red
+    Pop-Location
     exit 1
 }
 
@@ -95,4 +100,7 @@ if ($Profile -eq "release") {
 } else {
     & $cargo watch -x build -x run
 }
+
+# Restore original directory (only reached if watch is interrupted)
+Pop-Location
 

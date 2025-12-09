@@ -183,6 +183,7 @@ impl PumpBuyAccounts {
             let mut abc_instruction_idx = None;
             let mut actual_abc_from_tx: Option<Pubkey> = None;
             let mut abc_instruction_from_tx: Option<solana_sdk::instruction::Instruction> = None;
+            let mut vault_from_create: Option<Pubkey> = None; // Extract from CREATE as fallback
             
             // Calculate bonding curve first to use in comparison
             let (bonding_curve_temp, _) = Pubkey::find_program_address(
@@ -343,12 +344,46 @@ impl PumpBuyAccounts {
                                     }
                                 }
                                 
-                                // ⚠️  SKIPPED: Creator Vault extraction from CREATE instruction
-                                // We prefer BUY instruction for Creator Vault (more reliable - exact index 9)
-                                // CREATE instruction extraction is disabled to ensure we use BUY instruction value
-                                // if creator_vault.is_none() {
-                                //     ... (commented out - use BUY instruction instead)
-                                // }
+                                // ✅ Extract Creator Vault from CREATE instruction as fallback (when no BUY instruction)
+                                // CREATE instruction has Creator Vault typically at index 8 or 9
+                                if vault_from_create.is_none() && ix_accounts.len() >= 10 {
+                                    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+                                    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                                    let system_program = Pubkey::from_str("11111111111111111111111111111111").ok();
+                                    
+                                    // Try common positions for Creator Vault in CREATE instruction
+                                    let possible_vault_indices = vec![8, 9, 7, 10];
+                                    for &vault_idx in &possible_vault_indices {
+                                        if ix_accounts.len() > vault_idx {
+                                            let candidate = ix_accounts[vault_idx];
+                                            
+                                            // Filter: skip known programs and accounts
+                                            if candidate != *mint
+                                                && candidate != creator
+                                                && candidate != pump_program
+                                                && candidate != bonding_curve_temp
+                                                && candidate != token_program_2022
+                                                && candidate != token_program
+                                                && candidate != system_program.unwrap_or(candidate)
+                                                && candidate != ata_program.unwrap_or(candidate) {
+                                                
+                                                // Verify it's a valid account (not a program)
+                                                if let Ok(account_info) = rpc.get_account(&candidate).await {
+                                                    // Creator vault is typically a system account (not token account)
+                                                    // Check if it's not a program
+                                                    if account_info.executable {
+                                                        continue; // Skip programs
+                                                    }
+                                                    vault_from_create = Some(candidate);
+                                                    if DEBUG {
+                                                        println!("      ✅ Creator Vault from CREATE (idx {}): {}", vault_idx, candidate);
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             if discriminator == BUY_DISCRIMINATOR {
@@ -662,18 +697,24 @@ impl PumpBuyAccounts {
             };
             eprintln!("   ✅ FINAL Associated Bonding Curve address: {}", associated_bonding_curve);
 
-            // FINALNO: Creator vault je ili iz BUY indexa 9 (canon) ili PDA fallback
+            // FINALNO: Creator vault je ili iz BUY indexa 9 (canon), ili iz CREATE (fallback), ili PDA (last resort)
             let creator_vault = if let Some(vault) = vault_from_buy {
                 // Index 9 iz BUY instrukcije je apsolutna istina
                 eprintln!();
                 eprintln!("🔍 DECIDING WHICH CREATOR VAULT ADDRESS TO USE...");
                 eprintln!("   ✅ USING CANONICAL CREATOR VAULT FROM BUY (index 9): {}", vault);
                 vault
-            } else {
-                // PDA fallback samo ako nema BUY-a (gotovo nikad)
+            } else if let Some(vault) = vault_from_create {
+                // Fallback: Use Creator Vault from CREATE instruction
                 eprintln!();
                 eprintln!("🔍 DECIDING WHICH CREATOR VAULT ADDRESS TO USE...");
-                eprintln!("   ⚠️  NO BUY INSTRUCTION → USING PDA FALLBACK");
+                eprintln!("   ✅ USING CREATOR VAULT FROM CREATE INSTRUCTION: {}", vault);
+                vault
+            } else {
+                // Last resort: PDA fallback (may cause Error 2006 if wrong)
+                eprintln!();
+                eprintln!("🔍 DECIDING WHICH CREATOR VAULT ADDRESS TO USE...");
+                eprintln!("   ⚠️  NO BUY OR CREATE INSTRUCTION → USING PDA FALLBACK (may cause Error 2006)");
                 let (pda, _) = Pubkey::find_program_address(&[b"creator_vault", creator.as_ref()], &pump_program_id);
                 eprintln!("   📋 Calculated PDA: {}", pda);
                 pda

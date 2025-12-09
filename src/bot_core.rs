@@ -1256,8 +1256,8 @@ async fn process_and_buy(
     
     // Verify bonding curve account
     let mut bonding_curve_ready = false;
-    let max_wait_attempts = 5;
-    let wait_interval_ms = 100;
+    let max_wait_attempts = 3; // Reduced from 5 to 3 for premium RPC
+    let wait_interval_ms = 30; // Reduced from 100ms to 30ms for premium RPC
     
     for attempt in 1..=max_wait_attempts {
         match rpc.get_account_with_commitment(&accounts.bonding_curve, CommitmentConfig::confirmed()).await {
@@ -1443,6 +1443,14 @@ async fn process_and_buy(
         Some(&curve), // Use current bonding curve price for accurate token amount
     ).await?;
     
+    // ✅ CRITICAL: Extract token_amount from buy instruction (this is the expected amount from bonding curve)
+    // This is more accurate than global account calculation and should be used as fallback
+    let buy_instruction_token_amount = if buy_ix.data.len() >= 16 {
+        u64::from_le_bytes(buy_ix.data[8..16].try_into().unwrap())
+    } else {
+        0
+    };
+    
     let mut rng = rand::thread_rng();
     use crate::constants::HELIUS_TIP_ACCOUNTS;
     let tip_account = Pubkey::from_str(
@@ -1503,7 +1511,7 @@ async fn process_and_buy(
     
     // Verify Associated Bonding Curve account
     let mut abc_account_opt = None;
-    let max_wait_attempts = 5;
+    let max_wait_attempts = 2; // Reduced from 5 to 2 for premium RPC
     
     for attempt in 1..=max_wait_attempts {
         match rpc.get_account_with_commitment(&accounts.associated_bonding_curve, CommitmentConfig::confirmed()).await {
@@ -1519,7 +1527,7 @@ async fn process_and_buy(
         }
         
         if attempt < max_wait_attempts {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(30)).await; // Reduced from 100ms to 30ms for premium RPC
         }
     }
     
@@ -1653,7 +1661,7 @@ async fn process_and_buy(
         
         // In mock mode, we don't send the transaction, but we can still check if we would have succeeded
         // by checking if the token account already exists (from a previous real buy)
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await; // Reduced from 500ms to 200ms for premium RPC
         
         let token_account_exists = rpc.get_account(&user_ata).await.is_ok();
         if token_account_exists {
@@ -1928,7 +1936,6 @@ async fn process_and_buy(
     // Verify transaction execution
     let (buy_succeeded, failure_reason) = if submission_result.is_ok() {
         if let Some(sig_str) = actual_signature.as_ref() {
-            let sig_str: &String = sig_str;
             if sig_str.starts_with("Jito:") {
                 eprintln!("  Verification: Jito bundle (cannot verify immediately)");
                 (true, None)
@@ -1941,12 +1948,16 @@ async fn process_and_buy(
                     }
                 };
                 
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await; // Reduced from 500ms to 200ms for premium RPC
                 
                 match verify_transaction_success(rpc, &sig, &user_ata).await {
                     Ok(None) => (true, None),
                     Ok(Some(reason)) => (false, Some(reason)),
-                    Err(_e) => (true, None)
+                    Err(e) => {
+                        eprintln!("  ⚠️  Verification error: {}", e);
+                        // Don't assume success on verification error - transaction might have failed
+                        (false, Some(format!("Verification failed: {}", e)))
+                    }
                 }
             }
         } else {
@@ -1957,21 +1968,13 @@ async fn process_and_buy(
     };
     
     if buy_succeeded {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await; // Reduced from 300ms to 150ms for premium RPC
         
         let mc_entry_result = fetch_bonding_curve_mc(
             rpc,
             &accounts.bonding_curve,
             config.sol_price_usd,
         ).await;
-        
-        let (mc_entry_usd, token_price_entry) = match mc_entry_result {
-            Ok((curve, _, mc)) => {
-                let price = curve.get_token_price_sol();
-                (Some(mc), if price > 0.0 { Some(price) } else { None })
-            }
-            Err(_) => (None, None)
-        };
         
         // Calculate total fees for PnL accuracy
         let priority_fee_sol = priority_fee as f64 / 1e9;
@@ -1986,11 +1989,19 @@ async fn process_and_buy(
             .map(|s| s.clone())
             .unwrap_or_else(|| init_signature.clone());
         
-        // Only try to fetch if we have a real signature (not MOCK)
+        // ✅ CRITICAL: Get ACTUAL token amount from token account balance after buy
+        // Use token_amount from buy instruction as fallback (more accurate than global account)
+        let mut actual_token_amount = if buy_instruction_token_amount > 0 {
+            buy_instruction_token_amount
+        } else {
+            token_amount // Fallback to global account calculation if buy instruction amount not available
+        };
         if !buy_signature.starts_with("MOCK") {
-            // Add small delay to ensure transaction is indexed
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Add delay to ensure transaction is indexed and token account balance is updated
+            // Token account balance may take longer to update than transaction confirmation
+            tokio::time::sleep(Duration::from_millis(500)).await; // Increased to 500ms for balance update
             
+            // Get actual SOL spent
             match crate::utils::get_transaction_balance_change(rpc, &buy_signature, &user_wallet).await {
                     Ok(change_lamports) => {
                         let change_sol = change_lamports as f64 / 1e9;
@@ -2006,6 +2017,204 @@ async fn process_and_buy(
                         }
                     },
                     Err(_e) => {}
+            }
+            
+            // ✅ CRITICAL: Extract ACTUAL token amount from buy transaction metadata
+            // This is more reliable than waiting for balance to update
+            // Try to get token amount from post_token_balances in transaction metadata
+            let mut balance_found = false;
+            
+            // First, try to extract from transaction metadata (most reliable)
+            match rpc.get_transaction_with_config(
+                &solana_sdk::signature::Signature::from_str(&buy_signature)?,
+                solana_client::rpc_config::RpcTransactionConfig {
+                    encoding: Some(solana_transaction_status::UiTransactionEncoding::JsonParsed),
+                    max_supported_transaction_version: Some(0),
+                    commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+                }
+            ).await {
+                Ok(tx) => {
+                    if let Some(meta) = tx.transaction.meta {
+                        // Extract token amount from post_token_balances
+                        // OptionSerializer needs to be converted to Option first
+                        let post_token_balances_opt: Option<Vec<_>> = meta.post_token_balances.into();
+                        if let Some(post_token_balances) = post_token_balances_opt {
+                            // ✅ CRITICAL: In buy transaction, we need to find OUR user token account (ATA), not bonding curve token account
+                            // Both have the same mint, but we need the one that belongs to our user wallet
+                            // User token account (ATA) is typically at index 5 in buy instruction
+                            // We'll check all token balances and find the one that matches our mint AND account_index 5
+                            
+                            // ✅ IMPROVED: Try multiple strategies to find user token account
+                            // Strategy 1: Look for account index 5 (user ATA in buy instruction)
+                            // Strategy 2: If not found, use the account with matching mint that has the highest balance (likely user ATA)
+                            let mut candidate_balances: Vec<(u8, u64, u8)> = Vec::new();
+                            
+                            for token_balance in post_token_balances {
+                                // Extract token amount directly
+                                // ui_token_amount is UiTokenAmount (not Option)
+                                let ui_amount = &token_balance.ui_token_amount;
+                                
+                                // ✅ CRITICAL FIX: Use 'amount' field (raw units as String) instead of 'ui_amount_string' (human-readable)
+                                // 'amount' is already in raw units (String containing u64), no need to multiply by decimals
+                                let raw_amount = ui_amount.amount.parse::<u64>().unwrap_or(0);
+                                
+                                if raw_amount > 0 {
+                                    let mint_str = &token_balance.mint;
+                                    let is_our_mint = mint_str == &accounts.mint.to_string();
+                                    
+                                    if is_our_mint {
+                                        let account_index = token_balance.account_index;
+                                        let decimals = ui_amount.decimals;
+                                        
+                                        // Strategy 1: Check if this is account index 5 (user ATA)
+                                        if account_index == 5 {
+                                            actual_token_amount = raw_amount;
+                                            let tokens_human = raw_amount as f64 / 10_f64.powi(decimals as i32);
+                                            eprintln!("   ✅ Actual token amount from TX metadata (user ATA, index 5): {} (raw units) = {} (human-readable, {} decimals, mint: {})", raw_amount, tokens_human, decimals, mint_str);
+                                            balance_found = true;
+                                            break;
+                                        } else {
+                                            // Strategy 2: Collect candidate balances (matching mint, not index 5)
+                                            // We'll use the highest balance as fallback (user ATA typically has more tokens than bonding curve)
+                                            candidate_balances.push((account_index, raw_amount, decimals));
+                                            let tokens_human = raw_amount as f64 / 10_f64.powi(decimals as i32);
+                                            eprintln!("   ⚠️  Found token balance with matching mint but account index {} (likely bonding curve or other, expected 5): {} (raw units) = {} (human-readable) - saving as candidate", account_index, raw_amount, tokens_human);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Strategy 2: If account index 5 not found, use buy instruction token_amount as fallback
+                            // This is more accurate than using highest balance (which could be bonding curve)
+                            // The buy instruction token_amount is the expected amount from bonding curve calculation
+                            if !balance_found {
+                                eprintln!("   ⚠️  Account index 5 (user ATA) not found in transaction metadata");
+                                eprintln!("   ✅ Using buy instruction token_amount as fallback: {} (raw units) = {:.6} tokens", buy_instruction_token_amount, buy_instruction_token_amount as f64 / 1e6);
+                                eprintln!("   ⚠️  This is the expected amount from bonding curve - will try RPC balance fetch for actual amount");
+                                actual_token_amount = buy_instruction_token_amount;
+                                // Don't set balance_found = true, so it will try RPC balance fetch as well
+                            }
+                        }
+                    }
+                },
+                Err(_) => {}
+            }
+            
+            // If metadata extraction failed, try balance fetch with retry logic
+            if !balance_found {
+                let mut balance_retries = 3;
+                
+                while balance_retries > 0 && !balance_found {
+                    // Try Helius API first, then fallback to RPC
+                    match get_token_balance_helius(&config.helius_api_key, &user_ata).await {
+                        Ok(balance) => {
+                            if balance > 0 {
+                                actual_token_amount = balance;
+                                eprintln!("   ✅ Actual token balance after buy (Helius): {} (raw units)", balance);
+                                balance_found = true;
+                            } else {
+                                // Balance is 0, try RPC fallback
+                                match rpc.get_token_account_balance(&user_ata).await {
+                                    Ok(balance_info) => {
+                                        if let Ok(bal) = balance_info.amount.parse::<u64>() {
+                                            if bal > 0 {
+                                                actual_token_amount = bal;
+                                                eprintln!("   ✅ Actual token balance after buy (RPC): {} (raw units)", bal);
+                                                balance_found = true;
+                                            } else if balance_retries > 1 {
+                                                eprintln!("   ⏳ Token balance is 0, waiting 300ms and retrying... ({} retries left)", balance_retries - 1);
+                                                tokio::time::sleep(Duration::from_millis(300)).await;
+                                            }
+                                        }
+                                    },
+                                    Err(_) => {
+                                        if balance_retries > 1 {
+                                            eprintln!("   ⏳ RPC balance fetch failed, waiting 300ms and retrying... ({} retries left)", balance_retries - 1);
+                                            tokio::time::sleep(Duration::from_millis(300)).await;
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Err(_) => {
+                            // Helius failed, try RPC fallback
+                            match rpc.get_token_account_balance(&user_ata).await {
+                                Ok(balance_info) => {
+                                    if let Ok(bal) = balance_info.amount.parse::<u64>() {
+                                        if bal > 0 {
+                                            actual_token_amount = bal;
+                                            eprintln!("   ✅ Actual token balance after buy (RPC): {} (raw units)", bal);
+                                            balance_found = true;
+                                        } else if balance_retries > 1 {
+                                            eprintln!("   ⏳ Token balance is 0, waiting 300ms and retrying... ({} retries left)", balance_retries - 1);
+                                            tokio::time::sleep(Duration::from_millis(300)).await;
+                                        }
+                                    }
+                                },
+                                Err(_) => {
+                                    if balance_retries > 1 {
+                                        eprintln!("   ⏳ RPC balance fetch failed, waiting 300ms and retrying... ({} retries left)", balance_retries - 1);
+                                        tokio::time::sleep(Duration::from_millis(300)).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    balance_retries -= 1;
+                }
+            }
+            
+            if !balance_found {
+                eprintln!("   ⚠️  Could not get actual token amount after all attempts, using expected amount from buy instruction: {}", actual_token_amount);
+                eprintln!("   ⚠️  Entry price may be inaccurate! Actual: {} SOL invested", invested_sol);
+                eprintln!("   ⚠️  DEBUG: actual_token_amount = {} (this is the fallback expected value from buy instruction, not from TX metadata)", actual_token_amount);
+            } else {
+                eprintln!("   ✅ DEBUG: Successfully got actual_token_amount = {} from transaction metadata or balance fetch", actual_token_amount);
+            }
+        }
+        
+        // ✅ CRITICAL FIX: Calculate entry price from ACTUAL invested SOL and ACTUAL token amount
+        // This is the REAL price we paid, not the price from bonding curve after buy
+        // actual_token_amount is the REAL balance from token account (in raw units with decimals)
+        // For pump.fun tokens, typically 6 decimals, so we divide by 1e6
+        let actual_entry_price = if actual_token_amount > 0 && invested_sol > 0.0 {
+            // Entry price = SOL invested / tokens received (in human-readable units)
+            // actual_token_amount is in raw units (e.g., if 1000 tokens with 6 decimals = 1000_000_000 raw units)
+            // We need to convert to human-readable: actual_token_amount / 1e6 (for 6 decimals)
+            let tokens_human = actual_token_amount as f64 / 1e6; // Assume 6 decimals (pump.fun standard)
+            if tokens_human > 0.0 {
+                let price = invested_sol / tokens_human;
+                eprintln!("   ✅ Calculated entry price: {:.8} SOL/token (from {} SOL / {} tokens)", 
+                         price, invested_sol, tokens_human);
+                Some(price)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Get MC after buy (for reference, but don't use for entry price)
+        let (mc_entry_usd, token_price_entry) = match mc_entry_result {
+            Ok((curve, _, mc)) => {
+                let price = curve.get_token_price_sol();
+                (Some(mc), if price > 0.0 { Some(price) } else { None })
+            }
+            Err(_) => (None, None)
+        };
+        
+        // Use actual entry price (from invested SOL / token amount) as priority
+        // Fallback to bonding curve price only if actual calculation failed
+        let final_entry_price = actual_entry_price
+            .or(token_price_entry)
+            .or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None });
+        
+        if let Some(actual) = actual_entry_price {
+            if let Some(curve_price) = token_price_entry {
+                if (actual - curve_price).abs() > 0.0001 {
+                    eprintln!("   ⚠️  Entry price mismatch: Actual={:.8} SOL/token (from invested {} SOL / {} tokens), Curve={:.8} SOL/token", 
+                             actual, invested_sol, actual_token_amount, curve_price);
+                }
             }
         }
         
@@ -2032,8 +2241,8 @@ async fn process_and_buy(
                     },
                     mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
                     mc_at_entry_usd: mc_entry_usd,
-                    token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
-                    token_amount: if token_amount > 0 { Some(token_amount) } else { None },
+                    token_price_sol: final_entry_price, // Use calculated entry price (invested SOL / actual token amount)
+                    token_amount: if actual_token_amount > 0 { Some(actual_token_amount) } else { None },
                     user_token_account: Some(user_ata.to_string()),
                     bonding_curve: Some(accounts.bonding_curve.to_string()),
                     sold: false,
@@ -2070,65 +2279,85 @@ async fn verify_transaction_success(
     signature: &solana_sdk::signature::Signature,
     expected_token_account: &Pubkey,
 ) -> Result<Option<String>> {
-    // Try to get transaction status
-    let tx_result = rpc.get_transaction_with_config(
-        signature,
-        RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::JsonParsed),
-            max_supported_transaction_version: Some(0),
-            commitment: Some(CommitmentConfig::confirmed()),
-        }
-    ).await;
+    // Retry logic: Transaction might not be immediately available after submission
+    let max_attempts = 5;
+    let wait_ms = 200; // Wait 200ms between retries
     
-    match tx_result {
-        Ok(tx) => {
-            // Check if transaction was successful
-            if let Some(meta) = tx.transaction.meta {
-                // Check if transaction errored
-                if let Some(err) = meta.err {
+    for attempt in 1..=max_attempts {
+        // Try to get transaction status
+        let tx_result = rpc.get_transaction_with_config(
+            signature,
+            RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::JsonParsed),
+                max_supported_transaction_version: Some(0),
+                commitment: Some(CommitmentConfig::confirmed()),
+            }
+        ).await;
+        
+        match tx_result {
+            Ok(tx) => {
+                // Check if transaction was successful
+                if let Some(meta) = tx.transaction.meta {
+                    // Check if transaction errored
+                    if let Some(err) = meta.err {
+                        
+                        // Provide helpful error messages for common errors
+                        let error_msg = format!("{:?}", err);
+                        let detailed_msg = if error_msg.contains("Custom(1)") {
+                            format!("Transaction on-chain error: {:?} - This usually means:\n   • Token is complete (migrated) and cannot be bought on bonding curve\n   • Token is not ready for trading yet\n   • Slippage too high or insufficient SOL", err)
+                        } else if error_msg.contains("Custom(0)") {
+                            format!("Transaction on-chain error: {:?} - Insufficient SOL or token reserves", err)
+                        } else {
+                            format!("Transaction on-chain error: {:?}", err)
+                        };
+                        
+                        // Log inner instructions if available for debugging
+                        eprintln!("   Transaction failed, checking if ATA creation was the issue...");
+                        // Note: inner_instructions is OptionSerializer type, skip detailed logging for now
+                        
+                        return Ok(Some(detailed_msg));
+                    }
                     
-                    // Provide helpful error messages for common errors
-                    let error_msg = format!("{:?}", err);
-                    let detailed_msg = if error_msg.contains("Custom(1)") {
-                        format!("Transaction on-chain error: {:?} - This usually means:\n   • Token is complete (migrated) and cannot be bought on bonding curve\n   • Token is not ready for trading yet\n   • Slippage too high or insufficient SOL", err)
-                    } else if error_msg.contains("Custom(0)") {
-                        format!("Transaction on-chain error: {:?} - Insufficient SOL or token reserves", err)
-                    } else {
-                        format!("Transaction on-chain error: {:?}", err)
-                    };
-                    
-                    // Log inner instructions if available for debugging
-                    eprintln!("   Transaction failed, checking if ATA creation was the issue...");
-                    // Note: inner_instructions is OptionSerializer type, skip detailed logging for now
-                    
-                    return Ok(Some(detailed_msg));
-                }
-                
-                // Check if token account was created (indicates buy succeeded)
-                // We can check if the expected token account exists
-                if let Ok(account) = rpc.get_account(expected_token_account).await {
-                    // Token account exists - buy likely succeeded
-                    // But we should also check the token balance
-                    if let Ok(token_account_data) = spl_token::state::Account::unpack(&account.data) {
-                        if token_account_data.amount > 0 {
-                            return Ok(None);
+                    // Check if token account was created (indicates buy succeeded)
+                    // We can check if the expected token account exists
+                    if let Ok(account) = rpc.get_account(expected_token_account).await {
+                        // Token account exists - buy likely succeeded
+                        // But we should also check the token balance
+                        if let Ok(token_account_data) = spl_token::state::Account::unpack(&account.data) {
+                            if token_account_data.amount > 0 {
+                                return Ok(None);
+                            }
                         }
                     }
+                    
+                    // Transaction succeeded but we can't verify token account
+                    // Assume success if transaction didn't error
+                    return Ok(None);
+                } else {
+                    // No metadata - can't verify
+                    return Ok(Some("No transaction metadata found".to_string()));
                 }
-                
-                // Transaction succeeded but we can't verify token account
-                // Assume success if transaction didn't error
-                Ok(None)
-            } else {
-                // No metadata - can't verify
-                Ok(Some("No transaction metadata found".to_string()))
+            }
+            Err(e) => {
+                // Transaction not found yet - retry if we have attempts left
+                if attempt < max_attempts {
+                    let error_str = format!("{}", e);
+                    // Check if error is about null/not found (transaction still processing)
+                    if error_str.contains("null") || error_str.contains("not found") || error_str.contains("Invalid") {
+                        eprintln!("   ⏳ Transaction not yet confirmed (attempt {}/{}), waiting {}ms...", 
+                                 attempt, max_attempts, wait_ms);
+                        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                        continue;
+                    }
+                }
+                // Final attempt failed or non-retryable error
+                return Err(anyhow!("Could not get transaction after {} attempts: {}", max_attempts, e));
             }
         }
-        Err(e) => {
-            // Transaction not found or error getting it
-            Err(anyhow!("Could not get transaction: {}", e))
-        }
     }
+    
+    // Should never reach here, but just in case
+    Err(anyhow!("Could not get transaction: max attempts reached"))
 }
 
 /// Monitor active positions and trigger sells when conditions are met
@@ -2392,10 +2621,12 @@ async fn monitor_positions(
             };
 
             if !enabled {
-                eprintln!("⏸️  Auto-sell is DISABLED - skipping position monitoring");
+                // Silent mode - don't spam console every 10 seconds
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 return Ok::<(), anyhow::Error>(());
             }
+            
+            eprintln!("🔍 Auto-sell monitoring active - checking positions...");
             
             // Auto-sell monitoring (silent mode - no console spam)
 
@@ -2536,7 +2767,11 @@ async fn monitor_positions(
             let active_positions = {
                 if let Ok(tracker_guard) = tracker.read() {
                     if let Some(tracker_ref) = tracker_guard.as_ref() {
-                        tracker_ref.get_active_positions()
+                        let positions = tracker_ref.get_active_positions();
+                        if !positions.is_empty() {
+                            eprintln!("📊 Found {} active position(s) to monitor", positions.len());
+                        }
+                        positions
                     } else {
                         Vec::new()
                     }
@@ -2546,8 +2781,8 @@ async fn monitor_positions(
             };
 
             if active_positions.is_empty() {
-                // Still check every 50ms even when no positions - ensures instant detection when position is added
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                // Still check every 30ms even when no positions - ensures instant detection when position is added (optimized for premium RPC)
+                tokio::time::sleep(Duration::from_millis(30)).await; // Reduced from 50ms to 30ms
                 return Ok(());
             }
             
@@ -2555,26 +2790,66 @@ async fn monitor_positions(
             let mut check_tasks = Vec::new();
             
             for position in active_positions.iter() {
+                // 🚀 ULTRA FAST: Check PnL from tracker FIRST (if available) - fastest path
+                if let Some(pnl_percent) = position.pnl_percent {
+                    if pnl_percent <= -stop_loss_percent {
+                        // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
+                        eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (threshold: -{:.2}%) - SELLING IMMEDIATELY", 
+                                 pnl_percent, stop_loss_percent);
+                        
+                        // Clone resources and execute sell IMMEDIATELY
+                        let wallet_bytes = wallet.to_bytes();
+                        let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
+                            Ok(kp) => kp,
+                            Err(_) => continue,
+                        };
+                        
+                        let config_clone = {
+                            let cfg = config.read().unwrap();
+                            (*cfg).clone()
+                        };
+                        
+                        let position_clone = position.clone();
+                        let tracker_clone = tracker.clone();
+                        let event_tx_clone = event_tx.clone();
+                        let rpc_clone = Arc::clone(&rpc_arc);
+                        
+                        // Execute sell IMMEDIATELY in background (don't block monitoring)
+                        tokio::spawn(async move {
+                            let _ = execute_sell(
+                                &config_clone,
+                                &wallet_clone,
+                                rpc_clone.as_ref(),
+                                &tracker_clone,
+                                &position_clone,
+                                "stop_loss",
+                                &event_tx_clone,
+                            ).await;
+                        });
+                        
+                        continue; // Skip to next position
+                    }
+                }
+                
                 // Skip if we don't have required data
                 let bonding_curve_str = match &position.bonding_curve {
                     Some(bc) => bc.clone(),
-                    None => continue,
+                    None => {
+                        eprintln!("⚠️  Position {} skipped: no bonding_curve", position.mint);
+                        continue;
+                    },
                 };
 
                 let bonding_curve = match Pubkey::from_str(&bonding_curve_str) {
                     Ok(pk) => pk,
-                    Err(_) => continue,
+                    Err(_) => {
+                        eprintln!("⚠️  Position {} skipped: invalid bonding_curve address", position.mint);
+                        continue;
+                    },
                 };
 
-                let entry_mc = match position.mc_at_entry_usd {
-                    Some(mc) => mc,
-                    None => continue,
-                };
-
-                // Validate entry_mc to avoid division by zero
-                if entry_mc <= 0.0 {
-                    continue;
-                }
+                // Get entry_mc if available (for fallback MC check), but don't require it
+                let entry_mc = position.mc_at_entry_usd;
                 
                 let position_mint = position.mint.clone();
                 let position_clone = position.clone();
@@ -2593,22 +2868,79 @@ async fn monitor_positions(
                 
                 // Spawn parallel task for each position
                 let task = tokio::spawn(async move {
-                    // 🚀 ULTRA FAST: Fetch current MC (critical for stop loss)
-                    let current_mc_result = fetch_bonding_curve_mc(
-                        rpc_task.as_ref(),
-                        &bonding_curve,
-                        sol_price_usd,
-                    ).await;
+                    // 🚀 ULTRA FAST: Fetch current price directly (NO RETRY for stop loss - speed critical)
+                    let current_price_result: Result<f64, anyhow::Error> = async {
+                        use borsh::BorshDeserialize;
+                        use solana_sdk::commitment_config::CommitmentConfig;
+                        
+                        let account = rpc_task.get_account_with_commitment(
+                            &bonding_curve,
+                            CommitmentConfig::confirmed()
+                        ).await?;
+                        
+                        let account_data = account.value
+                            .ok_or_else(|| anyhow!("Account not found"))?
+                            .data;
+                        
+                        let curve: BondingCurveAccount = BorshDeserialize::deserialize(&mut &account_data[..])?;
+                        let current_price = curve.get_token_price_sol();
+                        Ok(current_price)
+                    }.await;
 
-                    let current_mc = match current_mc_result {
-                        Ok((_, _, mc_usd)) => mc_usd,
-                        Err(_) => return None,
+                    let current_price = match current_price_result {
+                        Ok(price) => price,
+                        Err(_) => return None, // Skip if can't fetch (will retry next cycle)
                     };
                     
-                    // 🚀 PRIORITY: Check stop loss FIRST (most critical - must be ultra fast)
-                    // Check stop loss: current_mc < entry_mc * (1.0 - stop_loss_percent/100.0)
-                    let stop_loss_threshold = entry_mc * (1.0 - stop_loss_percent / 100.0);
-                    let should_sell_stop_loss = current_mc < stop_loss_threshold;
+                    // 🚀 PRIORITY: Check stop loss using PnL PERCENTAGE (not MC) - FIXED!
+                    // Calculate PnL based on token price change
+                    // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
+                    // This prevents incorrect PnL calculation when entry price is not yet available
+                    let entry_price = position_clone.token_price_sol.unwrap_or(0.0);
+                    let should_sell_stop_loss = if entry_price > 0.0 {
+                        // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
+                        let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
+                        
+                        if pnl_percent <= -stop_loss_percent {
+                            eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
+                                     pnl_percent, entry_price, current_price, stop_loss_percent);
+                            true
+                        } else {
+                            false
+                        }
+                    } else if let Some(entry_mc_val) = entry_mc {
+                        // Fallback to MC check if we don't have entry price but have entry MC
+                        if entry_mc_val <= 0.0 {
+                            eprintln!("⚠️  Position {}: Invalid entry MC ({:.2}), skipping stop loss check", position_clone.mint, entry_mc_val);
+                            return None; // Invalid entry MC
+                        }
+                        
+                        let current_mc_result = fetch_bonding_curve_mc(
+                            rpc_task.as_ref(),
+                            &bonding_curve,
+                            sol_price_usd,
+                        ).await;
+
+                        let current_mc = match current_mc_result {
+                            Ok((_, _, mc_usd)) => mc_usd,
+                            Err(_) => {
+                                eprintln!("⚠️  Position {}: Failed to fetch current MC, will retry next cycle", position_clone.mint);
+                                return None;
+                            },
+                        };
+                        
+                        let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
+                        if current_mc < stop_loss_threshold {
+                            eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from ${:.2} to ${:.2} (threshold: ${:.2})", 
+                                     entry_mc_val, current_mc, stop_loss_threshold);
+                        }
+                        current_mc < stop_loss_threshold
+                    } else {
+                        // No entry price and no entry MC - can't calculate stop loss, skip
+                        eprintln!("⚠️  Position {}: No entry price ({:?}) and no entry MC ({:?}) - cannot monitor stop loss", 
+                                 position_clone.mint, position_clone.token_price_sol, entry_mc);
+                        false
+                    };
                     
                     // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
                     if should_sell_stop_loss {
@@ -2625,6 +2957,18 @@ async fn monitor_positions(
                         
                         return Some(("stop_loss", position_mint));
                     }
+                    
+                    // For take profit, still use MC (or we can calculate from price too)
+                    let current_mc_result = fetch_bonding_curve_mc(
+                        rpc_task.as_ref(),
+                        &bonding_curve,
+                        sol_price_usd,
+                    ).await;
+
+                    let current_mc = match current_mc_result {
+                        Ok((_, _, mc_usd)) => mc_usd,
+                        Err(_) => return None,
+                    };
                     
                     // Check take profit: current_mc >= take_profit_mc_usd
                     let should_sell_take_profit = current_mc >= take_profit_mc_usd;
@@ -2761,9 +3105,9 @@ async fn monitor_positions(
             }
 
             // Wait before next check
-            // 🚀 ULTRA FAST MONITORING: Check every 50ms for instant price drop detection
-            // This ensures we catch -30% drops within 50ms
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // 🚀 ULTRA FAST MONITORING: Check every 10ms for instant stop loss detection (optimized for premium RPC)
+            // This ensures we catch -30% drops within 10ms
+            tokio::time::sleep(Duration::from_millis(10)).await; // Reduced from 30ms to 10ms for ultra-fast stop loss
             Ok(())
         }.await;
         
@@ -3187,17 +3531,32 @@ async fn execute_sell(
         &bonding_curve, &mint, &token_program_used
     );
     
-    // ⚡ ULTRA FAST: Get blockhash and creator vault in parallel
+    // ⚡ CRITICAL: Always use creator vault from buy transaction (NOT derived PDA)
+    // Derived PDA can be wrong - must use exact vault from buy TX to avoid Error 2006
     let creator_vault_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pubkey>> + Send>> = Box::pin(async move {
         if position.signature.starts_with("MOCK_") {
+            // For mock transactions, use derived PDA as fallback
             let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
             Ok(vault)
         } else {
-            extract_creator_vault_from_buy_tx(rpc, &position.signature).await
-                .or_else(|_| {
-                    let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
-                    Ok(vault)
-                })
+            // For real transactions, ALWAYS extract from buy TX (even for stop_loss)
+            // This ensures we use the exact same creator vault that was used in buy
+            tokio::time::timeout(
+                Duration::from_millis(200), // Increased timeout for reliability
+                extract_creator_vault_from_buy_tx(rpc, &position.signature)
+            ).await
+            .unwrap_or_else(|_| {
+                // Timeout - try derived PDA as last resort (but log warning)
+                eprintln!("⚠️  WARNING: Failed to fetch creator vault from buy TX, using derived PDA (may cause Error 2006)");
+                let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+                Ok(vault)
+            })
+            .or_else(|_| {
+                // If TX fetch failed, use derived PDA as last resort
+                eprintln!("⚠️  WARNING: Creator vault extraction failed, using derived PDA (may cause Error 2006)");
+                let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+                Ok(vault)
+            })
         }
     });
     let (recent_blockhash, creator_vault) = tokio::join!(
@@ -3216,10 +3575,14 @@ async fn execute_sell(
     };
 
     // ⚡ ULTRA FAST: Build sell instruction and get priority fee in parallel
+    // For stop loss, use static fee (no HTTP call) for maximum speed
     let (sell_ix, priority_fee) = tokio::join!(
         build_sell_instruction(&accounts, &user_wallet, &user_token_account, sell_amount),
         async {
-            if config.enable_dynamic_priority_fee {
+            if reason == "stop_loss" {
+                // 🚀 ULTRA FAST: For stop loss, use static fee (no HTTP call)
+                config.priority_fee
+            } else if config.enable_dynamic_priority_fee {
                 config.calculate_dynamic_priority_fee(rpc).await.unwrap_or(config.priority_fee)
             } else {
                 config.priority_fee
@@ -3325,7 +3688,7 @@ async fn monitor_pnl_ultra_fast(
     _rpc: RpcClient,
     tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_millis(100)); // Update every 100ms (10x/sec)
+    let mut interval = tokio::time::interval(Duration::from_millis(50)); // Update every 50ms (20x/sec) - optimized for premium RPC
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     
     loop {

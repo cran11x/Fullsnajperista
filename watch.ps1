@@ -8,6 +8,10 @@ param(
     [string]$Mode = "check"
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 Write-Host "Tražim Cargo..." -ForegroundColor Cyan
 
 # Pokušaj pronaći cargo
@@ -63,6 +67,10 @@ switch ($Mode.ToLower()) {
     default {
         Write-Host "Nepoznat rezim: $Mode" -ForegroundColor Red
         Write-Host "Dostupni rezimi: check, clippy, test" -ForegroundColor Yellow
+        Pop-Location
         exit 1
     }
 }
+
+# Restore original directory (only reached if watch is interrupted)
+Pop-Location

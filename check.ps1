@@ -8,6 +8,10 @@ param(
     [switch]$AllTargets
 )
 
+# Ensure we're in the script's directory (project root)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $scriptDir
+
 Write-Host "Tražim Cargo..." -ForegroundColor Cyan
 
 # Pokušaj pronaći cargo
@@ -36,7 +40,12 @@ if ($AllTargets) {
     & $cargo check
 }
 
-if ($LASTEXITCODE -eq 0) {
+$exitCode = $LASTEXITCODE
+
+# Restore original directory
+Pop-Location
+
+if ($exitCode -eq 0) {
     Write-Host ""
     Write-Host "Provera uspjesna! Nema gresaka." -ForegroundColor Green
     Write-Host "Za punu kompilaciju koristite: .\build.ps1" -ForegroundColor Gray
