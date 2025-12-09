@@ -66,6 +66,38 @@ impl BondingCurveAccount {
         (self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64) / 1000.0
     }
 
+    /// Calculate token amount for given SOL amount using CURRENT bonding curve reserves
+    /// Uses the same formula as pump.fun program
+    /// 
+    /// # Arguments
+    /// * `sol_lamports` - Amount of SOL to spend (in lamports)
+    /// 
+    /// # Returns
+    /// Amount of tokens that would be received at current bonding curve price
+    pub fn calculate_token_amount_for_sol(&self, sol_lamports: u64) -> u64 {
+        if sol_lamports == 0 || self.virtual_token_reserves == 0 || self.virtual_sol_reserves == 0 {
+            return 0;
+        }
+        
+        // Pump.fun formula (same as get_initial_buy_price but using current reserves):
+        // n = virtual_sol_reserves * virtual_token_reserves
+        // new_virtual_sol = virtual_sol_reserves + sol_lamports
+        // new_virtual_token = n / new_virtual_sol + 1
+        // tokens_out = virtual_token_reserves - new_virtual_token
+        
+        let n: u128 = (self.virtual_sol_reserves as u128) * (self.virtual_token_reserves as u128);
+        let new_virtual_sol: u128 = (self.virtual_sol_reserves as u128) + (sol_lamports as u128);
+        let new_virtual_token: u128 = n / new_virtual_sol + 1;
+        let tokens_out: u128 = (self.virtual_token_reserves as u128) - new_virtual_token;
+        
+        // Cap at real_token_reserves
+        if tokens_out < (self.real_token_reserves as u128) {
+            tokens_out as u64
+        } else {
+            self.real_token_reserves
+        }
+    }
+
     /// Display bonding curve state
     pub fn display(&self, sol_price_usd: f64) {
         println!("      📊 Bonding Curve State:");

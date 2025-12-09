@@ -42,6 +42,7 @@ use crate::constants::PUMP_PROGRAM_ID;
 use crate::metrics::{SharedMetrics, FilterReason, SubmissionMethod, ErrorType};
 use crate::gui::{TokenEvent, BotControl};
 use crate::sell::build_sell_instruction;
+use crate::token_logger::{TokenLogger, SocialsInfo};
 // use crate::blockhash_cache::get_cached_blockhash;
 use solana_sdk::program_pack::Pack;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -79,6 +80,16 @@ pub async fn run_bot(
     
     // Pre-load global account
     crate::buy::preload_global(&rpc, &initial_config.global_account).await?;
+    
+    // Create token logger
+    let logger = Arc::new(std::sync::Mutex::new(
+        crate::token_logger::create_logger()
+            .unwrap_or_else(|e| {
+                eprintln!("⚠️  Failed to create token logger: {}", e);
+                // Create a dummy logger that does nothing
+                crate::token_logger::TokenLogger::new("/dev/null").unwrap()
+            })
+    ));
     
     // Start position monitor as background task
     let monitor_config = config.clone();
@@ -189,6 +200,7 @@ pub async fn run_bot(
             socials_rate_limiter.clone(),
             event_tx.clone(),
             &mut control_rx,
+            logger.clone(),
         ).await {
             Ok(stopped) => {
                 if stopped {
@@ -228,6 +240,7 @@ async fn listen_websocket_once(
     socials_rate_limiter: Arc<crate::rate_limiter::RateLimiter>,
     event_tx: mpsc::UnboundedSender<TokenEvent>,
     control_rx: &mut mpsc::UnboundedReceiver<BotControl>,
+    logger: Arc<std::sync::Mutex<TokenLogger>>,
 ) -> Result<bool> {
     // Returns Ok(true) if stopped, Ok(false) if normal exit
     let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)?;
@@ -670,11 +683,24 @@ async fn listen_websocket_once(
                 println!("      🎯 Target mint check: detected={}, target={}", mint_pubkey, target_mint);
                 if mint_pubkey != target_mint {
                     println!("      ❌ Token {} does not match target {}", mint_pubkey, target_mint);
+                    let reason = format!("Not target token (waiting for: {})", target_mint);
                     let _ = event_tx.send(TokenEvent::Filtered {
                         mint: mint.clone(),
-                        reason: format!("Not target token (waiting for: {})", target_mint),
+                        reason: reason.clone(),
                         timestamp: Utc::now(),
                     });
+                    // Log filtered token
+                    if let Ok(logger_guard) = logger.lock() {
+                        let _ = logger_guard.log_filtered(
+                            mint.clone(),
+                            reason,
+                            Some(init_signature.clone()),
+                            Some(accounts.dev_buy_sol as f64 / 1e9),
+                            Some(accounts.creator.to_string()),
+                            None,
+                            None,
+                        );
+                    }
                     continue;
                 } else {
                     println!("      ✅ Target token MATCH! {}", mint);
@@ -696,11 +722,24 @@ async fn listen_websocket_once(
             
             // Duplicate check
             if !seen_tokens.check_and_mark(&mint) {
+                let reason = "Duplicate token".to_string();
                 let _ = event_tx.send(TokenEvent::Filtered {
-                    mint,
-                    reason: "Duplicate token".to_string(),
+                    mint: mint.clone(),
+                    reason: reason.clone(),
                     timestamp: Utc::now(),
                 });
+                // Log filtered token
+                if let Ok(logger_guard) = logger.lock() {
+                    let _ = logger_guard.log_filtered(
+                        mint.clone(),
+                        reason,
+                        Some(init_signature.clone()),
+                        Some(accounts.dev_buy_sol as f64 / 1e9),
+                        Some(accounts.creator.to_string()),
+                        None,
+                        None,
+                    );
+                }
                 continue;
             }
             
@@ -710,49 +749,98 @@ async fn listen_websocket_once(
                 
                 // Check if token is blacklisted
                 if config_guard.blacklisted_tokens.contains(&mint_pubkey) {
+                    let reason = "Token is blacklisted".to_string();
                     let _ = event_tx.send(TokenEvent::Filtered {
                         mint: mint.clone(),
-                        reason: "Token is blacklisted".to_string(),
+                        reason: reason.clone(),
                         timestamp: Utc::now(),
                     });
+                    // Log filtered token
+                    if let Ok(logger_guard) = logger.lock() {
+                        let _ = logger_guard.log_filtered(
+                            mint.clone(),
+                            reason,
+                            Some(init_signature.clone()),
+                            Some(accounts.dev_buy_sol as f64 / 1e9),
+                            Some(accounts.creator.to_string()),
+                            None,
+                            None,
+                        );
+                    }
                     continue;
                 }
                 
                 // Check if creator is blacklisted
                 if config_guard.blacklisted_creators.contains(&accounts.creator) {
+                    let reason = format!("Creator {} is blacklisted", accounts.creator);
                     let _ = event_tx.send(TokenEvent::Filtered {
                         mint: mint.clone(),
-                        reason: format!("Creator {} is blacklisted", accounts.creator),
+                        reason: reason.clone(),
                         timestamp: Utc::now(),
                     });
+                    // Log filtered token
+                    if let Ok(logger_guard) = logger.lock() {
+                        let _ = logger_guard.log_filtered(
+                            mint.clone(),
+                            reason,
+                            Some(init_signature.clone()),
+                            Some(accounts.dev_buy_sol as f64 / 1e9),
+                            Some(accounts.creator.to_string()),
+                            None,
+                            None,
+                        );
+                    }
                     continue;
                 }
                 
                 // Check whitelist (if set, token must be on whitelist)
                 if let Some(ref whitelist) = config_guard.whitelisted_tokens {
                     if !whitelist.contains(&mint_pubkey) {
+                        let reason = "Token not on whitelist".to_string();
                         let _ = event_tx.send(TokenEvent::Filtered {
                             mint: mint.clone(),
-                            reason: "Token not on whitelist".to_string(),
+                            reason: reason.clone(),
                             timestamp: Utc::now(),
                         });
+                        // Log filtered token
+                        if let Ok(logger_guard) = logger.lock() {
+                            let _ = logger_guard.log_filtered(
+                                mint.clone(),
+                                reason,
+                                Some(init_signature.clone()),
+                                Some(accounts.dev_buy_sol as f64 / 1e9),
+                                Some(accounts.creator.to_string()),
+                                None,
+                                None,
+                            );
+                        }
                         continue;
                     }
                 }
             }
             
+            let config_for_buy = {
+                let cfg = config_arc.read().unwrap();
+                (*cfg).clone()
+            };
+            
+            // Save values before moving accounts
+            let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
+            let creator = accounts.creator.to_string();
+            
             match process_and_buy(
-                config,
+                &config_for_buy,
                 wallet,
                 rpc,
                 tracker,
                 *detected,
-                init_signature,
+                init_signature.clone(),
                 accounts,
                 metrics.clone(),
                 das_rate_limiter.clone(),
                 socials_rate_limiter.clone(),
                 event_tx.clone(),
+                logger.clone(),
             ).await {
                 Ok(sig) => {
                     if let Some(signature) = sig {
@@ -769,11 +857,23 @@ async fn listen_websocket_once(
                         };
                         
                         let _ = event_tx.send(TokenEvent::Bought {
-                            mint,
+                            mint: mint.clone(),
                             signature: signature.clone(),
                             mc,
                             timestamp: Utc::now(),
                         });
+                        
+                        // Log bought token
+                        if let Ok(logger_guard) = logger.lock() {
+                            let _ = logger_guard.log_bought(
+                                mint.clone(),
+                                signature.clone(),
+                                Some(init_signature.clone()),
+                                mc,
+                                Some(dev_buy_sol),
+                                Some(creator.clone()),
+                            );
+                        }
                         
                         // Check if one shot mode is enabled - stop bot after successful buy
                         if config.one_shot_mode {
@@ -799,10 +899,12 @@ async fn listen_websocket_once(
                     };
                     
                     let _ = event_tx.send(TokenEvent::Filtered {
-                        mint,
+                        mint: mint.clone(),
                         reason: reason.clone(),
                         timestamp: Utc::now(),
                     });
+                    
+                    // Log filtered token (will be logged in process_and_buy with more details)
                     
                     // In one shot mode, also stop on errors to prevent wasting credits
                     // (but not on SKIP errors which are expected filter rejections)
@@ -857,6 +959,7 @@ async fn process_and_buy(
     das_rate_limiter: Arc<crate::rate_limiter::RateLimiter>,
     socials_rate_limiter: Arc<crate::rate_limiter::RateLimiter>,
     event_tx: mpsc::UnboundedSender<TokenEvent>,
+    logger: Arc<std::sync::Mutex<TokenLogger>>,
 ) -> Result<Option<String>> {
     let mint = accounts.mint;
     let dev_buy_lamports = accounts.dev_buy_sol;
@@ -885,8 +988,20 @@ async fn process_and_buy(
             let mut m = metrics.write().unwrap();
             m.record_filter(FilterReason::DevBuy, filter_time);
         }
-        return Err(anyhow!("SKIP: Dev buy {:.2} SOL (want {:.2}-{:.2})",
-                           dev_buy_sol, min_sol, max_sol));
+        let reason = format!("SKIP: Dev buy {:.2} SOL (want {:.2}-{:.2})", dev_buy_sol, min_sol, max_sol);
+        // Log filtered token
+        if let Ok(logger_guard) = logger.lock() {
+            let _ = logger_guard.log_filtered(
+                mint.to_string(),
+                reason.clone(),
+                Some(init_signature.clone()),
+                Some(dev_buy_sol),
+                Some(accounts.creator.to_string()),
+                None,
+                None,
+            );
+        }
+        return Err(anyhow!(reason));
     }
     
     let require_socials = config.require_socials;
@@ -964,9 +1079,9 @@ async fn process_and_buy(
             // Use filter function from filters.rs for consistency
             if !check_creator_token_count(count, config) {
                 let reason = if count < config.min_dev_tokens as u32 {
-                    format!("Creator has only {} tokens (min: {})", count, config.min_dev_tokens)
+                    format!("SKIP: Creator has only {} tokens (min: {})", count, config.min_dev_tokens)
                 } else {
-                    format!("Creator has {} tokens (max: {})", count, config.max_dev_tokens)
+                    format!("SKIP: Creator has {} tokens (max: {})", count, config.max_dev_tokens)
                 };
                 println!("      ❌ SKIP: Creator token count filter failed - {}", reason);
                 let filter_time = filter_start.elapsed().as_millis() as u64;
@@ -974,7 +1089,19 @@ async fn process_and_buy(
                     m.record_filter(FilterReason::CreatorCount, filter_time);
                     m.record_error(ErrorType::Validation);
                 }
-                return Err(anyhow!("SKIP: {}", reason));
+                // Log filtered token
+                if let Ok(logger_guard) = logger.lock() {
+                    let _ = logger_guard.log_filtered(
+                        mint.to_string(),
+                        reason.clone(),
+                        Some(init_signature.clone()),
+                        Some(dev_buy_sol),
+                        Some(accounts.creator.to_string()),
+                        Some(count),
+                        None,
+                    );
+                }
+                return Err(anyhow!(reason));
             }
             println!("      ✅ DEBUG FILTER PASSED: count={} is within range [{}, {}]", 
                     count, config.min_dev_tokens, config.max_dev_tokens);
@@ -982,13 +1109,26 @@ async fn process_and_buy(
         }
         Err(e) => {
             // DAS check failed - skip token since we can't verify creator token count
+            let reason = format!("SKIP: DAS API failed - {}", e);
             println!("      ❌ SKIP: DAS API failed - cannot verify creator token count: {}", e);
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::CreatorCount, filter_time);
                 m.record_error(ErrorType::Network);
             }
-            return Err(anyhow!("SKIP: DAS API failed - {}", e));
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    None,
+                    None,
+                );
+            }
+            return Err(anyhow!(reason));
         }
     };
     
@@ -1011,21 +1151,78 @@ async fn process_and_buy(
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            return Err(anyhow!("SKIP: No socials"));
+            let reason = "SKIP: No socials".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = Some(SocialsInfo {
+                    twitter: socials.twitter.clone(),
+                    telegram: socials.telegram.clone(),
+                    website: socials.website.clone(),
+                    count: socials.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
         }
         if require_twitter && !socials.has_twitter() {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            return Err(anyhow!("SKIP: No Twitter"));
+            let reason = "SKIP: No Twitter".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = Some(SocialsInfo {
+                    twitter: socials.twitter.clone(),
+                    telegram: socials.telegram.clone(),
+                    website: socials.website.clone(),
+                    count: socials.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
         }
         if socials.count() < min_socials {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            return Err(anyhow!("SKIP: Need {} socials", min_socials));
+            let reason = format!("SKIP: Need {} socials", min_socials);
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = Some(SocialsInfo {
+                    twitter: socials.twitter.clone(),
+                    telegram: socials.telegram.clone(),
+                    website: socials.website.clone(),
+                    count: socials.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
         }
         Some(socials)
     } else {
@@ -1035,7 +1232,20 @@ async fn process_and_buy(
                 m.record_filter(FilterReason::Socials, filter_time);
                 m.record_error(ErrorType::Network);
             }
-            return Err(anyhow!("SKIP: Could not verify socials"));
+            let reason = "SKIP: Could not verify socials".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    None,
+                );
+            }
+            return Err(anyhow!(reason));
         }
         None
     };
@@ -1059,7 +1269,26 @@ async fn process_and_buy(
                             tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                             continue;
                         } else {
-                            return Err(anyhow!("SKIP: Bonding curve account not found - token not ready"));
+                            let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                            // Log filtered token
+                            if let Ok(logger_guard) = logger.lock() {
+                                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                                    twitter: s.twitter.clone(),
+                                    telegram: s.telegram.clone(),
+                                    website: s.website.clone(),
+                                    count: s.count(),
+                                });
+                                let _ = logger_guard.log_filtered(
+                                    mint.to_string(),
+                                    reason.clone(),
+                                    Some(init_signature.clone()),
+                                    Some(dev_buy_sol),
+                                    Some(accounts.creator.to_string()),
+                                    Some(creator_count),
+                                    socials_info,
+                                );
+                            }
+                            return Err(anyhow!(reason));
                         }
                     }
                 };
@@ -1069,7 +1298,26 @@ async fn process_and_buy(
                         tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                         continue;
                     } else {
-                        return Err(anyhow!("SKIP: Bonding curve account not ready for trading"));
+                        let reason = "SKIP: Bonding curve account not ready for trading".to_string();
+                        // Log filtered token
+                        if let Ok(logger_guard) = logger.lock() {
+                            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                                twitter: s.twitter.clone(),
+                                telegram: s.telegram.clone(),
+                                website: s.website.clone(),
+                                count: s.count(),
+                            });
+                            let _ = logger_guard.log_filtered(
+                                mint.to_string(),
+                                reason.clone(),
+                                Some(init_signature.clone()),
+                                Some(dev_buy_sol),
+                                Some(accounts.creator.to_string()),
+                                Some(creator_count),
+                                socials_info,
+                            );
+                        }
+                        return Err(anyhow!(reason));
                     }
                 }
                 
@@ -1078,7 +1326,26 @@ async fn process_and_buy(
                     use borsh::BorshDeserialize;
                     if let Ok(curve) = BondingCurveAccount::try_from_slice(&account.data[..]) {
                         if curve.complete {
-                            return Err(anyhow!("SKIP: Token is complete (migrated) - cannot buy on bonding curve"));
+                            let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
+                            // Log filtered token
+                            if let Ok(logger_guard) = logger.lock() {
+                                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                                    twitter: s.twitter.clone(),
+                                    telegram: s.telegram.clone(),
+                                    website: s.website.clone(),
+                                    count: s.count(),
+                                });
+                                let _ = logger_guard.log_filtered(
+                                    mint.to_string(),
+                                    reason.clone(),
+                                    Some(init_signature.clone()),
+                                    Some(dev_buy_sol),
+                                    Some(accounts.creator.to_string()),
+                                    Some(creator_count),
+                                    socials_info,
+                                );
+                            }
+                            return Err(anyhow!(reason));
                         }
                     }
                 }
@@ -1091,14 +1358,52 @@ async fn process_and_buy(
                     tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                     continue;
                 } else {
-                    return Err(anyhow!("SKIP: Bonding curve account not found - token not ready"));
+                    let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                    // Log filtered token
+                    if let Ok(logger_guard) = logger.lock() {
+                        let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                            twitter: s.twitter.clone(),
+                            telegram: s.telegram.clone(),
+                            website: s.website.clone(),
+                            count: s.count(),
+                        });
+                        let _ = logger_guard.log_filtered(
+                            mint.to_string(),
+                            reason.clone(),
+                            Some(init_signature.clone()),
+                            Some(dev_buy_sol),
+                            Some(accounts.creator.to_string()),
+                            Some(creator_count),
+                            socials_info,
+                        );
+                    }
+                    return Err(anyhow!(reason));
                 }
             }
         }
     }
     
     if !bonding_curve_ready {
-        return Err(anyhow!("SKIP: Bonding curve account not ready"));
+        let reason = "SKIP: Bonding curve account not ready".to_string();
+        // Log filtered token
+        if let Ok(logger_guard) = logger.lock() {
+            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                twitter: s.twitter.clone(),
+                telegram: s.telegram.clone(),
+                website: s.website.clone(),
+                count: s.count(),
+            });
+            let _ = logger_guard.log_filtered(
+                mint.to_string(),
+                reason.clone(),
+                Some(init_signature.clone()),
+                Some(dev_buy_sol),
+                Some(accounts.creator.to_string()),
+                Some(creator_count),
+                socials_info,
+            );
+        }
+        return Err(anyhow!(reason));
     }
     
     // Build transaction
@@ -1135,6 +1440,7 @@ async fn process_and_buy(
         &user_ata,
         config.buy_amount_lamports(),
         config.slippage_percent,
+        Some(&curve), // Use current bonding curve price for accurate token amount
     ).await?;
     
     let mut rng = rand::thread_rng();
@@ -1223,14 +1529,71 @@ async fn process_and_buy(
         let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
         
         if account.data.is_empty() {
-            return Err(anyhow!("SKIP: Associated Bonding Curve account not initialized - token may not be ready"));
+            let reason = "SKIP: Associated Bonding Curve account not initialized - token may not be ready".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                    twitter: s.twitter.clone(),
+                    telegram: s.telegram.clone(),
+                    website: s.website.clone(),
+                    count: s.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
         }
         
         if owner != token_program_2022 && owner != token_program {
-            return Err(anyhow!("SKIP: Associated Bonding Curve has wrong owner - token may not be ready"));
+            let reason = "SKIP: Associated Bonding Curve has wrong owner - token may not be ready".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                    twitter: s.twitter.clone(),
+                    telegram: s.telegram.clone(),
+                    website: s.website.clone(),
+                    count: s.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
         }
     } else {
-        return Err(anyhow!("SKIP: Associated Bonding Curve account does not exist - token not ready"));
+        let reason = "SKIP: Associated Bonding Curve account does not exist - token not ready".to_string();
+        // Log filtered token
+        if let Ok(logger_guard) = logger.lock() {
+            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                twitter: s.twitter.clone(),
+                telegram: s.telegram.clone(),
+                website: s.website.clone(),
+                count: s.count(),
+            });
+            let _ = logger_guard.log_filtered(
+                mint.to_string(),
+                reason.clone(),
+                Some(init_signature.clone()),
+                Some(dev_buy_sol),
+                Some(accounts.creator.to_string()),
+                Some(creator_count),
+                socials_info,
+            );
+        }
+        return Err(anyhow!(reason));
     }
     
     // Verify User Token Account
@@ -2472,6 +2835,16 @@ pub async fn execute_manual_buy(
         .expect("Invalid hardcoded Global Volume address");
     accounts.global_volume = hardcoded_global_volume;
     
+    // Fetch bonding curve for accurate token amount calculation
+    let bonding_curve_opt = {
+        // Get SOL price for MC calculation (we only need the curve, not MC)
+        let sol_price_usd = 150.0; // Default fallback, actual value not critical for token amount calc
+        match fetch_bonding_curve_mc(rpc, &accounts.bonding_curve, sol_price_usd).await {
+            Ok((curve, _, _)) => Some(curve),
+            Err(_) => None, // Fallback to initial price if fetch fails
+        }
+    };
+    
     // Build buy instruction
     eprintln!("╔═══════════════════════════════════════════════════════════════╗");
     eprintln!("║              BUILDING BUY INSTRUCTION                         ║");
@@ -2484,6 +2857,7 @@ pub async fn execute_manual_buy(
         &user_ata,
         sol_amount,
         config.slippage_percent,
+        bonding_curve_opt.as_ref(), // Use current bonding curve price if available
     ).await?;
     
     eprintln!("  ✅ Buy instruction built ({} accounts)", buy_ix.accounts.len());

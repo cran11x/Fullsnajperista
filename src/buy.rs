@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use crate::detection::PumpBuyAccounts;
-use crate::accounts::GlobalAccount;
+use crate::accounts::{GlobalAccount, BondingCurveAccount};
 use crate::pda_derivation::PumpPdas;
 
 use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
@@ -65,6 +65,7 @@ pub async fn build_buy_instruction(
     user_token_account: &Pubkey,
     sol_lamports: u64,
     slippage_percent: u32, // Slippage tolerance in percent (e.g., 120 = 20% slippage)
+    bonding_curve: Option<&BondingCurveAccount>, // Optional: use current price if available
 ) -> Result<Instruction> {
     // Validate parameters
     validate_buy_params(accounts, user_wallet, user_token_account, sol_lamports)?;
@@ -73,7 +74,14 @@ pub async fn build_buy_instruction(
     let global = get_cached_global()
         .map_err(|e| anyhow::anyhow!("Global account not cached. Call preload_global() first: {}", e))?;
     
-    let token_amount = global.get_initial_buy_price(sol_lamports);
+    // Use current bonding curve price if available, otherwise fallback to initial price
+    let (token_amount, price_source) = if let Some(curve) = bonding_curve {
+        let amount = curve.calculate_token_amount_for_sol(sol_lamports);
+        (amount, "current")
+    } else {
+        let amount = global.get_initial_buy_price(sol_lamports);
+        (amount, "initial")
+    };
 
     if token_amount == 0 {
         return Err(anyhow::anyhow!("Token amount is 0. Check global account configuration."));
@@ -82,10 +90,11 @@ pub async fn build_buy_instruction(
     // ⚡ Configurable slippage buffer to prevent failures on fast-moving tokens
     let max_sol_cost = (sol_lamports as u128 * slippage_percent as u128 / 100) as u64;
 
-    println!("   💰 {} tokens for {} SOL (max: {})",
+    println!("   💰 {} tokens for {} SOL (max: {}) [using {} price]",
              token_amount,
              sol_lamports as f64 / 1e9,
-             max_sol_cost as f64 / 1e9);
+             max_sol_cost as f64 / 1e9,
+             price_source);
 
     let mut data = Vec::with_capacity(32);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
