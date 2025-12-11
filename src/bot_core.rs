@@ -1743,11 +1743,14 @@ async fn process_and_buy(
                             sell_signature: None,
                             current_price_sol: None,
                             current_value_sol: None,
-                            pnl_sol: None,
-                            pnl_percent: None,
-                            last_pnl_update: None,
-                            buy_fees_sol: Some(0.0),
-                        };
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.0),
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+        };
                         
                         let _ = tracker.record_buy(buy);
                     }
@@ -2249,11 +2252,14 @@ async fn process_and_buy(
                     sell_signature: None,
                     current_price_sol: None,
                     current_value_sol: None,
-                    pnl_sol: None,
-                    pnl_percent: None,
-                    last_pnl_update: None,
-                    buy_fees_sol: Some(total_buy_fees),
-                };
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(total_buy_fees),
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+        };
                 
                 let _ = tracker.record_buy(buy.clone());
             }
@@ -2792,7 +2798,9 @@ async fn monitor_positions(
             for position in active_positions.iter() {
                 // 🚀 ULTRA FAST: Check PnL from tracker FIRST (if available) - fastest path
                 if let Some(pnl_percent) = position.pnl_percent {
-                    if pnl_percent <= -stop_loss_percent {
+                    // Skip normal stop loss check if breakeven mode is active
+                    // (breakeven check requires MC data which will be done in parallel task)
+                    if !position.breakeven_mode_active && pnl_percent <= -stop_loss_percent {
                         // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
                         eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (threshold: -{:.2}%) - SELLING IMMEDIATELY", 
                                  pnl_percent, stop_loss_percent);
@@ -2898,15 +2906,21 @@ async fn monitor_positions(
                     // This prevents incorrect PnL calculation when entry price is not yet available
                     let entry_price = position_clone.token_price_sol.unwrap_or(0.0);
                     let should_sell_stop_loss = if entry_price > 0.0 {
-                        // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
-                        let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
-                        
-                        if pnl_percent <= -stop_loss_percent {
-                            eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
-                                     pnl_percent, entry_price, current_price, stop_loss_percent);
-                            true
+                        // Check if breakeven mode is active - if so, skip normal stop loss check
+                        // (breakeven check is done later with MC data)
+                        if position_clone.breakeven_mode_active {
+                            false // Skip normal stop loss in breakeven mode
                         } else {
-                            false
+                            // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
+                            let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
+                            
+                            if pnl_percent <= -stop_loss_percent {
+                                eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
+                                         pnl_percent, entry_price, current_price, stop_loss_percent);
+                                true
+                            } else {
+                                false
+                            }
                         }
                     } else if let Some(entry_mc_val) = entry_mc {
                         // Fallback to MC check if we don't have entry price but have entry MC
@@ -2915,26 +2929,43 @@ async fn monitor_positions(
                             return None; // Invalid entry MC
                         }
                         
-                        let current_mc_result = fetch_bonding_curve_mc(
-                            rpc_task.as_ref(),
-                            &bonding_curve,
-                            sol_price_usd,
-                        ).await;
+                        // Check if breakeven mode is active - if so, skip normal stop loss check
+                        if position_clone.breakeven_mode_active {
+                            false // Skip normal stop loss in breakeven mode (handled later)
+                        } else {
+                            let current_mc_result = fetch_bonding_curve_mc(
+                                rpc_task.as_ref(),
+                                &bonding_curve,
+                                sol_price_usd,
+                            ).await;
 
-                        let current_mc = match current_mc_result {
-                            Ok((_, _, mc_usd)) => mc_usd,
-                            Err(_) => {
-                                eprintln!("⚠️  Position {}: Failed to fetch current MC, will retry next cycle", position_clone.mint);
-                                return None;
-                            },
-                        };
-                        
-                        let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
-                        if current_mc < stop_loss_threshold {
-                            eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from ${:.2} to ${:.2} (threshold: ${:.2})", 
-                                     entry_mc_val, current_mc, stop_loss_threshold);
+                            let current_mc = match current_mc_result {
+                                Ok((_, _, mc_usd)) => mc_usd,
+                                Err(_) => {
+                                    eprintln!("⚠️  Position {}: Failed to fetch current MC, will retry next cycle", position_clone.mint);
+                                    return None;
+                                },
+                            };
+                            
+                            // Check if we should use breakeven stop loss
+                            if current_mc >= config_clone.breakeven_mc_threshold_usd {
+                                // Breakeven mode: use entry MC as stop loss
+                                if current_mc < entry_mc_val {
+                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped from {:.2} to {:.2} (entry: {:.2})", 
+                                             config_clone.breakeven_mc_threshold_usd, current_mc, entry_mc_val);
+                                    return Some(("breakeven_stop_loss", position_mint.clone()));
+                                }
+                                false // In breakeven mode, only sell if below entry
+                            } else {
+                                // Normal stop loss check
+                                let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
+                                if current_mc < stop_loss_threshold {
+                                    eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from ${:.2} to ${:.2} (threshold: ${:.2})", 
+                                             entry_mc_val, current_mc, stop_loss_threshold);
+                                }
+                                current_mc < stop_loss_threshold
+                            }
                         }
-                        current_mc < stop_loss_threshold
                     } else {
                         // No entry price and no entry MC - can't calculate stop loss, skip
                         eprintln!("⚠️  Position {}: No entry price ({:?}) and no entry MC ({:?}) - cannot monitor stop loss", 
@@ -2969,6 +3000,43 @@ async fn monitor_positions(
                         Ok((_, _, mc_usd)) => mc_usd,
                         Err(_) => return None,
                     };
+                    
+                    // 🎯 BREAKEVEN STOP LOSS: If MC reached threshold, use entry MC as stop loss
+                    if let Some(entry_mc_val) = entry_mc {
+                        if entry_mc_val > 0.0 && current_mc >= config_clone.breakeven_mc_threshold_usd {
+                            // Token reached breakeven threshold - use entry MC as stop loss
+                            // Update peak MC in tracker
+                            if let Ok(mut tracker_guard) = tracker_clone.write() {
+                                if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                    let _ = tracker_ref.update_peak_mc(
+                                        &position_clone.mint,
+                                        current_mc,
+                                        config_clone.breakeven_mc_threshold_usd,
+                                    );
+                                }
+                            }
+                            
+                            // Check if MC dropped below entry (breakeven stop loss)
+                            if current_mc < entry_mc_val {
+                                eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from {:.2} to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
+                                         config_clone.breakeven_mc_threshold_usd, current_mc, entry_mc_val);
+                                
+                                // Execute sell at breakeven
+                                let _ = execute_sell(
+                                    &config_clone,
+                                    &wallet_clone,
+                                    rpc_task.as_ref(),
+                                    &tracker_clone,
+                                    &position_clone,
+                                    "breakeven_stop_loss",
+                                    &event_tx_clone,
+                                ).await;
+                                
+                                return Some(("breakeven_stop_loss", position_mint));
+                            }
+                            // Continue to take profit check (in breakeven mode, skip normal stop loss)
+                        }
+                    }
                     
                     // Check take profit: current_mc >= take_profit_mc_usd
                     let should_sell_take_profit = current_mc >= take_profit_mc_usd;
@@ -3107,7 +3175,7 @@ async fn monitor_positions(
             // Wait before next check
             // 🚀 ULTRA FAST MONITORING: Check every 10ms for instant stop loss detection (optimized for premium RPC)
             // This ensures we catch -30% drops within 10ms
-            tokio::time::sleep(Duration::from_millis(10)).await; // Reduced from 30ms to 10ms for ultra-fast stop loss
+            tokio::time::sleep(Duration::from_millis(1)).await; // Reduced to 1ms for ultra-fast stop loss detection
             Ok(())
         }.await;
         
@@ -3383,6 +3451,9 @@ pub async fn execute_manual_buy(
                     pnl_percent: None,
                     last_pnl_update: None,
                     buy_fees_sol: Some(0.00002), // Estimate for manual buy
+                    peak_mc_usd: None,
+                    peak_pnl_percent: None,
+                    breakeven_mode_active: false,
                 };
                 
                 if let Err(e) = tracker.record_buy(buy) {
@@ -3688,7 +3759,7 @@ async fn monitor_pnl_ultra_fast(
     _rpc: RpcClient,
     tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_millis(50)); // Update every 50ms (20x/sec) - optimized for premium RPC
+    let mut interval = tokio::time::interval(Duration::from_millis(20)); // Update every 20ms (50x/sec) - optimized for premium RPC
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     
     loop {
@@ -3743,19 +3814,26 @@ async fn monitor_pnl_ultra_fast(
                     Err(_) => return,
                 };
                 
-                // Fetch current price (fast, with retry)
+                // Fetch current price and MC (fast, with retry)
                 match fetch_bonding_curve_mc(
                     &task_rpc,
                     &bonding_curve,
                     sol_price,
                 ).await {
-                    Ok((curve, _, _)) => {
+                    Ok((curve, _, current_mc)) => {
                         let current_price = curve.get_token_price_sol();
                         
-                        // Update PnL in tracker (fast, no disk write)
+                        // Update PnL and peak MC in tracker (fast, no disk write)
                         if let Ok(mut tracker_guard) = tracker_clone.write() {
                             if let Some(tracker) = tracker_guard.as_mut() {
                                 let _ = tracker.update_position_pnl_fast(&mint_clone, current_price);
+                                
+                                // Update peak MC if available
+                                let breakeven_threshold = {
+                                    let cfg = config_clone.read().unwrap();
+                                    cfg.breakeven_mc_threshold_usd
+                                };
+                                let _ = tracker.update_peak_mc(&mint_clone, current_mc, breakeven_threshold);
                             }
                         }
                     }

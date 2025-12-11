@@ -45,6 +45,14 @@ pub struct TokenBuy {
     
     // 🆕 NEW: Transaction fees tracking (for ultra-precision)
     pub buy_fees_sol: Option<f64>,           // Total fees paid for buy (Priority + Network)
+    
+    // 🆕 NEW: Peak tracking for breakeven stop loss
+    #[serde(default)]
+    pub peak_mc_usd: Option<f64>,            // Highest MC reached
+    #[serde(default)]
+    pub peak_pnl_percent: Option<f64>,       // Best PnL percentage reached
+    #[serde(default)]
+    pub breakeven_mode_active: bool,         // Whether breakeven mode is active
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,7 +601,13 @@ impl TokenTracker {
                 
                 // Calculate PnL percentage based on TOTAL cost basis
                 if cost_basis > 0.0 {
-                    buy.pnl_percent = Some((pnl / cost_basis) * 100.0);
+                    let current_pnl_percent = (pnl / cost_basis) * 100.0;
+                    buy.pnl_percent = Some(current_pnl_percent);
+                    
+                    // Update peak PnL if current is better
+                    if current_pnl_percent > buy.peak_pnl_percent.unwrap_or(f64::MIN) {
+                        buy.peak_pnl_percent = Some(current_pnl_percent);
+                    }
                 }
                 
                 // DEBUG: Print PnL calculation details (only for first few updates to avoid spam)
@@ -630,6 +644,33 @@ impl TokenTracker {
         }
     }
 
+    /// Update peak MC for a position (used when MC is fetched separately)
+    pub fn update_peak_mc(&mut self, mint: &str, current_mc_usd: f64, breakeven_threshold: f64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            // Update peak MC if current is higher than existing peak, or if peak is None
+            match buy.peak_mc_usd {
+                None => {
+                    buy.peak_mc_usd = Some(current_mc_usd);
+                }
+                Some(peak) if current_mc_usd > peak => {
+                    buy.peak_mc_usd = Some(current_mc_usd);
+                }
+                _ => {
+                    // Peak remains the same
+                }
+            }
+            
+            // Activate breakeven mode if threshold reached
+            if current_mc_usd >= breakeven_threshold {
+                buy.breakeven_mode_active = true;
+            }
+            
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
     /// Get all active positions with bonding curves (for batch PnL update)
     pub fn get_active_positions_for_pnl(&self) -> Vec<(String, String)> {
         self.stats.buys.iter()
@@ -652,8 +693,137 @@ mod tests {
     }
 
     #[test]
+    fn test_peak_pnl_tracking() {
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_mint_peak".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_usd: Some(5000.0),
+            mc_at_entry_usd: Some(5000.0),
+            token_price_sol: Some(0.00005),
+            token_amount: Some(2000000), // 2 tokens with 6 decimals
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // Update PnL with increasing prices (should track peak)
+        tracker.update_position_pnl_fast("test_mint_peak", 0.0001).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_peak").unwrap();
+        let first_peak = position.peak_pnl_percent;
+        let first_current = position.pnl_percent;
+        assert!(first_peak.is_some()); // Should have peak value
+        assert!(first_current.is_some()); // Should have current PnL
+
+        // Update with lower price (peak should remain same or higher)
+        tracker.update_position_pnl_fast("test_mint_peak", 0.000075).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_peak").unwrap();
+        assert!(position.peak_pnl_percent.is_some()); // Peak should exist
+        // Peak should be >= current PnL (or remain same/higher than first)
+        assert!(position.peak_pnl_percent.unwrap_or(f64::MIN) >= position.pnl_percent.unwrap_or(f64::MIN));
+        // Peak should not decrease (should be same or higher than first peak)
+        assert!(position.peak_pnl_percent.unwrap_or(0.0) >= first_peak.unwrap_or(0.0));
+
+        // Update with higher price (peak should update to new higher value)
+        let peak_before = position.peak_pnl_percent;
+        tracker.update_position_pnl_fast("test_mint_peak", 0.0002).unwrap(); // Higher price
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_peak").unwrap();
+        // Peak should have increased
+        assert!(position.peak_pnl_percent.unwrap_or(0.0) >= peak_before.unwrap_or(0.0));
+        // Current PnL should also be higher now
+        assert!(position.pnl_percent.is_some());
+    }
+
+    #[test]
+    fn test_peak_mc_tracking() {
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_mint_mc".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_usd: Some(7000.0),
+            mc_at_entry_usd: Some(7000.0),
+            token_price_sol: Some(0.00005),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve_mc".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // Update peak MC - should track highest
+        tracker.update_peak_mc("test_mint_mc", 8000.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
+        assert_eq!(position.peak_mc_usd, Some(8000.0));
+        assert_eq!(position.breakeven_mode_active, false); // Not reached threshold yet
+
+        // Update with lower MC (peak should remain)
+        tracker.update_peak_mc("test_mint_mc", 7500.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
+        assert_eq!(position.peak_mc_usd, Some(8000.0)); // Peak should remain
+
+        // Update with higher MC (peak should update)
+        tracker.update_peak_mc("test_mint_mc", 10000.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
+        assert_eq!(position.peak_mc_usd, Some(10000.0)); // Peak should update
+
+        // Update with MC above threshold (should activate breakeven mode)
+        tracker.update_peak_mc("test_mint_mc", 15000.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
+        assert_eq!(position.peak_mc_usd, Some(15000.0));
+        assert_eq!(position.breakeven_mode_active, true); // Should activate breakeven mode
+    }
+
+    #[test]
     fn test_buy_recording_with_mc() {
         let mut tracker = TokenTracker::new().unwrap();
+        tracker.clear_all_buys().unwrap(); // Clear any existing data for test isolation
 
         let buy = TokenBuy {
             token_number: 1,
@@ -683,6 +853,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -745,6 +918,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -791,6 +967,7 @@ mod tests {
     #[test]
     fn test_mc_statistics() {
         let mut tracker = TokenTracker::new().unwrap();
+        tracker.clear_all_buys().unwrap(); // Clear any existing data for test isolation
 
         // Add buys with different MCs
         let buy1 = TokenBuy {
@@ -821,6 +998,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         let buy2 = TokenBuy {
@@ -851,6 +1031,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -865,6 +1048,7 @@ mod tests {
     #[test]
     fn test_record_buy_without_mc() {
         let mut tracker = TokenTracker::new().unwrap();
+        tracker.clear_all_buys().unwrap(); // Clear any existing data for test isolation
 
         let buy = TokenBuy {
             token_number: 1,
@@ -894,6 +1078,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -936,6 +1123,9 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());

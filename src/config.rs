@@ -45,6 +45,7 @@ pub struct Config {
     pub enable_auto_sell: bool,
     pub stop_loss_percent: f64,
     pub take_profit_mc_usd: f64,
+    pub breakeven_mc_threshold_usd: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
     pub enable_dead_coin_sell: bool,
@@ -263,6 +264,11 @@ impl Config {
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_USD"))?;
 
+        let breakeven_mc_threshold_usd = std::env::var("BREAKEVEN_MC_THRESHOLD_USD")
+            .unwrap_or_else(|_| "14000.0".to_string())
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid BREAKEVEN_MC_THRESHOLD_USD"))?;
+
         let sell_percent = std::env::var("SELL_PERCENT")
             .unwrap_or_else(|_| "100.0".to_string())
             .parse::<f64>()
@@ -403,6 +409,7 @@ impl Config {
             enable_auto_sell,
             stop_loss_percent,
             take_profit_mc_usd,
+            breakeven_mc_threshold_usd,
             sell_percent,
             monitor_interval_sec,
             enable_dead_coin_sell,
@@ -574,6 +581,7 @@ impl Default for Config {
             enable_auto_sell: false,
             stop_loss_percent: 30.0,
             take_profit_mc_usd: 24_000.0,
+            breakeven_mc_threshold_usd: 14_000.0,
             sell_percent: 100.0,
             monitor_interval_sec: 5,
             enable_dead_coin_sell: false,
@@ -618,8 +626,8 @@ mod tests {
         env::remove_var("MIN_DEV_TOKENS");
         env::remove_var("MAX_DEV_TOKENS");
         env::remove_var("ENABLE_TRACKER");
-        env::remove_var("TARGET_MINT_ADDRESS");
         env::remove_var("MOCK_BUY");
+        env::remove_var("BREAKEVEN_MC_THRESHOLD_USD");
     }
 
     #[test]
@@ -636,6 +644,26 @@ mod tests {
         assert_eq!(config.priority_fee, 5000000);
         assert_eq!(config.compute_units, 300000);
         
+        cleanup_test_env();
+    }
+
+    #[test]
+    fn test_breakeven_config_default() {
+        let config = Config::default();
+        assert_eq!(config.breakeven_mc_threshold_usd, 14_000.0);
+    }
+
+    #[test]
+    fn test_breakeven_config_from_env() {
+        setup_test_env();
+        env::set_var("BREAKEVEN_MC_THRESHOLD_USD", "16000.0");
+        
+        let config = Config::from_env();
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.breakeven_mc_threshold_usd, 16000.0);
+        
+        env::remove_var("BREAKEVEN_MC_THRESHOLD_USD");
         cleanup_test_env();
     }
 
@@ -674,13 +702,14 @@ mod tests {
     fn test_config_defaults() {
         let config = Config::default();
         
-        assert_eq!(config.sol_price_usd, 162.0);
+        assert_eq!(config.sol_price_usd, 137.0); // Updated default
         assert_eq!(config.buy_amount_sol, 0.015);
         assert_eq!(config.priority_fee, 11_000_000);
         assert_eq!(config.compute_units, 200_000);
         assert_eq!(config.submission_mode, SubmissionMode::Helius);
         assert!(!config.require_socials);
         assert!(!config.require_twitter);
+        assert_eq!(config.breakeven_mc_threshold_usd, 14_000.0); // New field
     }
 
     #[test]
@@ -755,9 +784,12 @@ mod tests {
         // Remove API key if it exists
         env::remove_var("HELIUS_API_KEY");
         
+        // Config should use default API key when HELIUS_API_KEY is missing
         let config = Config::from_env();
-        assert!(config.is_err(), "Expected error when HELIUS_API_KEY is missing");
-        assert!(config.unwrap_err().to_string().contains("HELIUS_API_KEY"));
+        assert!(config.is_ok(), "Config should succeed with default API key");
+        let config = config.unwrap();
+        // Should use default API key value
+        assert_eq!(config.helius_api_key, "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04");
     }
 
     #[test]

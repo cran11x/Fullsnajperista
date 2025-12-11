@@ -58,6 +58,7 @@ struct SettingsState {
     take_profit_mc_str: Option<String>,
     sell_percent_str: Option<String>,
     monitor_interval_str: Option<String>,
+    breakeven_mc_threshold_str: Option<String>,
     // Blacklist/Whitelist
     blacklisted_tokens_str: Option<String>,
     blacklisted_creators_str: Option<String>,
@@ -206,6 +207,12 @@ impl SettingsState {
                 }
                 self.whitelisted_tokens_str.as_mut().unwrap()
             }
+            "breakeven_mc_threshold" => {
+                if self.breakeven_mc_threshold_str.is_none() {
+                    self.breakeven_mc_threshold_str = Some(default);
+                }
+                self.breakeven_mc_threshold_str.as_mut().unwrap()
+            }
             _ => panic!("Unknown field id: {}", id),
         }
     }
@@ -264,6 +271,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     }
     if state.max_dev_tokens_str.is_none() {
         state.max_dev_tokens_str = Some(config_clone.max_dev_tokens.to_string());
+    }
+    if state.breakeven_mc_threshold_str.is_none() {
+        state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_usd.to_string());
     }
     
     // Enhanced Wallet Private Key Section with premium styling
@@ -652,7 +662,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     // Enhanced Auto-Sell Settings
     ui.group(|ui| {
-        ui.set_min_height(240.0);
+        ui.set_min_height(300.0);
         ui.heading(egui::RichText::new("💰 Auto-Sell Settings")
             .size(19.0)
             .strong()
@@ -719,6 +729,33 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 }
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("(Sell when MC reaches this value)")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
+            });
+            
+            ui.add_space(8.0);
+            
+            // 🆕 Breakeven Stop Loss Threshold
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("🛡️  Breakeven MC Threshold (USD):")
+                    .size(13.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(255, 200, 100)));
+                ui.add_space(8.0);
+                let breakeven_str = state.get_or_init("breakeven_mc_threshold", config_clone.breakeven_mc_threshold_usd.to_string());
+                if ui.add(egui::TextEdit::singleline(breakeven_str)
+                        .desired_width(150.0))
+                        .changed() {
+                    if let Ok(val) = breakeven_str.parse::<f64>() {
+                        if val > 0.0 {
+                            config_clone.breakeven_mc_threshold_usd = val;
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("(Move stop loss to entry when MC reaches this)")
                     .size(11.0)
                     .color(egui::Color32::from_rgb(160, 170, 185)));
             });
@@ -821,6 +858,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(210, 220, 235)));
+            ui.label(egui::RichText::new(format!("  🛡️  When MC reaches ${:.0}, stop loss moves to entry (Breakeven)", config_clone.breakeven_mc_threshold_usd))
+                .size(11.0)
+                .color(egui::Color32::from_rgb(255, 220, 150)));
             if config_clone.enable_dead_coin_sell {
                 ui.label(egui::RichText::new(format!("  • No price movement for {} seconds (Dead Coin)", config_clone.dead_coin_timeout_sec))
                     .size(11.0)
@@ -1333,6 +1373,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 if let Ok(val) = monitor_interval_str.parse::<u64>() {
                     if val > 0 {
                         config_clone.monitor_interval_sec = val;
+                    }
+                }
+            }
+            if let Some(breakeven_str) = &state_clone.breakeven_mc_threshold_str {
+                if let Ok(val) = breakeven_str.parse::<f64>() {
+                    if val > 0.0 {
+                        config_clone.breakeven_mc_threshold_usd = val;
                     }
                 }
             }
