@@ -212,11 +212,17 @@ impl GuiApp {
                                  
                                  let buy_amount = sol_amount.unwrap_or(config_val.buy_amount_lamports());
 
-                                 // Preload global account (needed for buy instruction)
-                                 if let Err(e) = crate::buy::preload_global(&rpc_client, &config_val.global_account).await {
-                                     eprintln!("❌ Failed to preload global account: {}", e);
-                                     return;
-                                 }
+                                // Initialize static caches
+                                if let Err(e) = crate::buy::init_static_caches() {
+                                    eprintln!("❌ Failed to initialize static caches: {}", e);
+                                    return;
+                                }
+                                
+                                // Preload global account (needed for buy instruction)
+                                if let Err(e) = crate::buy::preload_global(&rpc_client, &config_val.global_account).await {
+                                    eprintln!("❌ Failed to preload global account: {}", e);
+                                    return;
+                                }
 
                                  // Execute buy
                                  // We pass a dummy channel since we don't have the main event loop listening

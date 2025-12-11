@@ -21,6 +21,37 @@ use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
 // 🚀 GLOBAL CACHE - ONE FETCH AT STARTUP
 static GLOBAL_CACHE: OnceLock<GlobalAccount> = OnceLock::new();
 
+// ⚡ STATIC CACHES - Parsed once at startup
+static PUMP_PROGRAM_ID_CACHE: OnceLock<Pubkey> = OnceLock::new();
+static TOKEN_PROGRAM_2022_ID_CACHE: OnceLock<Pubkey> = OnceLock::new();
+
+/// Initialize static caches (call once at startup)
+pub fn init_static_caches() -> Result<()> {
+    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
+        .map_err(|e| anyhow::anyhow!("Invalid PUMP_PROGRAM_ID: {}", e))?;
+    PUMP_PROGRAM_ID_CACHE.set(pump_program)
+        .map_err(|_| anyhow::anyhow!("PUMP_PROGRAM_ID_CACHE already initialized"))?;
+    
+    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        .unwrap_or_else(|_| spl_token::id());
+    TOKEN_PROGRAM_2022_ID_CACHE.set(token_program_2022)
+        .map_err(|_| anyhow::anyhow!("TOKEN_PROGRAM_2022_ID_CACHE already initialized"))?;
+    
+    Ok(())
+}
+
+/// Get cached pump program ID
+fn get_pump_program_id() -> Result<&'static Pubkey> {
+    PUMP_PROGRAM_ID_CACHE.get()
+        .ok_or_else(|| anyhow::anyhow!("Static caches not initialized - call init_static_caches() first"))
+}
+
+/// Get cached token program 2022 ID
+fn get_token_program_2022_id() -> Result<&'static Pubkey> {
+    TOKEN_PROGRAM_2022_ID_CACHE.get()
+        .ok_or_else(|| anyhow::anyhow!("Static caches not initialized - call init_static_caches() first"))
+}
+
 /// Pre-load global account at startup (call once)
 pub async fn preload_global(rpc: &RpcClient, global_account: &Pubkey) -> Result<()> {
     let global_pubkey = *global_account;
@@ -76,28 +107,16 @@ pub async fn build_buy_instruction(
     
     // Use current bonding curve price if available, otherwise fallback to initial price
     // If bonding curve returns 0 (invalid data), fallback to global account
-    let (token_amount, price_source, use_current_price) = if let Some(curve) = bonding_curve {
+    let (token_amount, use_current_price) = if let Some(curve) = bonding_curve {
         let amount = curve.calculate_token_amount_for_sol(sol_lamports);
         if amount > 0 {
-            (amount, "current", true)
+            (amount, true)
         } else {
             // Bonding curve returned 0 (invalid reserves) - fallback to global account
-            eprintln!("⚠️  Bonding curve returned 0 tokens (virtual_sol: {}, virtual_token: {}), using global account fallback", 
-                     curve.virtual_sol_reserves, curve.virtual_token_reserves);
-            let amount = global.get_initial_buy_price(sol_lamports);
-            if amount == 0 {
-                eprintln!("⚠️  Global account also returned 0 tokens (initial_virtual_sol: {}, initial_virtual_token: {})", 
-                         global.initial_virtual_sol_reserves, global.initial_virtual_token_reserves);
-            }
-            (amount, "initial", false)
+            (global.get_initial_buy_price(sol_lamports), false)
         }
     } else {
-        let amount = global.get_initial_buy_price(sol_lamports);
-        if amount == 0 {
-            eprintln!("⚠️  Global account returned 0 tokens (initial_virtual_sol: {}, initial_virtual_token: {})", 
-                     global.initial_virtual_sol_reserves, global.initial_virtual_token_reserves);
-        }
-        (amount, "initial", false)
+        (global.get_initial_buy_price(sol_lamports), false)
     };
 
     if token_amount == 0 {
@@ -114,248 +133,82 @@ pub async fn build_buy_instruction(
         base_max_sol_cost
     };
 
-    if use_current_price && max_sol_cost != base_max_sol_cost {
-        println!("   💰 ~{} tokens (expected) for {} SOL (max: {} with +15% buffer) [using {} price]",
-                 token_amount as f64 / 1e6,
-                 sol_lamports as f64 / 1e9,
-                 max_sol_cost as f64 / 1e9,
-                 price_source);
-        eprintln!("   ⚠️  NOTE: Expected token amount is {} (raw units). Actual amount will be determined by pump.fun program using max_sol_cost and current bonding curve price.", token_amount);
-    } else {
-        println!("   💰 ~{} tokens (expected) for {} SOL (max: {}) [using {} price]",
-                 token_amount as f64 / 1e6,
-                 sol_lamports as f64 / 1e9,
-                 max_sol_cost as f64 / 1e9,
-                 price_source);
-        eprintln!("   ⚠️  NOTE: Expected token amount is {} (raw units). Actual amount will be determined by pump.fun program using max_sol_cost and current bonding curve price.", token_amount);
-    }
+    // Minimal user output only
+    println!("   💰 ~{:.6} tokens for {:.9} SOL (max: {:.9})",
+             token_amount as f64 / 1e6,
+             sol_lamports as f64 / 1e9,
+             max_sol_cost as f64 / 1e9);
 
-    let mut data = Vec::with_capacity(32);
+    // Pre-allocate data vector with exact capacity
+    let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&BUY_DISCRIMINATOR);
     data.extend_from_slice(&token_amount.to_le_bytes());
     data.extend_from_slice(&max_sol_cost.to_le_bytes());
-    // data.push(0x00); // Removed extra byte that might cause deserialization errors
 
-    let pump_program = Pubkey::from_str(PUMP_PROGRAM_ID)
-        .map_err(|e| anyhow::anyhow!("Invalid PUMP_PROGRAM_ID: {}", e))?;
+    // ⚡ Use cached pump program ID
+    let pump_program = *get_pump_program_id()?;
     
     // 🔥 CRITICAL FIX: Recalculate ALL PDAs fresh for this specific mint/user
     // DO NOT reuse values from accounts - they might be from a different token or stale
     let pdas = PumpPdas::recalculate_all(&accounts.mint, user_wallet);
     
-    eprintln!("🔍 BUILDING BUY INSTRUCTION - Recalculated PDAs:");
-    eprintln!("   Mint: {}", accounts.mint);
-    eprintln!("   User Wallet: {}", user_wallet);
-    eprintln!("   Global: {} (recalculated)", pdas.global);
-    eprintln!("   Bonding Curve: {} (recalculated)", pdas.bonding_curve);
-    eprintln!("   Event Authority: {} (recalculated)", pdas.event_authority);
-    eprintln!("   User Volume: {} (recalculated)", pdas.user_volume);
-    eprintln!("   Global Volume: {} (hardcoded)", pdas.global_volume);
+    // ⚡ Single User Volume PDA derivation and verification (removed redundant derivations)
+    let (expected_user_volume, _) = crate::pda_derivation::derive_user_volume_pda(user_wallet);
+    if pdas.user_volume != expected_user_volume {
+        return Err(anyhow::anyhow!("User Volume PDA mismatch! Expected: {}, Got: {}", expected_user_volume, pdas.user_volume));
+    }
     
-    // Debug: Verify all PDA accounts to catch Error 0x1f9 (Seeds Constraint Was Violated)
-    eprintln!();
-    eprintln!("🔍 VERIFYING PDA ACCOUNTS FOR ERROR 0x1f9 PREVENTION:");
-    
-    // Verify Global (Account 0)
-    eprintln!("   Account 0 (Global): {} (from accounts: {}) {}", 
-             pdas.global, accounts.global,
-             if pdas.global == accounts.global { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
-    
-    // Verify Bonding Curve (Account 3)
-    eprintln!("   Account 3 (Bonding Curve): {} (from accounts: {}) {}", 
-             pdas.bonding_curve, accounts.bonding_curve,
-             if pdas.bonding_curve == accounts.bonding_curve { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
-    
-    // Verify Associated Bonding Curve (Account 4)
-    // IMPORTANT: We must use the RECALCULATED associated bonding curve based on the recalculated bonding curve
-    // The one in `accounts` might be derived from a stale or incorrect bonding curve
-    let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-        .unwrap_or_else(|_| spl_token::id());
+    // ⚡ Use cached Token Program 2022 ID
+    let token_program_2022_id = *get_token_program_2022_id()?;
     let recalculated_abc = spl_associated_token_account::get_associated_token_address_with_program_id(
         &pdas.bonding_curve,
         &accounts.mint,
         &token_program_2022_id
     );
     
-    eprintln!("   Account 4 (Associated Bonding Curve): {} (from accounts: {})", 
-             recalculated_abc, accounts.associated_bonding_curve);
-    if recalculated_abc != accounts.associated_bonding_curve {
-        eprintln!("   ❌ MISMATCH - The Associated Bonding Curve in accounts struct does not match derivation from recalculated Bonding Curve!");
-        eprintln!("   Using RECALCULATED: {}", recalculated_abc);
-    } else {
-        eprintln!("   ✅ MATCH - Associated Bonding Curve is consistent");
-    }
-    
     // Verify Creator Vault (Account 9) - check if it's a valid PDA
     // Fix: If Creator Vault matches Bonding Curve (common error when fallback is used), derive it
     let final_creator_vault = if accounts.creator_vault == accounts.bonding_curve || accounts.creator_vault == pdas.bonding_curve {
-        eprintln!("   ❌ Creator Vault (Account 9) matches Bonding Curve! This is an ERROR.");
         if accounts.creator != Pubkey::default() {
             let (derived_vault, _) = crate::pda_derivation::derive_creator_vault_pda(&accounts.creator);
-            eprintln!("   ✅ Recalculated Creator Vault using creator {}: {}", accounts.creator, derived_vault);
             derived_vault
         } else {
-            eprintln!("   ⚠️  Cannot recalculate Creator Vault: Creator is default/unknown. Using input but likely to fail.");
             accounts.creator_vault
         }
     } else {
-        eprintln!("   Account 9 (Creator Vault): {} (from accounts)", accounts.creator_vault);
         accounts.creator_vault
     };
-
-    // Verify Event Authority (Account 10)
-    eprintln!("   Account 10 (Event Authority): {} (from accounts: {}) {}", 
-             pdas.event_authority, accounts.event_authority,
-             if pdas.event_authority == accounts.event_authority { "✅" } else { "❌ MISMATCH - USING RECALCULATED!" });
-    
-    // Verify Global Volume (Account 12) - hardcoded
-    eprintln!("   Account 12 (Global Volume): {} (hardcoded) ✅", pdas.global_volume);
-    
-    // Verify User Volume (Account 13)
-    eprintln!("   Account 13 (User Volume): {} (recalculated for current user) ✅", pdas.user_volume);
-    eprintln!();
 
     // CRITICAL: All Pump.fun PDA accounts must already exist and be initialized
     // We use AccountMeta::new() for accounts that need to be writable (they exist, we're just modifying them)
     // We use AccountMeta::new_readonly() for accounts that are only read
     // DO NOT create new accounts - all Pump.fun accounts must already exist from token initialization
     // CRITICAL: Use RECALCULATED PDAs, not values from accounts
+    
+    // ⚡ Pre-allocate accounts vector with exact capacity (16 accounts)
+    let mut accounts_vec = Vec::with_capacity(16);
+    accounts_vec.push(AccountMeta::new(pdas.global, false)); // Account 0: Global (PDA, RECALCULATED)
+    accounts_vec.push(AccountMeta::new(pdas.fee_recipient, false)); // Account 1: Fee Recipient (hardcoded)
+    accounts_vec.push(AccountMeta::new_readonly(accounts.mint, false)); // Account 2: Mint
+    accounts_vec.push(AccountMeta::new(pdas.bonding_curve, false)); // Account 3: Bonding Curve (PDA, RECALCULATED)
+    accounts_vec.push(AccountMeta::new(recalculated_abc, false)); // Account 4: Associated Bonding Curve (RECALCULATED)
+    accounts_vec.push(AccountMeta::new(*user_token_account, false)); // Account 5: User Token Account
+    accounts_vec.push(AccountMeta::new(*user_wallet, true)); // Account 6: User Wallet (signer)
+    accounts_vec.push(AccountMeta::new_readonly(system_program::id(), false)); // Account 7: System Program
+    accounts_vec.push(AccountMeta::new_readonly(token_program_2022_id, false)); // Account 8: Token Program 2022
+    accounts_vec.push(AccountMeta::new(final_creator_vault, false)); // Account 9: Creator Vault
+    accounts_vec.push(AccountMeta::new_readonly(pdas.event_authority, false)); // Account 10: Event Authority (PDA, RECALCULATED)
+    accounts_vec.push(AccountMeta::new_readonly(pump_program, false)); // Account 11: Pump Program
+    accounts_vec.push(AccountMeta::new(pdas.global_volume, false)); // Account 12: Global Volume Accumulator (hardcoded)
+    accounts_vec.push(AccountMeta::new(pdas.user_volume, false)); // Account 13: User Volume (PDA, RECALCULATED)
+    accounts_vec.push(AccountMeta::new_readonly(pdas.fee_config, false)); // Account 14: Fee Config (hardcoded)
+    accounts_vec.push(AccountMeta::new_readonly(pdas.fee_program, false)); // Account 15: Fee Program (hardcoded)
+    
     let instruction = Instruction {
         program_id: pump_program,
-        accounts: vec![
-            // Account 0: Global (PDA, RECALCULATED)
-            AccountMeta::new(pdas.global, false),
-            // Account 1: Fee Recipient (hardcoded)
-            AccountMeta::new(pdas.fee_recipient, false),
-            // Account 2: Mint (from accounts - this is correct, it's the token mint)
-            AccountMeta::new_readonly(accounts.mint, false),
-            // Account 3: Bonding Curve (PDA, RECALCULATED for current mint)
-            AccountMeta::new(pdas.bonding_curve, false),
-            // Account 4: Associated Bonding Curve (RECALCULATED to ensure consistency with Bonding Curve)
-            AccountMeta::new(recalculated_abc, false),
-            // Account 5: User Token Account (current user's token account)
-            AccountMeta::new(*user_token_account, false),
-            // Account 6: User Wallet (signer, current user)
-            AccountMeta::new(*user_wallet, true),
-            // Account 7: System Program (readonly)
-            AccountMeta::new_readonly(system_program::id(), false),
-            // Account 8: Token Program 2022 (readonly)
-            AccountMeta::new_readonly(
-                Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-                    .unwrap_or_else(|_| spl_token::id()), // Token Program 2022
-                false
-            ),
-            // Account 9: Creator Vault (RECALCULATED if suspicious)
-            AccountMeta::new(final_creator_vault, false),
-            // Account 10: Event Authority (PDA, RECALCULATED)
-            AccountMeta::new_readonly(pdas.event_authority, false),
-            // Account 11: Pump Program (readonly, program itself - REQUIRED for program verification)
-            AccountMeta::new_readonly(pump_program, false),
-            // Account 12: Global Volume Accumulator (hardcoded)
-            AccountMeta::new({
-                eprintln!("   ✅ Using hardcoded Global Volume at index 12: {}", pdas.global_volume);
-                pdas.global_volume
-            }, false),
-            // Account 13: User Volume (PDA, RECALCULATED for current user)
-            AccountMeta::new({
-                eprintln!("   ✅ Using recalculated User Volume at index 13: {} (for user: {})", pdas.user_volume, user_wallet);
-                pdas.user_volume
-            }, false),
-            // Account 14: Fee Config (hardcoded)
-            AccountMeta::new_readonly(pdas.fee_config, false),
-            // Account 15: Fee Program (hardcoded)
-            AccountMeta::new_readonly(pdas.fee_program, false),
-        ],
+        accounts: accounts_vec,
         data,
     };
-    
-    // Debug: Log all accounts in buy instruction with detailed information
-    eprintln!("🔍 BUY INSTRUCTION ACCOUNTS (total: {}):", instruction.accounts.len());
-    
-    let account_labels = vec![
-        (0, "Global"),
-        (1, "Fee Recipient"),
-        (2, "Mint"),
-        (3, "Bonding Curve"),
-        (4, "Associated Bonding Curve"),
-        (5, "User Token Account"),
-        (6, "User Wallet"),
-        (7, "System Program"),
-        (8, "Token Program 2022"),
-        (9, "Creator Vault"),
-        (10, "Event Authority"),
-        (11, "Pump Program"),
-        (12, "Global Volume"),
-        (13, "User Volume"),
-        (14, "Fee Config"),
-        (15, "Fee Program"),
-    ];
-    
-    for (idx, account) in instruction.accounts.iter().enumerate() {
-        let label = account_labels.iter()
-            .find(|(i, _)| *i == idx)
-            .map(|(_, l)| *l)
-            .unwrap_or("Unknown");
-        
-        let signer_str = if account.is_signer { " [SIGNER]" } else { "" };
-        let writable_str = if account.is_writable { " [WRITABLE]" } else { " [READONLY]" };
-        
-        if idx == 12 {
-            eprintln!("   [{}] {} ({}){} <-- GLOBAL VOLUME (hardcoded)", idx, account.pubkey, label, writable_str);
-        } else if idx == 13 {
-            eprintln!("   [{}] {} ({}){} <-- USER VOLUME (recalculated for user: {})", idx, account.pubkey, label, writable_str, user_wallet);
-            // CRITICAL VERIFICATION: Ensure User Volume matches expected PDA for this user
-            let (expected_user_volume, _) = crate::pda_derivation::derive_user_volume_pda(user_wallet);
-            if account.pubkey != expected_user_volume {
-                eprintln!("   ❌❌❌ CRITICAL ERROR: User Volume mismatch!");
-                eprintln!("      Expected (for user {}): {}", user_wallet, expected_user_volume);
-                eprintln!("      Got in instruction: {}", account.pubkey);
-                eprintln!("      This will cause Error 0x1f9 (Seeds Constraint Was Violated)!");
-                // We continue anyway but log the error prominently
-            } else {
-                eprintln!("   ✅✅✅ User Volume PDA verified: matches expected PDA for user {}", user_wallet);
-            }
-        } else if idx == 9 {
-            eprintln!("   [{}] {} ({}){} <-- CREATOR VAULT", idx, account.pubkey, label, writable_str);
-        } else {
-            eprintln!("   [{}] {} ({}){}{}", idx, account.pubkey, label, signer_str, writable_str);
-        }
-    }
-    
-    // Log instruction data
-    eprintln!();
-    eprintln!("🔍 BUY INSTRUCTION DATA:");
-    eprintln!("   Discriminator: {:02x?}", &instruction.data[0..8]);
-    if instruction.data.len() >= 16 {
-        let token_amount = u64::from_le_bytes(instruction.data[8..16].try_into().unwrap());
-        // ⚠️ NOTE: This is EXPECTED token amount (for reference only)
-        // Pump.fun program uses max_sol_cost and bonding curve to determine ACTUAL tokens received
-        // Actual amount may differ due to price changes between calculation and execution
-        // Token amount is in raw units with 6 decimals (pump.fun standard)
-        eprintln!("   Token Amount (expected): {} ({:.6} tokens) [NOTE: Actual amount may differ - pump.fun uses max_sol_cost]", token_amount, token_amount as f64 / 1e6);
-    }
-    if instruction.data.len() >= 24 {
-        let max_sol_cost = u64::from_le_bytes(instruction.data[16..24].try_into().unwrap());
-        eprintln!("   Max SOL Cost: {} ({:.9} SOL)", max_sol_cost, max_sol_cost as f64 / 1e9);
-    }
-    eprintln!("   Data Length: {} bytes", instruction.data.len());
-    
-    // Final verification before returning
-    eprintln!();
-    eprintln!("🔍 FINAL VERIFICATION - User Volume PDA:");
-    let (final_check_user_volume, _) = crate::pda_derivation::derive_user_volume_pda(user_wallet);
-    let user_volume_in_instruction = instruction.accounts[13].pubkey;
-    eprintln!("   User Wallet: {}", user_wallet);
-    eprintln!("   Expected User Volume PDA: {}", final_check_user_volume);
-    eprintln!("   User Volume in instruction (index 13): {}", user_volume_in_instruction);
-    
-    if final_check_user_volume != user_volume_in_instruction {
-        eprintln!("   ❌❌❌ FINAL CHECK FAILED: User Volume mismatch!");
-        // Don't return error here to allow transaction to proceed (maybe our derivation is still wrong but we want to try)
-    } else {
-        eprintln!("   ✅✅✅ FINAL CHECK PASSED: User Volume PDA is correct!");
-    }
-    eprintln!();
     
     Ok(instruction)
 }
@@ -469,6 +322,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_buy_instruction() {
+        // Initialize static caches
+        init_static_caches().unwrap();
+        
         // Setup global cache
         let global = setup_test_global();
         GLOBAL_CACHE.set(global).ok();
@@ -522,6 +378,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_buy_instruction_validation_errors() {
+        // Initialize static caches
+        init_static_caches().unwrap();
+        
         let accounts = crate::detection::PumpBuyAccounts {
             mint: Pubkey::new_unique(),
             bonding_curve: Pubkey::new_unique(),

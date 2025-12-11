@@ -33,7 +33,7 @@ use crate::websocket::{is_initialize_bonding_curve, extract_signature};
 use crate::buy::build_buy_instruction;
 use crate::jito::send_jito_bundle;
 use crate::helius::send_helius_transaction;
-use crate::socials::{check_token_socials, Socials};
+use crate::socials::{check_token_metadata, Socials, TokenMetadata};
 use crate::das_check::check_creator_token_count_das;
 use crate::filters::check_creator_token_count;
 use crate::accounts::{TokenBuy, TokenTracker, SeenTokens, fetch_bonding_curve_mc, BondingCurveAccount};
@@ -77,6 +77,9 @@ pub async fn run_bot(
             *bal = balance as f64 / 1e9;
         }
     }
+    
+    // Initialize static caches
+    crate::buy::init_static_caches()?;
     
     // Pre-load global account
     crate::buy::preload_global(&rpc, &initial_config.global_account).await?;
@@ -1007,6 +1010,9 @@ async fn process_and_buy(
     let require_socials = config.require_socials;
     let require_twitter = config.require_twitter;
     let min_socials = config.min_socials_count;
+    let require_uppercase = config.require_uppercase_token;
+    let max_name_len = config.max_name_length;
+    let min_ticker_len = config.min_ticker_length;
     let mint_str = mint.to_string();
     
     let api_key = config.helius_api_key.clone();
@@ -1032,14 +1038,18 @@ async fn process_and_buy(
         }
     });
     
-    let socials_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Option<Socials>> + Send>> = Box::pin(async move {
-        if require_socials || require_twitter || min_socials > 0 {
+    // Check if we need metadata (for socials or metadata filters)
+    let need_metadata = require_socials || require_twitter || min_socials > 0 
+        || require_uppercase || max_name_len < usize::MAX || min_ticker_len > 0;
+    
+    let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Socials, TokenMetadata)>> + Send>> = Box::pin(async move {
+        if need_metadata {
             if let Err(_e) = socials_rate_limiter_clone.check() {
                 let mut m = metrics_clone_socials.write().unwrap();
                 m.record_error(ErrorType::Network);
                 None
             } else {
-                check_token_socials(&mint_str_socials, &api_key_socials).await.ok()
+                check_token_metadata(&mint_str_socials, &api_key_socials).await.ok()
             }
         } else {
             None
@@ -1053,15 +1063,22 @@ async fn process_and_buy(
     ));
     
     // ⚡ PARALLEL: Await all futures simultaneously using tokio::join!
-    let (das_result, mc_result, socials_result): (
+    let (das_result, mc_result, metadata_result): (
         Result<u32, anyhow::Error>,
         Result<(BondingCurveAccount, f64, f64), anyhow::Error>,
-        Option<Socials>
+        Option<(Socials, TokenMetadata)>
     ) = tokio::join!(
         das_fut,
         mc_fut,
-        socials_fut
+        metadata_fut
     );
+    
+    // Extract socials and metadata from result
+    let (socials_result, metadata_opt) = if let Some((socials, metadata)) = metadata_result {
+        (Some(socials), Some(metadata))
+    } else {
+        (None, None)
+    };
     
     // Filter #2: Creator Token Count (using filter function from filters.rs)
     println!("      🔍 DEBUG DEV TOKENS FILTER: min_dev_tokens={}, max_dev_tokens={}", 
@@ -1249,6 +1266,128 @@ async fn process_and_buy(
         }
         None
     };
+    
+    // Filter #4: Token Metadata Filters (uppercase, name length, ticker length)
+    if let Some(metadata) = &metadata_opt {
+        // Uppercase filter
+        if config.require_uppercase_token {
+            let name_ok = metadata.name.is_empty() || metadata.name == metadata.name.to_uppercase();
+            let symbol_ok = metadata.symbol.is_empty() || metadata.symbol == metadata.symbol.to_uppercase();
+            if !name_ok || !symbol_ok {
+                let filter_time = filter_start.elapsed().as_millis() as u64;
+                if let Ok(mut m) = metrics.write() {
+                    m.record_filter(FilterReason::Socials, filter_time); // Reuse Socials filter reason for now
+                }
+                let reason = format!("SKIP: Token not uppercase (name: '{}', symbol: '{}')", metadata.name, metadata.symbol);
+                // Log filtered token
+                if let Ok(logger_guard) = logger.lock() {
+                    let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                        twitter: s.twitter.clone(),
+                        telegram: s.telegram.clone(),
+                        website: s.website.clone(),
+                        count: s.count(),
+                    });
+                    let _ = logger_guard.log_filtered(
+                        mint.to_string(),
+                        reason.clone(),
+                        Some(init_signature.clone()),
+                        Some(dev_buy_sol),
+                        Some(accounts.creator.to_string()),
+                        Some(creator_count),
+                        socials_info,
+                    );
+                }
+                return Err(anyhow!(reason));
+            }
+        }
+        
+        // Name length filter
+        if metadata.name.len() > config.max_name_length {
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+            }
+            let reason = format!("SKIP: Name too long ({} > {}): '{}'", metadata.name.len(), config.max_name_length, metadata.name);
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                    twitter: s.twitter.clone(),
+                    telegram: s.telegram.clone(),
+                    website: s.website.clone(),
+                    count: s.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+        
+        // Ticker length filter
+        let symbol_len = metadata.symbol.len();
+        if symbol_len < config.min_ticker_length || symbol_len > config.max_ticker_length {
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+            }
+            let reason = format!("SKIP: Ticker length out of range ({} not in {}-{}): '{}'", 
+                symbol_len, config.min_ticker_length, config.max_ticker_length, metadata.symbol);
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                    twitter: s.twitter.clone(),
+                    telegram: s.telegram.clone(),
+                    website: s.website.clone(),
+                    count: s.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+    } else {
+        // If metadata is required for uppercase filter but not available, reject
+        if config.require_uppercase_token {
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+                m.record_error(ErrorType::Network);
+            }
+            let reason = "SKIP: Could not verify token metadata (uppercase required)".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
+                    twitter: s.twitter.clone(),
+                    telegram: s.telegram.clone(),
+                    website: s.website.clone(),
+                    count: s.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+    }
     
     // ========================================================================
     // SECTION 3: ACCOUNT VERIFICATION
@@ -2948,11 +3087,13 @@ async fn monitor_positions(
                             };
                             
                             // Check if we should use breakeven stop loss
-                            if current_mc >= config_clone.breakeven_mc_threshold_usd {
+                            // ✅ CRITICAL FIX: Check breakeven_mode_active OR if MC reaches threshold
+                            // Once breakeven mode is active, it stays active even if MC drops below threshold
+                            if position_clone.breakeven_mode_active || current_mc >= config_clone.breakeven_mc_threshold_usd {
                                 // Breakeven mode: use entry MC as stop loss
                                 if current_mc < entry_mc_val {
-                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped from {:.2} to {:.2} (entry: {:.2})", 
-                                             config_clone.breakeven_mc_threshold_usd, current_mc, entry_mc_val);
+                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped to {:.2} (entry: {:.2})", 
+                                             current_mc, entry_mc_val);
                                     return Some(("breakeven_stop_loss", position_mint.clone()));
                                 }
                                 false // In breakeven mode, only sell if below entry
@@ -3001,40 +3142,60 @@ async fn monitor_positions(
                         Err(_) => return None,
                     };
                     
-                    // 🎯 BREAKEVEN STOP LOSS: If MC reached threshold, use entry MC as stop loss
+                    // 🎯 BREAKEVEN STOP LOSS: If breakeven mode is active, use entry MC as stop loss
                     if let Some(entry_mc_val) = entry_mc {
-                        if entry_mc_val > 0.0 && current_mc >= config_clone.breakeven_mc_threshold_usd {
-                            // Token reached breakeven threshold - use entry MC as stop loss
-                            // Update peak MC in tracker
-                            if let Ok(mut tracker_guard) = tracker_clone.write() {
-                                if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                    let _ = tracker_ref.update_peak_mc(
-                                        &position_clone.mint,
-                                        current_mc,
-                                        config_clone.breakeven_mc_threshold_usd,
-                                    );
+                        if entry_mc_val > 0.0 {
+                            // Check if MC reaches threshold (activates breakeven mode)
+                            let breakeven_mode_active = if current_mc >= config_clone.breakeven_mc_threshold_usd {
+                                // Update peak MC in tracker (activates breakeven mode)
+                                if let Ok(mut tracker_guard) = tracker_clone.write() {
+                                    if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                        let _ = tracker_ref.update_peak_mc(
+                                            &position_clone.mint,
+                                            current_mc,
+                                            config_clone.breakeven_mc_threshold_usd,
+                                        );
+                                    }
                                 }
-                            }
+                                true // MC just reached threshold, breakeven mode is now active
+                            } else {
+                                // Check if breakeven mode was already active (from previous cycle)
+                                // Read fresh from tracker to get updated status
+                                let mut is_active = position_clone.breakeven_mode_active;
+                                if let Ok(tracker_guard) = tracker_clone.read() {
+                                    if let Some(tracker_ref) = tracker_guard.as_ref() {
+                                        if let Some(pos) = tracker_ref.get_active_positions().iter().find(|p| p.mint == position_clone.mint) {
+                                            is_active = pos.breakeven_mode_active;
+                                        }
+                                    }
+                                }
+                                is_active
+                            };
                             
-                            // Check if MC dropped below entry (breakeven stop loss)
-                            if current_mc < entry_mc_val {
-                                eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from {:.2} to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
-                                         config_clone.breakeven_mc_threshold_usd, current_mc, entry_mc_val);
-                                
-                                // Execute sell at breakeven
-                                let _ = execute_sell(
-                                    &config_clone,
-                                    &wallet_clone,
-                                    rpc_task.as_ref(),
-                                    &tracker_clone,
-                                    &position_clone,
-                                    "breakeven_stop_loss",
-                                    &event_tx_clone,
-                                ).await;
-                                
-                                return Some(("breakeven_stop_loss", position_mint));
+                            // ✅ CRITICAL FIX: Check breakeven stop loss if breakeven mode is active
+                            // Once activated (MC reached threshold), breakeven mode stays active
+                            // and we check if MC drops below entry, regardless of current MC level
+                            if breakeven_mode_active {
+                                // Check if MC dropped below entry (breakeven stop loss)
+                                if current_mc < entry_mc_val {
+                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from peak to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
+                                             current_mc, entry_mc_val);
+                                    
+                                    // Execute sell at breakeven
+                                    let _ = execute_sell(
+                                        &config_clone,
+                                        &wallet_clone,
+                                        rpc_task.as_ref(),
+                                        &tracker_clone,
+                                        &position_clone,
+                                        "breakeven_stop_loss",
+                                        &event_tx_clone,
+                                    ).await;
+                                    
+                                    return Some(("breakeven_stop_loss", position_mint));
+                                }
+                                // Continue to take profit check (in breakeven mode, skip normal stop loss)
                             }
-                            // Continue to take profit check (in breakeven mode, skip normal stop loss)
                         }
                     }
                     

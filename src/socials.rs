@@ -35,22 +35,22 @@ struct Content {
     json_uri: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct TokenMetadata {
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TokenMetadata {
     #[serde(default)]
-    name: String,
+    pub name: String,
     #[serde(default)]
-    symbol: String,
+    pub symbol: String,
     #[serde(default)]
-    description: String,
+    pub description: String,
     #[serde(default)]
-    twitter: Option<String>,
+    pub twitter: Option<String>,
     #[serde(default)]
-    website: Option<String>,
+    pub website: Option<String>,
     #[serde(default)]
-    telegram: Option<String>,
+    pub telegram: Option<String>,
     #[serde(default)]
-    discord: Option<String>,
+    pub discord: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,16 +121,8 @@ impl Socials {
     }
 }
 
-/// ⚡ OPTIMIZED: Fast social check with aggressive timeouts + LRU cache
-pub async fn check_token_socials(mint_address: &str, api_key: &str) -> Result<Socials> {
-    // Check cache first
-    {
-        let mut cache = SOCIALS_CACHE.lock().await;
-        if let Some(cached) = cache.get(mint_address) {
-            return Ok(cached.clone());
-        }
-    }
-    
+/// ⚡ OPTIMIZED: Fetch token metadata (name, symbol, socials) with aggressive timeouts
+pub async fn check_token_metadata(mint_address: &str, api_key: &str) -> Result<(Socials, TokenMetadata)> {
     let start = std::time::Instant::now();
 
     // ⚡ Use shared HTTP client for better performance
@@ -183,23 +175,39 @@ pub async fn check_token_socials(mint_address: &str, api_key: &str) -> Result<So
 
     // ⚡ Performance logging
     if total_time > 1000 {
-        println!("      ⚠️  Slow social check: {}ms", total_time);
+        println!("      ⚠️  Slow metadata check: {}ms", total_time);
     }
 
-    // Step 3: Create socials
+    // Step 3: Create socials from metadata
     let socials = Socials {
-        twitter: metadata.twitter,
-        website: metadata.website,
-        telegram: metadata.telegram,
-        discord: metadata.discord,
+        twitter: metadata.twitter.clone(),
+        website: metadata.website.clone(),
+        telegram: metadata.telegram.clone(),
+        discord: metadata.discord.clone(),
     };
     
-    // Cache the result
+    // Cache the socials result (for backward compatibility with existing cache)
     {
         let mut cache = SOCIALS_CACHE.lock().await;
         cache.put(mint_address.to_string(), socials.clone());
     }
     
+    Ok((socials, metadata))
+}
+
+/// ⚡ OPTIMIZED: Fast social check with aggressive timeouts + LRU cache
+/// This function is kept for backward compatibility
+pub async fn check_token_socials(mint_address: &str, api_key: &str) -> Result<Socials> {
+    // Check cache first
+    {
+        let mut cache = SOCIALS_CACHE.lock().await;
+        if let Some(cached) = cache.get(mint_address) {
+            return Ok(cached.clone());
+        }
+    }
+    
+    // If not in cache, fetch metadata and return socials
+    let (socials, _) = check_token_metadata(mint_address, api_key).await?;
     Ok(socials)
 }
 

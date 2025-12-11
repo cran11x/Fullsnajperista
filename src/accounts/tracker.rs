@@ -818,6 +818,72 @@ mod tests {
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
         assert_eq!(position.peak_mc_usd, Some(15000.0));
         assert_eq!(position.breakeven_mode_active, true); // Should activate breakeven mode
+        
+        // ✅ CRITICAL TEST: Breakeven mode should stay active even when MC drops below threshold
+        // This simulates the scenario where token reaches 14000, then drops back to entry
+        tracker.update_peak_mc("test_mint_mc", 6000.0, 14000.0).unwrap(); // MC drops below threshold
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
+        assert_eq!(position.breakeven_mode_active, true); // Breakeven mode should STAY active
+        assert_eq!(position.peak_mc_usd, Some(15000.0)); // Peak should remain at highest
+    }
+
+    #[test]
+    fn test_breakeven_stop_loss_scenario() {
+        // Test scenario: Token goes to 14000, then returns to entry - should trigger sell
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_breakeven".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_usd: Some(5000.0),
+            mc_at_entry_usd: Some(5000.0), // Entry MC = 5000
+            token_price_sol: Some(0.00005),
+            token_amount: Some(2000000),
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: None,
+            peak_mc_usd: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // Step 1: MC reaches 14000 (breakeven threshold) - should activate breakeven mode
+        tracker.update_peak_mc("test_breakeven", 14000.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
+        assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should be activated when MC reaches threshold");
+        assert_eq!(position.peak_mc_usd, Some(14000.0));
+
+        // Step 2: MC drops to 4500 (below entry of 5000) - breakeven mode should still be active
+        // This simulates the scenario where token returns to entry after reaching 14000
+        tracker.update_peak_mc("test_breakeven", 4500.0, 14000.0).unwrap();
+        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
+        assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should STAY active even when MC drops below threshold");
+        assert_eq!(position.peak_mc_usd, Some(14000.0), "Peak MC should remain at highest value");
+        
+        // At this point, the monitoring logic should detect:
+        // - breakeven_mode_active = true
+        // - current_mc (4500) < entry_mc (5000)
+        // - Should trigger breakeven stop loss and sell
     }
 
     #[test]

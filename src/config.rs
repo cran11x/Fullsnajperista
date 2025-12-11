@@ -53,6 +53,10 @@ pub struct Config {
     pub blacklisted_tokens: HashSet<Pubkey>,
     pub blacklisted_creators: HashSet<Pubkey>,
     pub whitelisted_tokens: Option<HashSet<Pubkey>>, // None = svi dozvoljeni
+    pub require_uppercase_token: bool,
+    pub max_name_length: usize,
+    pub min_ticker_length: usize,
+    pub max_ticker_length: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +347,27 @@ impl Config {
                 }
             });
 
+        // Token metadata filters
+        let require_uppercase_token = std::env::var("REQUIRE_UPPERCASE_TOKEN")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let max_name_length = std::env::var("MAX_NAME_LENGTH")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse::<usize>()
+            .unwrap_or(20);
+
+        let min_ticker_length = std::env::var("MIN_TICKER_LENGTH")
+            .unwrap_or_else(|_| "3".to_string())
+            .parse::<usize>()
+            .unwrap_or(3);
+
+        let max_ticker_length = std::env::var("MAX_TICKER_LENGTH")
+            .unwrap_or_else(|_| "7".to_string())
+            .parse::<usize>()
+            .unwrap_or(7);
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -417,6 +442,10 @@ impl Config {
             blacklisted_tokens,
             blacklisted_creators,
             whitelisted_tokens,
+            require_uppercase_token,
+            max_name_length,
+            min_ticker_length,
+            max_ticker_length,
         };
 
         config.validate()?;
@@ -439,6 +468,10 @@ impl Config {
 
         if self.min_dev_tokens > self.max_dev_tokens {
             return Err(anyhow!("MIN_DEV_TOKENS must be <= MAX_DEV_TOKENS"));
+        }
+
+        if self.min_ticker_length > self.max_ticker_length {
+            return Err(anyhow!("MIN_TICKER_LENGTH must be <= MAX_TICKER_LENGTH"));
         }
 
         if self.compute_units == 0 {
@@ -589,6 +622,10 @@ impl Default for Config {
             blacklisted_tokens: HashSet::new(),
             blacklisted_creators: HashSet::new(),
             whitelisted_tokens: None,
+            require_uppercase_token: false,
+            max_name_length: 20,
+            min_ticker_length: 3,
+            max_ticker_length: 7,
         }
     }
 }

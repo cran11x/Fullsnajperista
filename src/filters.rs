@@ -4,7 +4,7 @@
 use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 use crate::detection::PumpBuyAccounts;
-use crate::socials::Socials;
+use crate::socials::{Socials, TokenMetadata};
 use crate::config::Config;
 
 /// Check if token passes all filters
@@ -12,6 +12,7 @@ pub fn should_process_token(
     config: &Config,
     accounts: &PumpBuyAccounts,
     socials: Option<&Socials>,
+    metadata: Option<&TokenMetadata>,
 ) -> Result<bool> {
     // Dev buy filter
     let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
@@ -38,6 +39,39 @@ pub fn should_process_token(
     } else if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
         // Socials required but not available
         return Ok(false);
+    }
+
+    // Token metadata filters
+    if let Some(metadata) = metadata {
+        // Uppercase filter: if required, both name and symbol must be uppercase (or empty)
+        if config.require_uppercase_token {
+            let name_ok = metadata.name.is_empty() || metadata.name == metadata.name.to_uppercase();
+            let symbol_ok = metadata.symbol.is_empty() || metadata.symbol == metadata.symbol.to_uppercase();
+            if !name_ok || !symbol_ok {
+                return Ok(false);
+            }
+        }
+
+        // Name length filter: name must be <= max_name_length
+        if metadata.name.len() > config.max_name_length {
+            return Ok(false);
+        }
+
+        // Ticker length filter: symbol must be between min_ticker_length and max_ticker_length (inclusive)
+        let symbol_len = metadata.symbol.len();
+        if symbol_len < config.min_ticker_length || symbol_len > config.max_ticker_length {
+            return Ok(false);
+        }
+    } else {
+        // If metadata is required for any filter, reject when metadata is not available
+        if config.require_uppercase_token || config.max_name_length < usize::MAX || config.min_ticker_length > 0 {
+            // Metadata filters are enabled but metadata not available
+            // We'll be lenient here - only reject if uppercase is required
+            // For length filters, we can't check without metadata, so we skip them
+            if config.require_uppercase_token {
+                return Ok(false);
+            }
+        }
     }
 
     Ok(true)
@@ -85,15 +119,15 @@ mod tests {
         // Valid dev buy: 0.8 SOL = 0.8 * 162 = 129.6 USD (outside 500-1200 range)
         // Need to use value in range: 500/162 = 3.09 SOL to 1200/162 = 7.41 SOL
         let accounts = create_test_accounts(5.0); // 5 SOL = 810 USD (within range)
-        assert!(should_process_token(&config, &accounts, None).unwrap());
+        assert!(should_process_token(&config, &accounts, None, None).unwrap());
 
         // Too low
         let accounts_low = create_test_accounts(0.001);
-        assert!(!should_process_token(&config, &accounts_low, None).unwrap());
+        assert!(!should_process_token(&config, &accounts_low, None, None).unwrap());
 
         // Too high
         let accounts_high = create_test_accounts(10.0);
-        assert!(!should_process_token(&config, &accounts_high, None).unwrap());
+        assert!(!should_process_token(&config, &accounts_high, None, None).unwrap());
     }
 
     #[test]
@@ -104,7 +138,7 @@ mod tests {
         let accounts = create_test_accounts(5.0); // Valid dev buy amount
         
         // No socials - should fail
-        assert!(!should_process_token(&config, &accounts, None).unwrap());
+        assert!(!should_process_token(&config, &accounts, None, None).unwrap());
 
         // With socials - should pass
         let socials = Socials {
@@ -113,7 +147,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials)).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials), None).unwrap());
     }
 
     #[test]
@@ -130,7 +164,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_no_twitter)).unwrap());
+        assert!(!should_process_token(&config, &accounts, Some(&socials_no_twitter), None).unwrap());
 
         // With twitter - should pass
         let socials_with_twitter = Socials {
@@ -139,7 +173,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_with_twitter)).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_with_twitter), None).unwrap());
     }
 
     #[test]
@@ -156,7 +190,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_one)).unwrap());
+        assert!(!should_process_token(&config, &accounts, Some(&socials_one), None).unwrap());
 
         // 2+ socials - should pass
         let socials_two = Socials {
@@ -165,7 +199,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_two)).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_two), None).unwrap());
     }
 
     #[test]
@@ -235,6 +269,272 @@ mod tests {
             let passes = count >= config.min_dev_tokens as u32 && count <= config.max_dev_tokens as u32;
             assert_eq!(passes, should_pass, "{}: count={}, expected={}", msg, count, should_pass);
         }
+    }
+
+    #[test]
+    fn test_uppercase_filter() {
+        use crate::socials::TokenMetadata;
+        
+        let mut config = create_test_config();
+        config.require_uppercase_token = true;
+        
+        let accounts = create_test_accounts(5.0);
+        
+        // Uppercase name and symbol - should pass
+        let metadata_upper = TokenMetadata {
+            name: "TOKEN NAME".to_string(),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_upper)).unwrap());
+        
+        // Lowercase name - should fail
+        let metadata_lower_name = TokenMetadata {
+            name: "token name".to_string(),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap());
+        
+        // Lowercase symbol - should fail
+        let metadata_lower_symbol = TokenMetadata {
+            name: "TOKEN NAME".to_string(),
+            symbol: "tkn".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower_symbol)).unwrap());
+        
+        // Empty name and symbol - should pass (empty is allowed)
+        // Need to set min_ticker_length to 0 to allow empty symbols
+        config.min_ticker_length = 0;
+        let metadata_empty = TokenMetadata {
+            name: String::new(),
+            symbol: String::new(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+        
+        // Filter disabled - should pass regardless
+        config.require_uppercase_token = false;
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap());
+    }
+
+    #[test]
+    fn test_name_length_filter() {
+        use crate::socials::TokenMetadata;
+        
+        let mut config = create_test_config();
+        config.max_name_length = 20;
+        
+        let accounts = create_test_accounts(5.0);
+        
+        // Name exactly at max - should pass
+        let metadata_exact = TokenMetadata {
+            name: "A".repeat(20),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_exact)).unwrap());
+        
+        // Name below max - should pass
+        let metadata_short = TokenMetadata {
+            name: "Short Name".to_string(),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap());
+        
+        // Name above max - should fail
+        let metadata_long = TokenMetadata {
+            name: "A".repeat(21),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap());
+        
+        // Empty name - should pass
+        let metadata_empty = TokenMetadata {
+            name: String::new(),
+            symbol: "TKN".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+    }
+
+    #[test]
+    fn test_ticker_length_filter() {
+        use crate::socials::TokenMetadata;
+        
+        let mut config = create_test_config();
+        config.min_ticker_length = 3;
+        config.max_ticker_length = 7;
+        
+        let accounts = create_test_accounts(5.0);
+        
+        // Ticker at min length - should pass
+        let metadata_min = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: "ABC".to_string(), // 3 chars
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_min)).unwrap());
+        
+        // Ticker at max length - should pass
+        let metadata_max = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: "ABCDEFG".to_string(), // 7 chars
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_max)).unwrap());
+        
+        // Ticker in range - should pass
+        let metadata_mid = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: "TOKEN".to_string(), // 5 chars
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_mid)).unwrap());
+        
+        // Ticker below min - should fail
+        let metadata_short = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: "AB".to_string(), // 2 chars
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap());
+        
+        // Ticker above max - should fail
+        let metadata_long = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: "ABCDEFGH".to_string(), // 8 chars
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap());
+        
+        // Empty ticker - should fail (below min)
+        let metadata_empty = TokenMetadata {
+            name: "Token Name".to_string(),
+            symbol: String::new(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+    }
+
+    #[test]
+    fn test_combined_metadata_filters() {
+        use crate::socials::TokenMetadata;
+        
+        let mut config = create_test_config();
+        config.require_uppercase_token = true;
+        config.max_name_length = 20;
+        config.min_ticker_length = 3;
+        config.max_ticker_length = 7;
+        
+        let accounts = create_test_accounts(5.0);
+        
+        // All filters pass
+        let metadata_valid = TokenMetadata {
+            name: "VALID TOKEN NAME".to_string(), // 17 chars, uppercase
+            symbol: "VALID".to_string(), // 5 chars, uppercase
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap());
+        
+        // Fails uppercase check
+        let metadata_lower = TokenMetadata {
+            name: "valid token name".to_string(),
+            symbol: "VALID".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower)).unwrap());
+        
+        // Fails name length
+        let metadata_long_name = TokenMetadata {
+            name: "A".repeat(21),
+            symbol: "VALID".to_string(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long_name)).unwrap());
+        
+        // Fails ticker length
+        let metadata_short_ticker = TokenMetadata {
+            name: "VALID TOKEN NAME".to_string(),
+            symbol: "VA".to_string(), // Too short
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_short_ticker)).unwrap());
     }
 }
 
