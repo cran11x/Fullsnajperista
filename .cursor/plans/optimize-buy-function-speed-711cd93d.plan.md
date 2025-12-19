@@ -1,4 +1,24 @@
-<!-- 711cd93d-66f4-48af-8bb2-4b3734794e7a f42baa64-1d1a-4b15-84c2-43022f6b160b -->
+---
+name: Optimizacija brzine buy funkcije
+overview: ""
+todos:
+  - id: f7801efb-6e0d-4062-9fc5-c84336075952
+    content: Ukloniti sve eprintln! debug logove iz build_buy_instruction (linije 85-358), zadržati samo kritične error poruke
+    status: pending
+  - id: 4e37bc08-678c-49b8-9018-d5a56e92850d
+    content: Cache-ovati Token Program 2022 ID, account_labels, i PUMP_PROGRAM_ID kao static/const vrednosti
+    status: pending
+  - id: f5c0861c-452a-4b4d-a43c-16970b62ae92
+    content: Eliminisati redundantne PDA derivacije - User Volume se derivira 3 puta, zadržati samo jednu
+    status: pending
+  - id: 5e5f86fa-da39-4de2-9d27-4c4daa87db9d
+    content: Pre-allokovati accounts vektor sa capacity 16 i optimizovati data vektor
+    status: pending
+  - id: 4ef2a66e-ace7-478e-ab53-ed0cf6c79e0d
+    content: Ukloniti string formatiranje iz hot path-a, zadržati samo minimalne println poruke
+    status: pending
+---
+
 # Optimizacija brzine buy funkcije
 
 ## Problem
@@ -50,11 +70,3 @@ Funkcija `build_buy_instruction` u [src/buy.rs](src/buy.rs) ima značajne perfor
 ## Fajlovi za izmenu
 
 - [src/buy.rs](src/buy.rs) - glavne optimizacije
-
-### To-dos
-
-- [ ] Ukloniti sve eprintln! debug logove iz build_buy_instruction (linije 85-358), zadržati samo kritične error poruke
-- [ ] Cache-ovati Token Program 2022 ID, account_labels, i PUMP_PROGRAM_ID kao static/const vrednosti
-- [ ] Eliminisati redundantne PDA derivacije - User Volume se derivira 3 puta, zadržati samo jednu
-- [ ] Pre-allokovati accounts vektor sa capacity 16 i optimizovati data vektor
-- [ ] Ukloniti string formatiranje iz hot path-a, zadržati samo minimalne println poruke

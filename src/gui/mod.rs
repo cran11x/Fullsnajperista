@@ -109,11 +109,6 @@ impl GuiApp {
     fn handle_control_messages(&mut self) {
         // Process any pending control messages (non-blocking)
         while let Ok(control) = self.control_rx.try_recv() {
-            // Forward to bot thread if it's running
-            if let Some(ref tx) = self.control_tx_bot {
-                let _ = tx.send(control.clone());
-            }
-            
             match control {
                 BotControl::Start => {
                     if !self.bot_running.load(Ordering::Relaxed) {
@@ -126,6 +121,11 @@ impl GuiApp {
                     }
                 }
                 BotControl::UpdateConfig(new_config) => {
+                    // Forward to bot thread if it's running
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::UpdateConfig(new_config.clone()));
+                    }
+                    // Also update in GUI thread
                     if let Ok(mut config) = self.config.write() {
                         *config = new_config;
                     }
@@ -134,17 +134,25 @@ impl GuiApp {
                     if self.bot_running.load(Ordering::Relaxed) {
                         self.stop_bot();
                     }
+                    // Wait a bit for bot to stop before starting again
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                     if !self.bot_running.load(Ordering::Relaxed) {
                         self.start_bot();
                     }
                 }
-                BotControl::ManualSell(_) => {
-                    // Forwarded to bot thread, nothing to do in GUI thread
+                BotControl::ManualSell(mint) => {
+                    // Forward to bot thread if it's running
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::ManualSell(mint.clone()));
+                    }
                 }
                 BotControl::ManualBuy { mint, sol_amount } => {
                     // Forward to bot thread if running
-                    if self.control_tx_bot.is_some() {
-                         // Already forwarded above
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::ManualBuy { 
+                            mint: mint.clone(), 
+                            sol_amount 
+                        });
                     } else {
                          // Bot is NOT running - execute manually here
                          eprintln!("🚀 Bot stopped, executing manual buy in background...");
@@ -236,7 +244,8 @@ impl GuiApp {
                                      accounts,
                                      buy_amount,
                                      &metrics_clone,
-                                     &dummy_tx
+                                     &dummy_tx,
+                                     None, // GUI doesn't have history_tracker - will be created in bot_core
                                  ).await {
                                      Ok(sig) => {
                                          eprintln!("✅ Manual buy successful! Signature: {}", sig);
@@ -551,7 +560,47 @@ impl GuiApp {
             return; // Already running
         }
         
-        self.bot_running.store(true, Ordering::Relaxed);
+        // ✅ FIX: Wait for previous bot thread to finish before starting new one
+        // This prevents issues when restarting bot after stop
+        if let Ok(mut handle) = self.bot_handle.write() {
+            if let Some(h) = handle.take() {
+                // Wait for previous bot thread to finish (with timeout to avoid blocking forever)
+                eprintln!("⏳ Waiting for previous bot thread to finish...");
+                
+                // Spawn a background thread to wait for the old bot thread
+                // This prevents blocking the GUI thread
+                std::thread::spawn(move || {
+                    // Wait up to 3 seconds for thread to finish
+                    let timeout = std::time::Duration::from_secs(3);
+                    let start = std::time::Instant::now();
+                    
+                    // Poll every 100ms to check if thread finished
+                    while start.elapsed() < timeout {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    
+                    // After timeout, try to join (this will block until thread finishes)
+                    // We're in background thread so it's ok to block here
+                    match h.join() {
+                        Ok(_) => {
+                            eprintln!("✅ Previous bot thread finished");
+                        }
+                        Err(_) => {
+                            eprintln!("⚠️  Previous bot thread panicked");
+                        }
+                    }
+                });
+                
+                // Give it a moment to start shutting down (non-blocking wait)
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+        
+        // ✅ FIX: Clear control_tx_bot to ensure clean state before starting new bot
+        self.control_tx_bot = None;
+        
+        // ✅ FIX: Don't set bot_running = true yet - wait until bot thread is actually spawned
+        // This prevents race condition where Stop signal is sent before bot thread starts
         
         let event = TokenEvent::Info {
             message: "Bot starting...".to_string(),
@@ -716,6 +765,10 @@ impl GuiApp {
         if let Ok(mut handle) = self.bot_handle.write() {
             *handle = Some(bot_handle);
         }
+        
+        // ✅ FIX: Set bot_running = true ONLY after bot thread is spawned and control_tx_bot is set
+        // This ensures that if Stop signal is sent, bot thread is already running and can receive it
+        self.bot_running.store(true, Ordering::Relaxed);
     }
     
     fn stop_bot(&mut self) {

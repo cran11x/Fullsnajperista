@@ -5,6 +5,8 @@ use eframe::egui;
 use std::sync::{Arc, RwLock, mpsc};
 use crate::accounts::TokenTracker;
 use crate::gui::events::BotControl;
+use serde_json;
+use chrono;
 
 pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, control_tx: &mpsc::Sender<BotControl>) {
     egui::ScrollArea::vertical()
@@ -35,6 +37,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                 // Use the live tracker directly (don't reload from disk - it would have stale data)
                 let active_positions = tracker_ref.get_active_positions();
                 let sold_positions = tracker_ref.get_sold_positions();
+                
+                // ✅ FIX: Removed excessive debug logging that was causing performance issues
                 
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("Active positions: {} | Sold: {}", active_positions.len(), sold_positions.len()))
@@ -209,6 +213,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                         egui::vec2(col_pnl, row_height),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
+                                            // DEBUG logging removed - was causing crashes due to unsafe string slicing
                                             if let Some(pnl) = pos.pnl_sol {
                                                 let color = if pnl >= 0.0 {
                                                     egui::Color32::from_rgb(100, 255, 100)  // Green for profit
@@ -234,8 +239,20 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                                     }
                                                 });
                                             } else {
-                                                ui.label(egui::RichText::new("...")
-                                                    .size(13.0)
+                                                // ✅ FIX: Show better message when PnL is not available
+                                                // Determine reason why PnL is not available
+                                                let status_text = if pos.bonding_curve.is_none() {
+                                                    "No BC"
+                                                } else if pos.token_amount.is_none() && pos.token_price_sol.is_none() {
+                                                    "Calc..."
+                                                } else if pos.current_price_sol.is_some() && pos.current_price_sol.unwrap_or(0.0) <= 0.0 {
+                                                    "Migrated"
+                                                } else {
+                                                    "Calc..."
+                                                };
+                                                
+                                                ui.label(egui::RichText::new(status_text)
+                                                    .size(12.0)
                                                     .color(egui::Color32::from_rgb(160, 170, 185)));
                                             }
                                         }
