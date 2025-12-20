@@ -33,10 +33,14 @@ pub fn should_process_token(
             return Ok(false);
         }
 
+        if config.require_website && !socials.has_website() {
+            return Ok(false);
+        }
+
         if socials.count() < config.min_socials_count {
             return Ok(false);
         }
-    } else if config.require_socials || config.require_twitter || config.min_socials_count > 0 {
+    } else if config.require_socials || config.require_twitter || config.require_website || config.min_socials_count > 0 {
         // Socials required but not available
         return Ok(false);
     }
@@ -174,6 +178,41 @@ mod tests {
             discord: None,
         };
         assert!(should_process_token(&config, &accounts, Some(&socials_with_twitter), None).unwrap());
+    }
+
+    #[test]
+    fn test_should_process_token_website_filter() {
+        let mut config = create_test_config();
+        config.require_website = true;
+
+        let accounts = create_test_accounts(5.0); // Valid dev buy amount
+        
+        // No website - should fail
+        let socials_no_website = Socials {
+            twitter: Some("https://x.com/test".to_string()),
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, Some(&socials_no_website), None).unwrap());
+
+        // With website - should pass
+        let socials_with_website = Socials {
+            twitter: None,
+            website: Some("https://example.com".to_string()),
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, Some(&socials_with_website), None).unwrap());
+
+        // With both twitter and website - should pass
+        let socials_both = Socials {
+            twitter: Some("https://x.com/test".to_string()),
+            website: Some("https://example.com".to_string()),
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, Some(&socials_both), None).unwrap());
     }
 
     #[test]

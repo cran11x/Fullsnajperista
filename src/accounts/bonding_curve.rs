@@ -29,20 +29,21 @@ pub struct BondingCurveAccount {
 
 impl BondingCurveAccount {
     /// Calculate current market cap in SOL
-    /// Formula: MC = (virtual_sol / virtual_token) * total_supply
+    /// Formula: MC = price_per_token * (token_total_supply / 1e6)
+    /// Uses get_token_price_sol() for consistency
     pub fn calculate_mc_sol(&self) -> f64 {
         if self.virtual_token_reserves == 0 {
             return 0.0;
         }
 
-        // Current price per token in SOL (using virtual reserves)
-        let price_per_token = self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64;
+        // Get price per token using the same formula as get_token_price_sol()
+        let price_per_token = self.get_token_price_sol();
 
-        // MC = price * total supply
-        let mc_lamports = price_per_token * self.token_total_supply as f64;
+        // token_total_supply is in raw units (6 decimals), convert to actual tokens
+        let tokens_actual = self.token_total_supply as f64 / 1e6;
 
-        // Convert to SOL
-        mc_lamports / 1e9
+        // MC = price * actual token supply
+        price_per_token * tokens_actual
     }
 
     /// Calculate current market cap in USD
@@ -297,21 +298,24 @@ mod tests {
     fn test_mc_calculation() {
         let curve = BondingCurveAccount {
             discriminator: 1,
-            virtual_token_reserves: 1_000_000_000_000, // 1000 tokens
+            virtual_token_reserves: 1_000_000_000_000, // 1M tokens (6 decimals)
             virtual_sol_reserves: 30_000_000_000,      // 30 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
-            token_total_supply: 1_000_000_000_000_000, // 1M tokens
+            token_total_supply: 1_000_000_000_000_000, // 1M tokens (6 decimals)
             complete: false,
         };
 
-        // Price = 30 / 1000 = 0.03 SOL per token
-        // MC = 0.03 * 1M = 30,000 SOL
+        // Price = (30e9 / 1e12) / 1000 = 0.00003 SOL per token
+        // MC = 0.00003 * 1M = 30 SOL
+        let price = curve.get_token_price_sol();
+        assert!((price - 0.00003).abs() < 0.0000001, "Price should be 0.00003 but got {}", price);
+        
         let mc_sol = curve.calculate_mc_sol();
-        assert!((mc_sol - 30_000.0).abs() < 0.1);
+        assert!((mc_sol - 30.0).abs() < 0.1, "MC should be 30 SOL but got {}", mc_sol);
 
         let mc_usd = curve.calculate_mc_usd(100.0);
-        assert!((mc_usd - 3_000_000.0).abs() < 100.0);
+        assert!((mc_usd - 3_000.0).abs() < 10.0, "MC USD should be 3000 but got {}", mc_usd);
     }
 
     #[test]
@@ -422,14 +426,14 @@ mod tests {
             complete: false,
         };
 
-        // MC = 30,000 SOL
+        // MC = 30 SOL (price 0.00003 * 1M tokens)
         let mc_sol = curve.calculate_mc_sol();
-        assert!((mc_sol - 30_000.0).abs() < 0.1);
+        assert!((mc_sol - 30.0).abs() < 0.1, "MC should be 30 SOL but got {}", mc_sol);
 
         // Test with different SOL prices
-        assert!((curve.calculate_mc_usd(100.0) - 3_000_000.0).abs() < 100.0);
-        assert!((curve.calculate_mc_usd(200.0) - 6_000_000.0).abs() < 100.0);
-        assert!((curve.calculate_mc_usd(50.0) - 1_500_000.0).abs() < 100.0);
+        assert!((curve.calculate_mc_usd(100.0) - 3_000.0).abs() < 10.0);
+        assert!((curve.calculate_mc_usd(200.0) - 6_000.0).abs() < 10.0);
+        assert!((curve.calculate_mc_usd(50.0) - 1_500.0).abs() < 10.0);
     }
 
     #[test]

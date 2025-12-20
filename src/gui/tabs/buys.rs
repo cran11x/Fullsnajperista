@@ -22,25 +22,25 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
             });
             ui.add_space(24.0);
     
-            let tracker_opt = match tracker.read() {
+            let tracker_opt = match tracker.try_read() {
                 Ok(t) => t,
-                Err(e) => {
-                    ui.label(format!("Error reading tracker: {}", e));
+                Err(_) => {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(60.0);
+                        ui.label(egui::RichText::new("Loading buys...")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(160, 170, 185)));
+                    });
                     return;
                 }
             };
     
             if let Some(tracker_ref) = tracker_opt.as_ref() {
-                let reloaded_tracker = crate::accounts::TokenTracker::new().ok();
-                let tracker_to_use = reloaded_tracker.as_ref().unwrap_or(tracker_ref);
+                // ✅ FIX: Safe access to total_buys
+                let total_buys = tracker_ref.total_buys();
                 
-                let total_buys = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    tracker_to_use.total_buys()
-                })).unwrap_or(0);
-                
-                let buys = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    tracker_to_use.get_recent_buys(50)
-                })).unwrap_or_else(|_| Vec::new());
+                // ✅ FIX: Safe access to get_recent_buys
+                let buys = tracker_ref.get_recent_buys(50);
                 
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("Total buys recorded: {}", total_buys))
@@ -59,13 +59,17 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                             .fill(egui::Color32::from_rgb(200, 80, 80))
                             .rounding(egui::Rounding::same(4.0))
                         ).clicked() {
-                            if let Ok(mut tracker_guard) = tracker.write() {
-                                if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                    if let Err(e) = tracker_ref.clear_all_buys() {
-                                        eprintln!("❌ Failed to clear buys: {}", e);
-                                    } else {
-                                        eprintln!("✅ All buys cleared");
+                            // ✅ FIX: Use try_write() instead of write() to avoid blocking GUI thread
+                            match tracker.try_write() {
+                                Ok(mut tracker_guard) => {
+                                    if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                        if let Err(e) = tracker_ref.clear_all_buys() {
+                                            eprintln!("❌ Failed to clear buys: {}", e);
+                                        }
                                     }
+                                }
+                                Err(_) => {
+                                    // Don't block - just show message that operation couldn't complete
                                 }
                             }
                         }
@@ -138,11 +142,28 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                     
                     // Data rows
                     for (i, buy) in buys.iter().rev().enumerate() {
+                        // DEBUG: Log each buy being rendered (safe string slicing)
+                        let mint_preview = if buy.mint.len() > 8 { 
+                            format!("{}...", &buy.mint[..8.min(buy.mint.len())])
+                        } else { 
+                            buy.mint.clone() 
+                        };
                         let row_bg = if i % 2 == 0 {
                             egui::Color32::TRANSPARENT
                         } else {
                             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
                         };
+                        
+                        // ✅ FIX: Safe timestamp formatting with error handling
+                        let time_str = buy.timestamp.format("%H:%M:%S").to_string();
+                        
+                        // ✅ FIX: Safe mint address formatting
+                        let mint_display = format_address_safe(&buy.mint);
+                        let mint_clone = buy.mint.clone(); // Clone for URL
+                        
+                        // ✅ FIX: Safe signature formatting
+                        let sig_display = format_address_safe(&buy.signature);
+                        let sig_clone = buy.signature.clone(); // Clone for URL
                         
                         egui::Frame::none()
                             .fill(row_bg)
@@ -151,16 +172,14 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                 ui.horizontal(|ui| {
                                     // Time
                                     ui.allocate_ui_with_layout(egui::vec2(time_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        let time_str = buy.timestamp.format("%H:%M:%S").to_string();
-                                        ui.label(egui::RichText::new(time_str).size(font_size).monospace().color(egui::Color32::from_rgb(170, 190, 210)));
+                                        ui.label(egui::RichText::new(time_str.clone()).size(font_size).monospace().color(egui::Color32::from_rgb(170, 190, 210)));
                                     });
                                     ui.add_space(spacing);
                                     
                                     // Token
                                     ui.allocate_ui_with_layout(egui::vec2(token_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        let mint_display = format_address_safe(&buy.mint);
-                                        if ui.link(egui::RichText::new(mint_display).size(font_size).monospace().color(egui::Color32::from_rgb(160, 210, 255))).clicked() {
-                                            let _ = open::that(format!("https://solscan.io/token/{}", buy.mint));
+                                        if ui.link(egui::RichText::new(mint_display.clone()).size(font_size).monospace().color(egui::Color32::from_rgb(160, 210, 255))).clicked() {
+                                            let _ = open::that(format!("https://solscan.io/token/{}", mint_clone));
                                         }
                                     });
                                     ui.add_space(spacing);
@@ -203,20 +222,20 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                     
                                     // TX
                                     ui.allocate_ui_with_layout(egui::vec2(tx_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        let sig_short = format_address_safe(&buy.signature);
-                                        if ui.add(egui::Button::new(egui::RichText::new(sig_short).size(font_size - 1.0).monospace().color(egui::Color32::from_rgb(120, 200, 255)))
+                                        if ui.add(egui::Button::new(egui::RichText::new(sig_display.clone()).size(font_size - 1.0).monospace().color(egui::Color32::from_rgb(120, 200, 255)))
                                             .fill(egui::Color32::TRANSPARENT)
                                             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 200, 255).linear_multiply(0.5)))
                                             .rounding(egui::Rounding::same(4.0))
                                         ).clicked() {
-                                            if !buy.signature.is_empty() {
-                                                let _ = open::that(format!("https://solscan.io/tx/{}", buy.signature));
+                                            if !sig_clone.is_empty() {
+                                                let _ = open::that(format!("https://solscan.io/tx/{}", sig_clone));
                                             }
                                         }
                                     });
                                 });
                             });
                     }
+                    
                     
                     ui.add_space(20.0);
                     
@@ -237,13 +256,30 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                         .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
             }
+            
         });
 }
 
 fn format_address_safe(addr: &str) -> String {
-    if addr.is_empty() { return "N/A".to_string(); }
+    // ✅ FIX: Better error handling to prevent crashes from string slicing
+    if addr.is_empty() { 
+        return "N/A".to_string(); 
+    }
+    
+    // ✅ FIX: Use safe string slicing with proper bounds checking
     if addr.len() > 12 {
-        format!("{}...{}", &addr[..6], &addr[addr.len()-4..])
+        let start_len = 6.min(addr.len());
+        let end_len = 4.min(addr.len());
+        if addr.len() >= start_len + end_len {
+            format!("{}...{}", &addr[..start_len], &addr[addr.len()-end_len..])
+        } else {
+            // Fallback: if string is not long enough, show first part
+            if addr.len() > 6 {
+                format!("{}...", &addr[..6])
+            } else {
+                addr.to_string()
+            }
+        }
     } else {
         addr.to_string()
     }

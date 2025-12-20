@@ -78,21 +78,10 @@ pub struct TokenTracker {
 impl TokenTracker {
     /// Create new tracker or load from latest existing JSON file
     pub fn new() -> Result<Self> {
-        use std::io::Write;
-        eprintln!("🔍 DEBUG: TokenTracker::new() called");
-        std::io::stderr().flush().ok();
-        
         // Try to find and load the latest JSON file first
-        eprintln!("🔍 DEBUG: Attempting to load from latest JSON...");
-        std::io::stderr().flush().ok();
-        
         if let Ok(tracker) = Self::load_from_latest_json() {
-            eprintln!("✅ Loaded tracker from existing JSON file with {} buys", tracker.stats.total_buys);
-            std::io::stderr().flush().ok();
             return Ok(tracker);
         }
-        eprintln!("🔍 DEBUG: Failed to load from JSON (or none found), creating new session...");
-        std::io::stderr().flush().ok();
         
         // If no existing JSON found, create new tracker
         let session_start = Utc::now();
@@ -126,15 +115,9 @@ impl TokenTracker {
     /// Load tracker from the latest JSON file
     fn load_from_latest_json() -> Result<Self> {
         use std::fs;
-        use std::io::Write;
-        
-        eprintln!("🔍 DEBUG: load_from_latest_json() called");
-        std::io::stderr().flush().ok();
         
         // Find all JSON files matching the pattern
         let current_dir = std::env::current_dir()?;
-        eprintln!("🔍 DEBUG: current_dir: {:?}", current_dir);
-        std::io::stderr().flush().ok();
         
         let json_files: Vec<_> = fs::read_dir(&current_dir)?
             .filter_map(|entry| entry.ok())
@@ -152,7 +135,6 @@ impl TokenTracker {
             .collect();
         
         if json_files.is_empty() {
-            eprintln!("🔍 DEBUG: No JSON files found");
             return Err(anyhow::anyhow!("No existing JSON files found"));
         }
         
@@ -161,17 +143,10 @@ impl TokenTracker {
             .max_by_key(|(_, modified)| modified)
             .ok_or_else(|| anyhow::anyhow!("Failed to find latest JSON file"))?;
         
-        eprintln!("📂 Loading tracker from: {}", latest_json_path.display());
-        
         // Read and deserialize JSON
         let content = fs::read_to_string(latest_json_path)?;
-        eprintln!("🔍 DEBUG: Read {} bytes", content.len());
         let stats: TrackerStats = serde_json::from_str(&content)
-            .map_err(|e| {
-                eprintln!("🔍 DEBUG: JSON parse error: {}", e);
-                anyhow::anyhow!("Failed to parse JSON: {}", e)
-            })?;
-        eprintln!("🔍 DEBUG: JSON parsed successfully");
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
         
         // Extract CSV path from JSON path
         let csv_path = latest_json_path.to_str()
@@ -549,32 +524,10 @@ impl TokenTracker {
 
     /// Update position PnL with current price (ultra-fast, no disk write)
     pub fn update_position_pnl_fast(&mut self, mint: &str, current_price_sol: f64) -> Result<()> {
-        // #region agent log
-        {
-            let log_data = serde_json::json!({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "C",
-                "location": "tracker.rs:551",
-                "message": "update_position_pnl_fast called",
-                "data": {
-                    "mint": mint[..8].to_string(),
-                    "current_price_sol": current_price_sol,
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis()
-            });
-            let _ = std::fs::create_dir_all(".cursor");
-            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(".cursor/debug.log") {
-                use std::io::Write;
-                let _ = writeln!(file, "{}", log_data);
-            }
-        }
-        // #endregion
         
         // Debug: Check if position exists
         let position_exists = self.stats.buys.iter().any(|b| b.mint == mint && !b.sold);
         if !position_exists {
-            eprintln!("⚠️  PnL UPDATE: Position not found for mint {} (sold or doesn't exist)", &mint[..8]);
             return Err(anyhow::anyhow!("Position not found or already sold: {}", mint));
         }
         
@@ -584,7 +537,6 @@ impl TokenTracker {
             
             // Skip PnL calculation if our_buy_sol is 0 or invalid
             if buy.our_buy_sol <= 0.0 {
-                eprintln!("⚠️  PnL UPDATE: our_buy_sol is 0 or invalid for {}", &mint[..8]);
                 return Ok(());
             }
             
@@ -594,22 +546,13 @@ impl TokenTracker {
             let is_token_migrated = current_price_sol <= 0.0 || current_price_sol < 1e-15;
             
             if is_token_migrated {
-                eprintln!("⚠️  PnL UPDATE: Token {} appears to be migrated (current_price_sol={:.12})", 
-                         &mint[..8], current_price_sol);
                 // Token is migrated - we can't get live price, but we can still show entry info
                 // Set a placeholder PnL of 0 or calculate based on entry price if we have token_amount
-                if let Some(token_amount) = buy.token_amount {
-                    let _tokens_actual = token_amount as f64 / 1e6;
+                if let Some(_token_amount) = buy.token_amount {
                     if let Some(_entry_price) = buy.token_price_sol {
-                        // Calculate what we paid
-                        let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015);
-                        let _cost_basis = buy.our_buy_sol + buy_fees;
-                        
                         // For migrated tokens, we can't know current value, so set PnL to 0
-                        // Or we could try to fetch from DEX, but that's complex
                         buy.pnl_sol = Some(0.0); // Placeholder - token migrated
                         buy.pnl_percent = Some(0.0);
-                        eprintln!("   Set PnL to 0.0 (token migrated, cannot determine current value)");
                     }
                 }
                 return Ok(());
@@ -654,18 +597,35 @@ impl TokenTracker {
             
             // Calculate current value if we have token amount (either stored or calculated)
             if let Some(token_amount) = token_amount {
-                eprintln!("✅ PnL UPDATE: Calculating PnL for {} with token_amount={}, our_buy_sol={:.6}", 
-                         &mint[..8], token_amount, buy.our_buy_sol);
+                // ✅ FIX: Don't log every 20ms - this function is called 50x/sec by monitor_pnl_ultra_fast
+                // Only log on first calculation or significant changes
+                // eprintln!("✅ PnL UPDATE: Calculating PnL for {} with token_amount={}, our_buy_sol={:.6}", 
+                //          &mint[..8], token_amount, buy.our_buy_sol);
                 // ✅ FIX: Calculate PnL even if token_price_sol is not set
                 // We can calculate PnL using our_buy_sol + fees as cost basis
                 // token_price_sol is only needed for display, not for PnL calculation
                 
-                // If token_price_sol is not set, calculate it from our_buy_sol and token_amount
-                if buy.token_price_sol.is_none() || buy.token_price_sol.unwrap_or(0.0) <= 0.0 {
+                // ✅ CRITICAL FIX: Validate existing token_price_sol or calculate it from our_buy_sol and token_amount
+                // Problem: If token_price_sol is already set with invalid value (too small), we need to recalculate it
+                let needs_recalculation = buy.token_price_sol.is_none() || 
+                                         buy.token_price_sol.unwrap_or(0.0) <= 0.0 ||
+                                         buy.token_price_sol.unwrap_or(0.0) < 1e-12 ||
+                                         buy.token_price_sol.unwrap_or(0.0) > 1.0;
+                
+                if needs_recalculation {
                     let tokens_actual_for_price = token_amount as f64 / 1e6; // Convert 6-decimal raw to actual tokens
                     if tokens_actual_for_price > 0.0 && buy.our_buy_sol > 0.0 {
                         // Entry price = SOL invested / tokens received
-                        buy.token_price_sol = Some(buy.our_buy_sol / tokens_actual_for_price);
+                        let calculated_price = buy.our_buy_sol / tokens_actual_for_price;
+                        // ✅ FIX: Validate entry price is reasonable (not too small due to precision errors)
+                        // If price is < 1e-12, it's likely a calculation error (too many tokens or wrong decimals)
+                        if calculated_price >= 1e-12 && calculated_price <= 1.0 {
+                            buy.token_price_sol = Some(calculated_price);
+                        } else {
+                            // Calculated price is also invalid - clear it and use current_price_sol as fallback
+                            // Clear invalid entry price - PnL will be calculated using current_price_sol as fallback
+                            buy.token_price_sol = None;
+                        }
                     }
                 }
                 
@@ -688,6 +648,31 @@ impl TokenTracker {
                 let tokens_actual = token_amount as f64 / 1e6; // Convert 6-decimal raw to actual tokens
                 let current_value_gross = tokens_actual * current_price_sol;
                 buy.current_value_sol = Some(current_value_gross);
+                
+                // ✅ CRITICAL FIX: If token_price_sol is invalid (too small), update it using current_price_sol
+                // This prevents astronomical PnL% values in future calculations
+                // The invalid entry price was likely calculated incorrectly during buy
+                if buy.token_price_sol.is_some() {
+                    let existing_entry_price = buy.token_price_sol.unwrap();
+                    if existing_entry_price < 1e-12 || existing_entry_price > 1.0 {
+                        // Entry price is invalid - use current price as approximation (better than nothing)
+                        if current_price_sol >= 1e-12 && current_price_sol <= 1.0 {
+                            eprintln!("⚠️  FIXING invalid entry price for {}: was {:.12}, updating to current_price {:.12} SOL/token", 
+                                     &mint[..8], existing_entry_price, current_price_sol);
+                            buy.token_price_sol = Some(current_price_sol);
+                        } else {
+                            // Even current price is invalid - clear entry price
+                            eprintln!("⚠️  Entry price {:.12} invalid and current_price {:.12} also invalid - clearing entry_price for {}", 
+                                     existing_entry_price, current_price_sol, &mint[..8]);
+                            buy.token_price_sol = None;
+                        }
+                    }
+                } else {
+                    // No entry price set - try to use current price if valid
+                    if current_price_sol >= 1e-12 && current_price_sol <= 1.0 {
+                        buy.token_price_sol = Some(current_price_sol);
+                    }
+                }
                 
                 // Calculate PnL with ALL fees (Ultra Precision Mode):
                 // 1. Buy Fees (already paid):
@@ -722,75 +707,49 @@ impl TokenTracker {
                     0.0
                 };
                 
-                // #region agent log
-                {
-                    let pnl_pct = if cost_basis > 0.0 { Some((pnl / cost_basis) * 100.0) } else { None };
-                    let log_data = serde_json::json!({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "C",
-                        "location": "tracker.rs:600",
-                        "message": "PnL calculated successfully",
-                        "data": {
-                            "mint": mint[..8].to_string(),
-                            "pnl_sol": pnl,
-                            "pnl_percent": pnl_pct,
-                            "pnl_percent_gross": pnl_percent_gross,
-                            "cost_basis": cost_basis,
-                        },
-                        "timestamp": chrono::Utc::now().timestamp_millis()
-                    });
-                    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(".cursor/debug.log") {
-                        use std::io::Write;
-                        let _ = writeln!(file, "{}", log_data);
-                    }
-                }
-                // #endregion
                 
                 // Calculate PnL percentage - use GROSS for percentage (shows price appreciation)
                 // Net PnL (after fees) is stored in pnl_sol for actual profit/loss
                 if cost_basis > 0.0 {
-                    buy.pnl_percent = Some(pnl_percent_gross);
+                    // ✅ FIX: Cap PnL% to reasonable range to prevent display of unrealistic values
+                    // If entry_price is too small (near 0), PnL% can be astronomical
+                    // Cap at ±10000% (100x) to prevent UI showing millions of percent
+                    let capped_pnl_percent = if pnl_percent_gross > 10000.0 {
+                        // ✅ FIX: Rate limit warning messages - only show once every 5 minutes to reduce spam
+                        static LAST_CAP_WARNING: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+                        static WARNING_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        
+                        let mut last_warning = LAST_CAP_WARNING.lock().unwrap_or_else(|e| e.into_inner());
+                        let now = std::time::Instant::now();
+                        let should_log = last_warning
+                            .map(|last_time| now.duration_since(last_time).as_secs() >= 300) // 5 minutes
+                            .unwrap_or(true);
+                        
+                        *last_warning = Some(now);
+                        10000.0
+                    } else if pnl_percent_gross < -10000.0 {
+                        // ✅ FIX: Rate limit warning messages for negative capping too
+                        static LAST_CAP_WARNING_NEG: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+                        static WARNING_COUNT_NEG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                        
+                        let mut last_warning = LAST_CAP_WARNING_NEG.lock().unwrap_or_else(|e| e.into_inner());
+                        let now = std::time::Instant::now();
+                        let should_log = last_warning
+                            .map(|last_time| now.duration_since(last_time).as_secs() >= 300) // 5 minutes
+                            .unwrap_or(true);
+                        
+                        *last_warning = Some(now);
+                        -10000.0
+                    } else {
+                        pnl_percent_gross
+                    };
                     
-                    // Update peak PnL if current is better
-                    if pnl_percent_gross > buy.peak_pnl_percent.unwrap_or(f64::MIN) {
-                        buy.peak_pnl_percent = Some(pnl_percent_gross);
-                    }
-                }
-                
-                // DEBUG: Print PnL calculation details (only for first few updates to avoid spam)
-                static UPDATE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let count = UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count < 10 {
-                    let entry_price_per_token = if tokens_actual > 0.0 { buy.our_buy_sol / tokens_actual } else { 0.0 };
-                    let price_multiplier = if entry_price_per_token > 0.0 { current_price_sol / entry_price_per_token } else { 0.0 };
-                    let expected_pnl_percent = if price_multiplier > 0.0 { (price_multiplier - 1.0) * 100.0 } else { 0.0 };
+                    buy.pnl_percent = Some(capped_pnl_percent);
                     
-                    eprintln!("🔍 PnL DEBUG [{}] for {}:", count + 1, &mint[..8]);
-                    eprintln!("   📊 INPUT VALUES:");
-                    eprintln!("      token_amount (raw, 6 decimals): {}", token_amount);
-                    eprintln!("      tokens_actual (converted from 6dec): {:.6}", tokens_actual);
-                    eprintln!("      entry_price_sol: {:?} SOL/token", buy.token_price_sol);
-                    eprintln!("      current_price_sol: {:.12} SOL/token", current_price_sol);
-                    eprintln!("      our_buy_sol (invested): {:.6} SOL", buy.our_buy_sol);
-                    eprintln!("      buy_fees: {:.6} SOL", buy_fees);
-                    eprintln!("   💰 CALCULATIONS:");
-                    eprintln!("      cost_basis: {:.6} SOL (our_buy: {:.6} + fees: {:.6})", cost_basis, buy.our_buy_sol, buy_fees);
-                    eprintln!("      current_value_gross: {:.6} SOL ({} tokens * {:.12} SOL/token)", current_value_gross, tokens_actual, current_price_sol);
-                    eprintln!("      current_value_net: {:.6} SOL (after 1% fee: {:.6} SOL, sell fees: {:.6} SOL)", current_value_net, current_value_gross * 0.01, estimated_sell_fees);
-                    eprintln!("      pnl_sol (net): {:.6} SOL", pnl);
-                    eprintln!("      pnl_gross: {:.6} SOL (before fees)", pnl_gross);
-                    eprintln!("      pnl_percent (gross): {:.2}%", pnl_percent_gross);
-                    eprintln!("      pnl_percent (net): {:.2}%", if cost_basis > 0.0 { (pnl / cost_basis) * 100.0 } else { 0.0 });
-                    eprintln!("   🔍 VERIFICATION:");
-                    eprintln!("      entry_price_per_token (calculated): {:.12} SOL/token", entry_price_per_token);
-                    eprintln!("      price_multiplier: {:.6}x (current/entry)", price_multiplier);
-                    eprintln!("      expected_pnl_percent (from price change): {:.2}%", expected_pnl_percent);
-                    eprintln!("      actual_pnl_percent (gross): {:.2}%", buy.pnl_percent.unwrap_or(0.0));
-                    if (buy.pnl_percent.unwrap_or(0.0) - expected_pnl_percent).abs() > 5.0 {
-                        eprintln!("   ⚠️  WARNING: PnL% differs significantly from expected! (diff: {:.2}%)", 
-                                 buy.pnl_percent.unwrap_or(0.0) - expected_pnl_percent);
-                        eprintln!("   💡 TIP: Check if token_amount decimals or price formula is correct");
+                    // Update peak PnL if current is better (also capped)
+                    let capped_peak = if pnl_percent_gross > 10000.0 { 10000.0 } else { pnl_percent_gross };
+                    if capped_peak > buy.peak_pnl_percent.unwrap_or(f64::MIN) {
+                        buy.peak_pnl_percent = Some(capped_peak);
                     }
                 }
             } else {
@@ -800,50 +759,30 @@ impl TokenTracker {
                     if entry_price > 0.0 && current_price_sol > 0.0 && buy.our_buy_sol > 0.0 {
                         // Calculate approximate PnL based on price change only
                         // This assumes we have tokens proportional to our_buy_sol / entry_price
-                        let price_change_ratio = (current_price_sol - entry_price) / entry_price;
-                        let approximate_pnl = buy.our_buy_sol * price_change_ratio;
-                        
-                        // Apply fees estimate
-                        let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015);
-                        let cost_basis = buy.our_buy_sol + buy_fees;
-                        let estimated_sell_fees = 0.00001;
-                        let net_pnl = approximate_pnl - (buy.our_buy_sol * 0.01) - estimated_sell_fees; // Subtract 1% pump.fun fee
-                        
-                        buy.pnl_sol = Some(net_pnl);
-                        if cost_basis > 0.0 {
-                            buy.pnl_percent = Some((net_pnl / cost_basis) * 100.0);
+                        // ✅ FIX: Validate entry_price is reasonable before calculating ratio
+                        if entry_price >= 1e-12 && entry_price <= 1.0 {
+                            let price_change_ratio = (current_price_sol - entry_price) / entry_price;
+                            let approximate_pnl = buy.our_buy_sol * price_change_ratio;
+                            
+                            // Apply fees estimate
+                            let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015);
+                            let cost_basis = buy.our_buy_sol + buy_fees;
+                            let estimated_sell_fees = 0.00001;
+                            let net_pnl = approximate_pnl - (buy.our_buy_sol * 0.01) - estimated_sell_fees; // Subtract 1% pump.fun fee
+                            
+                            buy.pnl_sol = Some(net_pnl);
+                            if cost_basis > 0.0 {
+                                let pnl_pct = (net_pnl / cost_basis) * 100.0;
+                                // Cap PnL% to reasonable range
+                                let capped = if pnl_pct > 10000.0 { 10000.0 } else if pnl_pct < -10000.0 { -10000.0 } else { pnl_pct };
+                                buy.pnl_percent = Some(capped);
+                            }
+                            
+                        } else {
                         }
-                        
-                        eprintln!("⚠️  PnL UPDATE: Using approximate PnL calculation for {} (token_amount missing)", &mint[..8]);
-                        eprintln!("   Approximate PnL: {:.6} SOL ({:.2}%)", net_pnl, buy.pnl_percent.unwrap_or(0.0));
                     }
                 }
                 
-                // DEBUG: Show when token_amount is missing
-                static MISSING_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let count = MISSING_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count < 5 {
-                    eprintln!("⚠️  PnL DEBUG: token_amount is None for {} (using fallback calculation)", &mint[..8]);
-                }
-                // #region agent log
-                {
-                    let log_data = serde_json::json!({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "B",
-                        "location": "tracker.rs:637",
-                        "message": "token_amount is None",
-                        "data": {
-                            "mint": mint[..8].to_string(),
-                        },
-                        "timestamp": chrono::Utc::now().timestamp_millis()
-                    });
-                    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(".cursor/debug.log") {
-                        use std::io::Write;
-                        let _ = writeln!(file, "{}", log_data);
-                    }
-                }
-                // #endregion
             }
             
             Ok(())
@@ -893,34 +832,6 @@ impl TokenTracker {
             })
             .collect::<Vec<_>>();
         
-        // ✅ FIX: Only log debug info occasionally (every 100 calls) to reduce spam
-        static CALL_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let count = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count % 100 == 0 {
-            eprintln!("🔍 get_active_positions_for_pnl: total={}, sold={}, without_bc={}, active={}", 
-                     all_buys, sold_count, without_bc, positions.len());
-        }
-        // #region agent log
-        {
-            let log_data = serde_json::json!({
-                "sessionId": "debug-session",
-                "runId": "run1",
-                "hypothesisId": "D",
-                "location": "tracker.rs:675",
-                "message": "get_active_positions_for_pnl",
-                "data": {
-                    "count": positions.len(),
-                    "mints": positions.iter().map(|(m, _)| m[..8].to_string()).collect::<Vec<_>>(),
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis()
-            });
-            let _ = std::fs::create_dir_all(".cursor");
-            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(".cursor/debug.log") {
-                use std::io::Write;
-                let _ = writeln!(file, "{}", log_data);
-            }
-        }
-        // #endregion
         positions
     }
 }

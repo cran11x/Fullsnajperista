@@ -97,18 +97,7 @@ impl Socials {
 
     /// Display socials (compact format)
     pub fn display(&self) {
-        if let Some(ref twitter) = self.twitter {
-            println!("      🐦 X: {}", Self::shorten_url(twitter));
-        }
-        if let Some(ref website) = self.website {
-            println!("      🌐 Web: {}", Self::shorten_url(website));
-        }
-        if let Some(ref telegram) = self.telegram {
-            println!("      💬 TG: {}", Self::shorten_url(telegram));
-        }
-        if let Some(ref discord) = self.discord {
-            println!("      💬 DC: {}", Self::shorten_url(discord));
-        }
+        // Display removed for cleaner output
     }
 
     /// Shorten URL for display
@@ -171,13 +160,6 @@ pub async fn check_token_metadata(mint_address: &str, api_key: &str) -> Result<(
         .await
         .map_err(|e| anyhow::anyhow!("IPFS parse failed: {}", e))?;
 
-    let total_time = start.elapsed().as_millis();
-
-    // ⚡ Performance logging
-    if total_time > 1000 {
-        println!("      ⚠️  Slow metadata check: {}ms", total_time);
-    }
-
     // Step 3: Create socials from metadata
     let socials = Socials {
         twitter: metadata.twitter.clone(),
@@ -221,14 +203,8 @@ pub async fn quick_check_socials(mint_address: &str, api_key: &str) -> Option<So
         .await
     {
         Ok(Ok(socials)) => Some(socials),
-        Ok(Err(e)) => {
-            println!("      ⚠️  Social check failed: {}", e);
-            None
-        }
-        Err(_) => {
-            println!("      ⚠️  Social check timeout");
-            None
-        }
+        Ok(Err(_)) => None,
+        Err(_) => None,
     }
 }
 

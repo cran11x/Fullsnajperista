@@ -25,10 +25,16 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
             });
             ui.add_space(24.0);
             
-            let tracker_opt = match tracker.read() {
+            // ✅ FIX: Use try_read() to avoid blocking GUI thread if bot is holding lock
+            let tracker_opt = match tracker.try_read() {
                 Ok(t) => t,
-                Err(e) => {
-                    ui.label(format!("Error reading tracker: {}", e));
+                Err(_) => {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(60.0);
+                        ui.label(egui::RichText::new("Loading positions...")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(160, 170, 185)));
+                    });
                     return;
                 }
             };
@@ -58,7 +64,8 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                             .clicked() {
                             // Clear active positions
                             drop(tracker_opt); // Release read lock
-                            if let Ok(mut tracker_guard) = tracker.write() {
+                            // ✅ FIX: Use try_write() to avoid blocking
+                            if let Ok(mut tracker_guard) = tracker.try_write() {
                                 if let Some(tracker_ref) = tracker_guard.as_mut() {
                                     if let Err(e) = tracker_ref.clear_active_positions() {
                                         eprintln!("❌ Failed to clear active positions: {}", e);

@@ -171,10 +171,6 @@ impl PumpBuyAccounts {
 
             let mut dev_buy_sol = 0u64;
 
-            if DEBUG {
-                println!("      🔍 DEBUG: TX {} instructions, {} accounts",
-                         instructions.len(), account_keys.len());
-            }
 
             // 🔍 Analyze all instructions to see how dev builds transaction
             // Look for Associated Bonding Curve creation instruction and extract actual address

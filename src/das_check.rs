@@ -35,7 +35,6 @@ struct DasResult {
 /// NOTE: Both methods are fast (~200-500ms each), so total time is always under 1 second
 pub async fn check_creator_token_count_das(creator: &Pubkey, api_key: &str) -> Result<u32> {
     // PRIMARY: Use DAS API first (fast - ~200-500ms, always under 1 second)
-    println!("      🔍 DEBUG: Checking token count for creator={}", creator);
     let das_count = match retry_with_backoff(
         || try_das_api(creator, api_key),
         MAX_RETRIES,
@@ -117,7 +116,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
         
         if let Some(total) = search_authority_json["result"]["total"].as_u64() {
             if total > 0 {
-                println!("      ✅ DEBUG DAS searchAssets (authorityAddress): creator={}, total={}", creator, total);
                 return Ok(total as u32);
             }
         }
@@ -126,7 +124,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
         if let Some(items) = search_authority_json["result"]["items"].as_array() {
             let count = items.len() as u32;
             if count > 0 {
-                println!("      ✅ DEBUG DAS searchAssets (authorityAddress, items): creator={}, count={}", creator, count);
                 // If we got less than limit, we have all results
                 if items.len() < 1000 {
                     return Ok(count);
@@ -161,7 +158,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
         
         if let Some(total) = search_json["result"]["total"].as_u64() {
             if total > 0 {
-                println!("      ✅ DEBUG DAS searchAssets (creatorAddress): creator={}, total={}", creator, total);
                 return Ok(total as u32);
             }
         }
@@ -170,7 +166,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
         if let Some(items) = search_json["result"]["items"].as_array() {
             let count = items.len() as u32;
             if count > 0 {
-                println!("      ✅ DEBUG DAS searchAssets (creatorAddress, items): creator={}, count={}", creator, count);
                 // If we got less than limit, we have all results
                 if items.len() < 1000 {
                     return Ok(count);
@@ -205,14 +200,12 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
 
     // Check for errors
     if let Some(err) = json["error"].as_object() {
-        println!("      ❌ DEBUG DAS getAssetsByCreator error: {:?}", err);
         // Fallback to searchAssets
         return try_search_assets_fallback(creator, api_key).await;
     }
 
     // Try to get total count directly (fastest method)
     if let Some(total) = json["result"]["total"].as_u64() {
-        println!("      ✅ DEBUG DAS getAssetsByCreator: creator={}, total={}", creator, total);
         return Ok(total as u32);
     }
 
@@ -235,10 +228,7 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
 
         let json: serde_json::Value = serde_json::from_str(&response_text)?;
 
-        if let Some(err) = json["error"].as_object() {
-            if page == 1 {
-                println!("      ❌ DEBUG DAS getAssetsByCreator error: {:?}", err);
-            }
+        if let Some(_err) = json["error"].as_object() {
             break;
         }
 
@@ -255,7 +245,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
 
             page += 1;
             if page > max_pages {
-                println!("      ⚠️  DEBUG: Reached max pages ({}), may have more tokens", max_pages);
                 break;
             }
         } else {
@@ -264,8 +253,6 @@ async fn try_das_api(creator: &Pubkey, api_key: &str) -> Result<u32> {
     }
 
     if total_count > 0 {
-        println!("      ✅ DEBUG DAS getAssetsByCreator (paginated): creator={}, total={} (checked {} pages)", 
-                 creator, total_count, page);
         return Ok(total_count);
     }
 
@@ -301,7 +288,6 @@ async fn try_search_assets_fallback(creator: &Pubkey, api_key: &str) -> Result<u
     let json: serde_json::Value = serde_json::from_str(&response_text)?;
 
     if let Some(total) = json["result"]["total"].as_u64() {
-        println!("      🔍 DEBUG DAS searchAssets: creator={}, total={}", creator, total);
         return Ok(total as u32);
     }
 
@@ -574,7 +560,6 @@ async fn count_pump_fun_tokens_rpc_fast(creator: &Pubkey, api_key: &str) -> Resu
         return Ok(0);
     }
 
-    println!("      🔍 DEBUG RPC Fast: Checking {} transactions for creator={}", sigs.len(), creator);
     
     let mut token_count = 0;
     let mut tx_checked = 0;
@@ -639,11 +624,6 @@ async fn count_pump_fun_tokens_rpc_fast(creator: &Pubkey, api_key: &str) -> Resu
                     }
                 }
             }
-            
-            // Log progress
-            if tx_checked % 200 == 0 {
-                println!("      🔍 DEBUG RPC Fast: Checked {} transactions, found {} tokens...", tx_checked, token_count);
-            }
         }
     }
     
@@ -695,9 +675,6 @@ async fn count_pump_fun_tokens_rpc_fast(creator: &Pubkey, api_key: &str) -> Resu
         }
     }
 
-    println!("      ✅ DEBUG RPC Fast: Checked {} transactions, found {} pump.fun token creations", 
-             tx_checked, token_count);
-
     Ok(token_count)
 }
 
@@ -736,8 +713,6 @@ async fn count_pump_fun_tokens_rpc(creator: &Pubkey, api_key: &str) -> Result<us
     // Note: This might be slow for creators with thousands of tokens, but it's necessary for accuracy
     // For creators with many tokens, we need to check all transactions to get accurate count
     let max_txs_to_check = sigs.len(); // Check ALL transactions for accuracy
-    println!("      🔍 DEBUG RPC: Checking {} transactions (out of {}) for creator={}", 
-             max_txs_to_check, sigs.len(), creator);
     
     let mut last_logged_count = 0;
     let mut last_logged_tx = 0;
@@ -782,16 +757,11 @@ async fn count_pump_fun_tokens_rpc(creator: &Pubkey, api_key: &str) -> Result<us
         // Log progress every 100 transactions or every 10 new tokens found (whichever comes first)
         if (tx_checked - last_logged_tx >= 100) || (token_count > 0 && token_count - last_logged_count >= 10) {
             if token_count > 0 {
-                println!("      🔍 DEBUG RPC: Found {} tokens after checking {} transactions...", 
-                         token_count, tx_checked);
                 last_logged_count = token_count;
                 last_logged_tx = tx_checked;
             }
         }
     }
-
-    println!("      🔍 DEBUG RPC: Checked {} transactions, found {} pump.fun token creations", 
-             tx_checked, token_count);
 
     // ⚠️ If checked many TXs but found 0 CREATE = active wallet with no creates = suspicious
     if tx_checked >= 10 && token_count == 0 {

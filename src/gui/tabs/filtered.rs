@@ -57,7 +57,19 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
     });
     ui.add_space(20.0);
     
-    let log = event_log.read().unwrap();
+    // ✅ FIX: Use try_read() to avoid blocking GUI thread if bot is holding lock
+    let log = match event_log.try_read() {
+        Ok(log) => log,
+        Err(_) => {
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(egui::RichText::new("Loading filtered tokens...")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
+            });
+            return;
+        }
+    };
     
     // Extract all filtered tokens
     let filtered_tokens: Vec<FilteredToken> = log.iter()
@@ -200,7 +212,14 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) 
 }
 
 fn export_to_csv(event_log: &Arc<RwLock<VecDeque<TokenEvent>>>) {
-    let log = event_log.read().unwrap();
+    // ✅ FIX: Use try_read() to avoid blocking - if lock is held, skip export
+    let log = match event_log.try_read() {
+        Ok(log) => log,
+        Err(_) => {
+            eprintln!("⚠️  Cannot export CSV: event log is locked");
+            return;
+        }
+    };
     
     let filtered_tokens: Vec<FilteredToken> = log.iter()
         .filter_map(|e| {

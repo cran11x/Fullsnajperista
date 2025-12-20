@@ -32,7 +32,14 @@ pub fn render(
     
     // Check for recent events to update status
     {
-        let events = event_log.read().unwrap();
+        // ✅ FIX: Use try_read() to avoid blocking GUI thread
+        let events = match event_log.try_read() {
+            Ok(events) => events,
+            Err(_) => {
+                // Lock is held by bot thread - skip this update
+                return;
+            }
+        };
         // Scan last 50 events
         for event in events.iter().rev().take(50) {
             match event {
@@ -110,8 +117,11 @@ pub fn render(
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
-            let config_read = config.read().unwrap();
-            let default_sol = config_read.buy_amount_lamports() as f64 / 1e9;
+            // Safely read config without panicking if the lock is poisoned or currently held
+            let default_sol = match config.try_read() {
+                Ok(cfg) => cfg.buy_amount_lamports() as f64 / 1e9,
+                Err(_) => 0.0, // Fallback to 0 when config is inaccessible
+            };
             let sol_hint = format!("Default: {:.6} SOL (leave empty to use default)", default_sol);
             
             let sol_response = ui.add_sized(

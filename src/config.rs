@@ -26,6 +26,7 @@ pub struct Config {
     pub jito_tip: u64,
     pub require_socials: bool,
     pub require_twitter: bool,
+    pub require_website: bool,
     pub min_socials_count: usize,
     pub min_dev_buy_usd: f64,
     pub max_dev_buy_usd: f64,
@@ -156,6 +157,11 @@ impl Config {
             .unwrap_or(false);
 
         let require_twitter = std::env::var("REQUIRE_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let require_website = std::env::var("REQUIRE_WEBSITE")
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
             .unwrap_or(false);
@@ -415,6 +421,7 @@ impl Config {
             jito_tip: (jito_tip * 1e9) as u64, // Convert SOL to lamports
             require_socials,
             require_twitter,
+            require_website,
             min_socials_count,
             min_dev_buy_usd,
             max_dev_buy_usd,
@@ -595,6 +602,7 @@ impl Default for Config {
             jito_tip: 1_500_000,
             require_socials: false,
             require_twitter: false,
+            require_website: false,
             min_socials_count: 0,
             min_dev_buy_usd: 100.0,
             max_dev_buy_usd: 1000.0,

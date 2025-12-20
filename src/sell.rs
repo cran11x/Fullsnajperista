@@ -77,7 +77,6 @@ pub async fn build_sell_instruction(
     // Already properly set in bot_core.rs from the original buy transaction
     // DO NOT re-derive - use the exact same Creator Vault from the buy transaction
     let final_creator_vault = accounts.creator_vault;
-    eprintln!("   Account 8 (Creator Vault): {} (from accounts - using original from buy TX)", final_creator_vault);
 
     // Use Token Program 2022 by default as Pump.fun uses it, or fallback to standard
     let token_program_2022_id = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
@@ -126,16 +125,6 @@ pub async fn build_sell_instruction(
     };
 
     // Debug: Log sell instruction details
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║              SELL INSTRUCTION BUILT                          ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("🔍 SELL INSTRUCTION DETAILS:");
-    eprintln!("   📊 Parameters:");
-    eprintln!("      - Token Amount: {} tokens", token_amount);
-    eprintln!("      - Min SOL Output: 0 (accept any amount - 100% slippage)");
-    eprintln!("      - Program ID: {}", pump_program);
-    eprintln!("      - Token Program: {}", token_program_2022_id);
-    eprintln!("   📋 Accounts ({} total):", instruction.accounts.len());
     
     let account_labels = vec![
         (0, "Global"),
@@ -154,22 +143,9 @@ pub async fn build_sell_instruction(
         (13, "Fee Program"),
     ];
     
-    for (idx, account) in instruction.accounts.iter().enumerate() {
-        let label = account_labels.iter()
-            .find(|(i, _)| *i == idx)
-            .map(|(_, l)| *l)
-            .unwrap_or("Unknown");
-        
-        let signer_str = if account.is_signer { " [SIGNER]" } else { "" };
-        let writable_str = if account.is_writable { " [WRITABLE]" } else { " [READONLY]" };
-        eprintln!("      [{}] {} ({}){}{}", idx, account.pubkey, label, signer_str, writable_str);
+    for (_idx, _account) in instruction.accounts.iter().enumerate() {
+        // Account details removed for cleaner output
     }
-    eprintln!("   📦 Instruction Data:");
-    eprintln!("      - Length: {} bytes", instruction.data.len());
-    eprintln!("      - Discriminator: {:?}", &instruction.data[0..8]);
-    eprintln!("      - Token amount (bytes 8-16): {:?}", &instruction.data[8..16]);
-    eprintln!("      - Min SOL out (bytes 16-24): {:?}", &instruction.data[16..24]);
-    eprintln!("   ✅ Sell instruction built successfully");
     
     Ok(instruction)
 }

@@ -1209,6 +1209,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
+        ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.require_website, egui::RichText::new("Require Website")
+                .size(13.0)).changed() {
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
         ui.add_space(8.0);
         
         ui.horizontal(|ui| {
