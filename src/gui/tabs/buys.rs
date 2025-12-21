@@ -14,11 +14,11 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                 ui.label(egui::RichText::new("💰 Recent Buys")
                     .size(28.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(255, 220, 0)));
+                    .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Track your successful token purchases")
                     .size(14.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
+                    .color(egui::Color32::from_rgb(160, 160, 170))); // Siva
             });
             ui.add_space(24.0);
     

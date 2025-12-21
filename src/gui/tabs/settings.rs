@@ -254,11 +254,11 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 ui.label(egui::RichText::new("⚙️  Settings")
                     .size(28.0)
                     .strong()
-                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                    .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Configure bot parameters and filters")
                     .size(14.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
+                    .color(egui::Color32::from_rgb(160, 160, 170))); // Siva
             });
             ui.add_space(24.0);
             
@@ -313,7 +313,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🔐 Wallet Configuration")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 210, 110)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Enter your Solana wallet private key (base58 format)")
@@ -443,7 +443,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🔑 API Configuration")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 160, 110)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Required: Helius API Key. Optional: Custom RPC/WebSocket URLs")
@@ -514,7 +514,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("💰 Trading Settings")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 220, 0)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.horizontal(|ui| {
@@ -692,7 +692,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("💰 Auto-Sell Settings")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 220, 0)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Automatically sell positions when conditions are met")
@@ -909,7 +909,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🚫 Blacklist / ✅ Whitelist")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 120, 120)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.label(egui::RichText::new("Enter comma-separated base58 addresses")
@@ -1037,7 +1037,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🎯 Target Token (Optional)")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 160, 210)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.label(egui::RichText::new("If set, bot will only buy this specific token when detected")
@@ -1100,7 +1100,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🔍 Dev Buy Filter")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(120, 200, 255)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         ui.horizontal(|ui| {
@@ -1187,7 +1187,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("📱 Social Filters")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(100, 255, 190)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         if ui.checkbox(&mut config_clone.require_socials, egui::RichText::new("Require Socials")
@@ -1240,7 +1240,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🏷️  Token Metadata Filters")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 200, 100)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
         if ui.checkbox(&mut config_clone.require_uppercase_token, egui::RichText::new("Require Uppercase Token")
@@ -1319,7 +1319,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.heading(egui::RichText::new("🚀 Submission Mode")
             .size(19.0)
             .strong()
-            .color(egui::Color32::from_rgb(255, 160, 110)));
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         egui::ComboBox::from_id_salt("submission_mode")
             .selected_text(config_clone.submission_mode.as_str())

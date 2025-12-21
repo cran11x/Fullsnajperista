@@ -75,11 +75,11 @@ pub fn render(
         ui.label(egui::RichText::new("🎯 Buy Sniper")
             .size(28.0)
             .strong()
-            .color(egui::Color32::from_rgb(100, 255, 160)));
+            .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
         ui.add_space(4.0);
         ui.label(egui::RichText::new("Manually buy any token by mint address")
             .size(14.0)
-            .color(egui::Color32::from_rgb(160, 170, 185)));
+            .color(egui::Color32::from_rgb(160, 160, 170))); // Siva
     });
     ui.add_space(24.0);
 
@@ -153,7 +153,7 @@ pub fn render(
             };
             
             let button_color = if button_enabled {
-                egui::Color32::from_rgb(0, 240, 120)
+                egui::Color32::from_rgb(220, 40, 40) // Crvena
             } else {
                 egui::Color32::from_rgb(100, 100, 100)
             };

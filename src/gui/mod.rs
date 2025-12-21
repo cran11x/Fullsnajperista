@@ -311,78 +311,111 @@ impl eframe::App for GuiApp {
         // Handle control messages
         self.handle_control_messages();
         
-        // Top bar with controls - premium modern header (responsive)
-        egui::TopBottomPanel::top("top_panel")
+        // Sidebar navigation - LEFT SIDE
+        egui::SidePanel::left("sidebar")
+            .resizable(false)
+            .default_width(220.0)
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(18, 20, 26))
-                .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+                .fill(egui::Color32::from_rgb(15, 15, 18)) // Sidebar pozadina
+                .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                 .outer_margin(egui::Margin::same(0.0))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 45, 60))))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 55))))
             .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_height(85.0);
-                ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
-                
-                // Logo/Title section - LEFT SIDE (responsive, can shrink)
                 ui.vertical(|ui| {
-                    ui.add_space(14.0);
+                    // Logo/Title section
+                    ui.add_space(16.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("⚡").size(24.0));
+                        ui.label(egui::RichText::new("⚡").size(28.0));
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Pump.fun Sniper Bot")
-                                .size(18.0)
+                            ui.label(egui::RichText::new("Cran Sniper")
+                                .size(20.0)
                                 .strong()
-                                .color(egui::Color32::from_rgb(100, 200, 255)));
-                            ui.add_space(1.0);
-                            ui.label(egui::RichText::new("Professional Token Sniping Platform")
-                                .size(10.0)
-                                .color(egui::Color32::from_rgb(150, 160, 175)));
+                                .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new("cran11x developer")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(160, 160, 170))); // Siva
                         });
                     });
-                });
-                
-                // Flexible spacer that adapts to available space
-                // Improved responsive logic to prevent negative spacing
-                let available_width = ui.available_width();
-                let logo_width = 280.0; // Approximate logo section width
-                let button_width = if available_width > 800.0 { 140.0 } else { 120.0 };
-                let control_panel_width = 200.0; // Approximate control panel width
-                let min_controls_width = button_width + control_panel_width + 50.0; // Total controls width
-                let spacer_width = (available_width - logo_width - min_controls_width).max(20.0).min(available_width * 0.3);
-                ui.add_space(spacer_width);
-                
-                // Start/Stop button - MOST VISIBLE, responsive size
-                let running = self.bot_running.load(Ordering::Relaxed);
-                let button_text = if running { "⏸ Stop" } else { "▶ Start" };
-                let button_color = if running {
-                    egui::Color32::from_rgb(255, 100, 100)
-                } else {
-                    egui::Color32::from_rgb(0, 240, 120)
-                };
-                
-                ui.vertical_centered(|ui| {
-                    // Responsive button size - smaller if space is limited
-                    let button_width = if available_width > 800.0 { 140.0 } else { 120.0 };
-                    let button_height = if available_width > 800.0 { 42.0 } else { 38.0 };
-                    let font_size = if available_width > 800.0 { 15.0 } else { 14.0 };
+                    
+                    ui.add_space(24.0);
+                    ui.separator();
+                    ui.add_space(16.0);
+                    
+                    // Navigation tabs
+                    let tabs = [
+                        (0, "📊", "Dashboard"),
+                        (1, "🎯", "Positions"),
+                        (2, "💰", "Buys"),
+                        (3, "🔴", "Feed"),
+                        (4, "⏭️", "Filtered"),
+                        (5, "⚙️", "Settings"),
+                        (6, "🚀", "Sniper"),
+                    ];
+                    
+                    for (idx, icon, label) in tabs.iter() {
+                        let is_selected = self.selected_tab == *idx;
+                        let response = components::render_sidebar_button(ui, icon, label, is_selected);
+                        
+                        if response.clicked() {
+                            self.selected_tab = *idx;
+                        }
+                    }
+                    
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(16.0);
+                    
+                    // Status section
+                    let running = self.bot_running.load(Ordering::Relaxed);
+                    let status_color = if running {
+                        egui::Color32::from_rgb(40, 200, 100) // Zelena
+                    } else {
+                        egui::Color32::from_rgb(255, 100, 100) // Crvena
+                    };
+                    let status_text = if running { "Running" } else { "Stopped" };
+                    let status_icon = if running { "🟢" } else { "🔴" };
+                    
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(status_icon).size(16.0));
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(status_text)
+                            .size(13.0)
+                            .strong()
+                            .color(status_color));
+                    });
+                    
+                    ui.add_space(8.0);
+                    
+                    // Wallet balance
+                    let balance = self.wallet_balance.read().unwrap();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("💎").size(14.0));
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!("{:.4} SOL", *balance))
+                            .size(13.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(255, 220, 0)));
+                    });
+                    
+                    ui.add_space(12.0);
+                    
+                    // Start/Stop button
+                    let button_text = if running { "⏸ Stop" } else { "▶ Start" };
+                    let button_color = if running {
+                        egui::Color32::from_rgb(255, 100, 100)
+                    } else {
+                        egui::Color32::from_rgb(40, 200, 100)
+                    };
                     
                     let button_response = ui.add(egui::Button::new(egui::RichText::new(button_text)
-                            .size(font_size)
+                            .size(14.0)
                             .strong())
-                            .fill(button_color.linear_multiply(0.4))
-                            .stroke(egui::Stroke::new(2.5, button_color))
-                            .min_size(egui::vec2(button_width, button_height))
-                            .rounding(egui::Rounding::same(10.0)));
-                    
-                    // Hover effect
-                    if button_response.hovered() {
-                        ui.painter().rect_filled(
-                            button_response.rect,
-                            10.0,
-                            button_color.linear_multiply(0.3),
-                        );
-                    }
+                            .fill(button_color.linear_multiply(0.3))
+                            .stroke(egui::Stroke::new(2.0, button_color))
+                            .min_size(egui::vec2(ui.available_width() - 16.0, 38.0))
+                            .rounding(egui::Rounding::same(8.0)));
                     
                     if button_response.clicked() {
                         let control = if running {
@@ -393,120 +426,33 @@ impl eframe::App for GuiApp {
                         let _ = self.control_tx.send(control);
                     }
                 });
-                
-                ui.separator();
-                
-                // Control panel - RIGHT SIDE (compact, responsive)
-                // Update wallet address from UI private key if available
-                let wallet_address_display = {
-                    let ui_key = self.wallet_private_key.read().unwrap();
-                    if let Some(ref key) = *ui_key {
-                        crate::wallet::get_wallet_address_from_key(key)
-                            .unwrap_or_else(|_| self.wallet_address.clone())
-                    } else {
-                        self.wallet_address.clone()
-                    }
-                };
-                
-                components::render_control_panel(
-                    ui,
-                    &self.bot_running,
-                    &wallet_address_display,
-                    &self.wallet_balance,
-                    &self.metrics,
-                    &self.config,
-                    &self.control_tx,
-                );
             });
-        });
         
-        // Main content area with tabs - premium styling
+        // Footer panel
+        egui::TopBottomPanel::bottom("footer")
+            .resizable(false)
+            .default_height(30.0)
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(15, 15, 18))
+                .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 55))))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("cran11x developer")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(180, 40, 40))); // Crvena
+                    });
+                });
+            });
+        
+        // Main content area
         egui::CentralPanel::default()
             .frame(egui::Frame::default()
-                .fill(egui::Color32::from_rgb(22, 24, 30))
+                .fill(egui::Color32::from_rgb(22, 22, 28))
                 .inner_margin(egui::Margin::symmetric(24.0, 20.0)))
             .show(ctx, |ui| {
-            // Premium modern tab bar with enhanced hover effects
-            // FIX: Proper horizontal scrolling - ensure ScrollArea works correctly
-            // ALL 7 TABS - using icons only for maximum compactness
-            let tabs = [
-                (0, "📊", "Dashboard"),
-                (1, "🎯", "Positions"),
-                (2, "💰", "Buys"),
-                (3, "🔴", "Feed"),
-                (4, "⏭️", "Filtered"),
-                (5, "⚙️", "Settings"),
-                (6, "🚀", "Sniper"),
-            ];
-            
-            // Ultra compact - icons + very short text to fit ALL 7 tabs
-            let tab_width = 40.0;
-            let tab_spacing = 0.5;
-            let padding = 1.0;
-            
-            // Tab bar - MUST show all 7 tabs
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(tab_spacing, 0.0);
-                ui.add_space(padding);
-                
-                // Force render ALL tabs - no filtering, no skipping
-                for (idx, icon, label) in tabs.iter() {
-                    let is_selected = self.selected_tab == *idx;
-                    let bg_color = if is_selected {
-                        egui::Color32::from_rgb(60, 120, 220).linear_multiply(0.3)
-                    } else {
-                        egui::Color32::from_rgb(35, 40, 50).linear_multiply(0.7)
-                    };
-                    let border_color = if is_selected {
-                        egui::Color32::from_rgb(80, 160, 255)
-                    } else {
-                        egui::Color32::from_rgb(55, 60, 75)
-                    };
-                    let text_color = if is_selected {
-                        egui::Color32::from_rgb(230, 245, 255)
-                    } else {
-                        egui::Color32::from_rgb(180, 190, 205)
-                    };
-                    
-                    // Compact tab button - icon + short text
-                    let tab_height = 36.0;
-                    
-                    // Render button - MUST be visible
-                    let button_text = format!("{} {}", icon, label);
-                    let button_response = ui.add_sized(
-                        egui::vec2(tab_width, tab_height),
-                        egui::Button::new(egui::RichText::new(button_text)
-                            .size(8.5) // Very small font to fit all 7
-                            .strong()
-                            .color(text_color))
-                                        .fill(bg_color)
-                                        .stroke(egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color))
-                                        .rounding(egui::Rounding::same(8.0))
-                                );
-                            
-                                // Enhanced hover effect
-                                if button_response.hovered() && !is_selected {
-                                    ui.painter().rect_filled(
-                                        button_response.rect,
-                                        8.0,
-                                        egui::Color32::from_rgb(50, 60, 75).linear_multiply(0.9),
-                                    );
-                                }
-                                
-                                if button_response.clicked() {
-                                    self.selected_tab = *idx;
-                                }
-                            }
-                            
-                            ui.add_space(padding);
-                        });
-            
-            ui.separator();
-            ui.add_space(10.0);
-            
-            // Content area - Direct render (let tabs handle their own scrolling)
-            // This prevents nested ScrollArea issues and layout conflicts
-            ui.allocate_ui(ui.available_size(), |ui| {
+                // Content area - Direct render
                 match self.selected_tab {
                     0 => tabs::dashboard::render(ui, &self.metrics),
                     1 => tabs::positions::render(ui, &self.tracker, &self.control_tx),
@@ -520,48 +466,49 @@ impl eframe::App for GuiApp {
                     }
                 }
             });
-        });
     }
 }
 
 fn setup_egui_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     
-    // Premium modern dark theme with enhanced color palette
+    // Cran Sniper - Crveno-crna profesionalna tema
     style.visuals = egui::Visuals::dark();
     style.visuals.dark_mode = true;
-    style.visuals.override_text_color = Some(egui::Color32::from_rgb(235, 240, 245));
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
-    style.visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
-    style.visuals.window_fill = egui::Color32::from_rgb(20, 22, 28);
-    style.visuals.window_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(35, 40, 50));
     
-    // Enhanced widget colors with professional gradient feel
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(28, 32, 42);
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 50, 65));
-    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 215, 225));
+    // Crveno-crna paleta boja
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(240, 240, 245)); // Primarni tekst
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(12, 12, 15); // Glavna pozadina
+    style.visuals.panel_fill = egui::Color32::from_rgb(18, 18, 22); // Panel pozadina
+    style.visuals.window_fill = egui::Color32::from_rgb(20, 20, 25); // Window pozadina
+    style.visuals.window_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(45, 45, 55)); // Borderi
     
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(40, 48, 62);
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 240));
+    // Widget boje sa crvenim akcentima
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(28, 28, 35);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 55));
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 210));
     
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(50, 60, 80);
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(100, 180, 255));
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(40, 35, 40);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 70, 70)); // Svijetla crvena
+    
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(50, 40, 45);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(220, 40, 40)); // Primarna crvena
     style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
     
-    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(60, 70, 90);
+    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(60, 50, 55);
     
-    // Enhanced selection and highlights
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(100, 180, 255).linear_multiply(0.35);
-    style.visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 200, 255));
+    // Selection sa crvenim akcentom
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(220, 40, 40).linear_multiply(0.25);
+    style.visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 70, 70));
     
-    // Premium spacing for professional feel
+    // Premium spacing
     style.spacing.item_spacing = egui::vec2(16.0, 12.0);
     style.spacing.window_margin = egui::Margin::same(20.0);
     style.spacing.button_padding = egui::vec2(20.0, 12.0);
     style.spacing.menu_margin = egui::Margin::same(12.0);
     style.spacing.indent = 28.0;
     
-    // Enhanced typography with better readability
+    // Tipografija
     style.text_styles.insert(
         egui::TextStyle::Heading,
         egui::FontId::new(28.0, egui::FontFamily::Proportional),
@@ -579,7 +526,7 @@ fn setup_egui_style(ctx: &egui::Context) {
         egui::FontId::new(12.5, egui::FontFamily::Proportional),
     );
     
-    // Enhanced interactive elements
+    // Interactive elements
     style.interaction.resize_grab_radius_side = 7.0;
     style.interaction.resize_grab_radius_corner = 12.0;
     

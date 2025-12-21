@@ -24,11 +24,11 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
             ui.label(egui::RichText::new("🔴 Live Feed")
                 .size(28.0)
                 .strong()
-                .color(egui::Color32::from_rgb(255, 120, 120)));
+                .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Real-time token detection and trading events")
                 .size(14.0)
-                .color(egui::Color32::from_rgb(160, 170, 185)));
+                .color(egui::Color32::from_rgb(160, 160, 170))); // Siva
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let clear_response = ui.add(egui::Button::new(egui::RichText::new("🗑️  Clear")
