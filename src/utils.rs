@@ -3,9 +3,11 @@
 
 use anyhow::Result;
 use reqwest::Client;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use std::sync::OnceLock;
+use once_cell::sync::Lazy;
+use std::sync::RwLock;
 
 /// Retry a function with exponential backoff
 /// 
@@ -219,6 +221,46 @@ pub async fn fetch_sol_price_usd() -> Result<f64> {
     } else {
         Err(anyhow::anyhow!("Failed to parse price from Jupiter response"))
     }
+}
+
+/// SOL price cache - stores (price, last_update_time)
+static SOL_PRICE_CACHE: Lazy<RwLock<(f64, Instant)>> = Lazy::new(|| {
+    RwLock::new((150.0, Instant::now()))
+});
+
+/// Get cached SOL price in USD
+pub fn get_cached_sol_price() -> f64 {
+    SOL_PRICE_CACHE.read().unwrap().0
+}
+
+/// Refresh SOL price if cache is older than 5 minutes
+pub async fn refresh_sol_price_if_needed() {
+    let needs_refresh = {
+        let cache = SOL_PRICE_CACHE.read().unwrap();
+        cache.1.elapsed().as_secs() >= 300 // 5 minutes
+    };
+    
+    if needs_refresh {
+        if let Ok(price) = fetch_sol_price_usd().await {
+            let mut cache = SOL_PRICE_CACHE.write().unwrap();
+            *cache = (price, Instant::now());
+        }
+    }
+}
+
+/// Convert SOL amount to USD
+pub fn sol_to_usd(sol: f64) -> f64 {
+    sol * get_cached_sol_price()
+}
+
+/// Format SOL amount with USD equivalent
+pub fn format_sol_with_usd(sol: f64) -> String {
+    format!("{:.4} SOL (${:.2})", sol, sol_to_usd(sol))
+}
+
+/// Format market cap in SOL with USD equivalent
+pub fn format_mc_sol_with_usd(mc_sol: f64) -> String {
+    format!("{:.2} SOL (${:.0})", mc_sol, sol_to_usd(mc_sol))
 }
 
 #[cfg(test)]

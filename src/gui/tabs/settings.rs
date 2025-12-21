@@ -280,14 +280,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     if state.helius_api_key_str.is_none() {
         state.helius_api_key_str = Some(config_clone.helius_api_key.clone());
     }
-    if state.sol_price_str.is_none() {
-        state.sol_price_str = Some(config_clone.sol_price_usd.to_string());
-    }
+    // SOL price is now auto-refreshed, no need to store in state
     if state.min_dev_buy_str.is_none() {
-        state.min_dev_buy_str = Some(config_clone.min_dev_buy_usd.to_string());
+        state.min_dev_buy_str = Some(config_clone.min_dev_buy_sol.to_string());
     }
     if state.max_dev_buy_str.is_none() {
-        state.max_dev_buy_str = Some(config_clone.max_dev_buy_usd.to_string());
+        state.max_dev_buy_str = Some(config_clone.max_dev_buy_sol.to_string());
     }
     if state.min_dev_tokens_str.is_none() {
         state.min_dev_tokens_str = Some(config_clone.min_dev_tokens.to_string());
@@ -296,7 +294,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         state.max_dev_tokens_str = Some(config_clone.max_dev_tokens.to_string());
     }
     if state.breakeven_mc_threshold_str.is_none() {
-        state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_usd.to_string());
+        state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_sol.to_string());
     }
     if state.max_name_length_str.is_none() {
         state.max_name_length_str = Some(config_clone.max_name_length.to_string());
@@ -569,16 +567,11 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
-            let sol_price_str = state.get_or_init("sol_price", config_clone.sol_price_usd.to_string());
-            if ui.add(egui::TextEdit::singleline(sol_price_str)
-                    .desired_width(200.0))
-                    .changed() {
-                if let Ok(val) = sol_price_str.parse::<f64>() {
-                    config_clone.sol_price_usd = val;
-                    apply_config_live(&config, &control_tx, &config_clone);
-                    state.last_update_time = Some(std::time::Instant::now());
-                }
-            }
+            use crate::utils::get_cached_sol_price;
+            let sol_price = get_cached_sol_price();
+            ui.label(egui::RichText::new(format!("${:.2} (auto-refreshed every 5 min)", sol_price))
+                .size(13.0)
+                .color(egui::Color32::from_rgb(180, 180, 180)));
         });
         
         ui.horizontal(|ui| {
@@ -748,13 +741,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .strong()
                     .color(egui::Color32::from_rgb(220, 230, 245)));
                 ui.add_space(8.0);
-                let take_profit_str = state.get_or_init("take_profit_mc", config_clone.take_profit_mc_usd.to_string());
+                let take_profit_str = state.get_or_init("take_profit_mc", config_clone.take_profit_mc_sol.to_string());
                 if ui.add(egui::TextEdit::singleline(take_profit_str)
                         .desired_width(150.0))
                         .changed() {
                     if let Ok(val) = take_profit_str.parse::<f64>() {
                         if val > 0.0 {
-                            config_clone.take_profit_mc_usd = val;
+                            config_clone.take_profit_mc_sol = val;
                             apply_config_live(&config, &control_tx, &config_clone);
                             state.last_update_time = Some(std::time::Instant::now());
                         }
@@ -775,13 +768,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .strong()
                     .color(egui::Color32::from_rgb(255, 200, 100)));
                 ui.add_space(8.0);
-                let breakeven_str = state.get_or_init("breakeven_mc_threshold", config_clone.breakeven_mc_threshold_usd.to_string());
+                let breakeven_str = state.get_or_init("breakeven_mc_threshold", config_clone.breakeven_mc_threshold_sol.to_string());
                 if ui.add(egui::TextEdit::singleline(breakeven_str)
                         .desired_width(150.0))
                         .changed() {
                     if let Ok(val) = breakeven_str.parse::<f64>() {
                         if val > 0.0 {
-                            config_clone.breakeven_mc_threshold_usd = val;
+                            config_clone.breakeven_mc_threshold_sol = val;
                             apply_config_live(&config, &control_tx, &config_clone);
                             state.last_update_time = Some(std::time::Instant::now());
                         }
@@ -888,10 +881,11 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new(format!("  • Market cap drops {}% from entry (Stop Loss)", config_clone.stop_loss_percent))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(210, 220, 235)));
-            ui.label(egui::RichText::new(format!("  • Market cap reaches ${:.0} (Take Profit)", config_clone.take_profit_mc_usd))
+            use crate::utils::format_mc_sol_with_usd;
+            ui.label(egui::RichText::new(format!("  • Market cap reaches {} (Take Profit)", format_mc_sol_with_usd(config_clone.take_profit_mc_sol)))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(210, 220, 235)));
-            ui.label(egui::RichText::new(format!("  🛡️  When MC reaches ${:.0}, stop loss moves to entry (Breakeven)", config_clone.breakeven_mc_threshold_usd))
+            ui.label(egui::RichText::new(format!("  🛡️  When MC reaches {}, stop loss moves to entry (Breakeven)", format_mc_sol_with_usd(config_clone.breakeven_mc_threshold_sol)))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(255, 220, 150)));
             if config_clone.enable_dead_coin_sell {
@@ -1110,17 +1104,17 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         ui.add_space(16.0);
         
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Min Dev Buy (USD):")
+            ui.label(egui::RichText::new("Min Dev Buy (SOL):")
                 .size(13.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
-            let min_str = state.get_or_init("min_dev_buy", config_clone.min_dev_buy_usd.to_string());
+            let min_str = state.get_or_init("min_dev_buy", config_clone.min_dev_buy_sol.to_string());
             if ui.add(egui::TextEdit::singleline(min_str)
                     .desired_width(200.0))
                     .changed() {
                 if let Ok(val) = min_str.parse::<f64>() {
-                    config_clone.min_dev_buy_usd = val;
+                    config_clone.min_dev_buy_sol = val;
                     // ✅ LIVE UPDATE: Apply immediately
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
@@ -1129,17 +1123,17 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         });
         
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Max Dev Buy (USD):")
+            ui.label(egui::RichText::new("Max Dev Buy (SOL):")
                 .size(13.0)
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
-            let max_str = state.get_or_init("max_dev_buy", config_clone.max_dev_buy_usd.to_string());
+            let max_str = state.get_or_init("max_dev_buy", config_clone.max_dev_buy_sol.to_string());
             if ui.add(egui::TextEdit::singleline(max_str)
                     .desired_width(200.0))
                     .changed() {
                 if let Ok(val) = max_str.parse::<f64>() {
-                    config_clone.max_dev_buy_usd = val;
+                    config_clone.max_dev_buy_sol = val;
                     // ✅ LIVE UPDATE: Apply immediately
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
@@ -1404,12 +1398,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             }
             if let Some(min_dev_buy_str) = &state_clone.min_dev_buy_str {
                 if let Ok(val) = min_dev_buy_str.parse::<f64>() {
-                    config_clone.min_dev_buy_usd = val;
+                    config_clone.min_dev_buy_sol = val;
                 }
             }
             if let Some(max_dev_buy_str) = &state_clone.max_dev_buy_str {
                 if let Ok(val) = max_dev_buy_str.parse::<f64>() {
-                    config_clone.max_dev_buy_usd = val;
+                    config_clone.max_dev_buy_sol = val;
                 }
             }
             if let Some(min_dev_tokens_str) = &state_clone.min_dev_tokens_str {
@@ -1468,11 +1462,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if let Some(wss_url_str) = &state_clone.wss_url_str {
                 config_clone.wss_url = wss_url_str.trim().to_string();
             }
-            if let Some(sol_price_str) = &state_clone.sol_price_str {
-                if let Ok(val) = sol_price_str.parse::<f64>() {
-                    config_clone.sol_price_usd = val;
-                }
-            }
+            // SOL price is now auto-refreshed, no need to update from state
             if let Some(compute_units_str) = &state_clone.compute_units_str {
                 if let Ok(val) = compute_units_str.parse::<u32>() {
                     config_clone.compute_units = val;
@@ -1493,7 +1483,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if let Some(take_profit_str) = &state_clone.take_profit_mc_str {
                 if let Ok(val) = take_profit_str.parse::<f64>() {
                     if val > 0.0 {
-                        config_clone.take_profit_mc_usd = val;
+                        config_clone.take_profit_mc_sol = val;
                     }
                 }
             }
@@ -1514,7 +1504,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if let Some(breakeven_str) = &state_clone.breakeven_mc_threshold_str {
                 if let Ok(val) = breakeven_str.parse::<f64>() {
                     if val > 0.0 {
-                        config_clone.breakeven_mc_threshold_usd = val;
+                        config_clone.breakeven_mc_threshold_sol = val;
                     }
                 }
             }
@@ -1559,7 +1549,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     // Do this BEFORE any potential grid layout issues
     let current_config_check = {
         let cfg = config.read().unwrap();
-        (cfg.helius_api_key.clone(), cfg.sol_price_usd, cfg.min_dev_buy_usd, cfg.max_dev_buy_usd, cfg.min_dev_tokens, cfg.max_dev_tokens)
+        (cfg.helius_api_key.clone(), cfg.min_dev_buy_sol, cfg.max_dev_buy_sol, cfg.min_dev_tokens, cfg.max_dev_tokens)
     };
     
     ui.data_mut(|d| {
@@ -1568,20 +1558,17 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         if stored_state.helius_api_key_str.as_ref().map(|s| s.as_str()) != Some(&current_config_check.0) {
             stored_state.helius_api_key_str = Some(current_config_check.0.clone());
         }
-        if stored_state.sol_price_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.1) {
-            stored_state.sol_price_str = Some(current_config_check.1.to_string());
+        if stored_state.min_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.1) {
+            stored_state.min_dev_buy_str = Some(current_config_check.1.to_string());
         }
-        if stored_state.min_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.2) {
-            stored_state.min_dev_buy_str = Some(current_config_check.2.to_string());
+        if stored_state.max_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.2) {
+            stored_state.max_dev_buy_str = Some(current_config_check.2.to_string());
         }
-        if stored_state.max_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.3) {
-            stored_state.max_dev_buy_str = Some(current_config_check.3.to_string());
+        if stored_state.min_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.3) {
+            stored_state.min_dev_tokens_str = Some(current_config_check.3.to_string());
         }
-        if stored_state.min_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.4) {
-            stored_state.min_dev_tokens_str = Some(current_config_check.4.to_string());
-        }
-        if stored_state.max_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.5) {
-            stored_state.max_dev_tokens_str = Some(current_config_check.5.to_string());
+        if stored_state.max_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.4) {
+            stored_state.max_dev_tokens_str = Some(current_config_check.4.to_string());
         }
         // Also save the state we modified during rendering
         *stored_state = state;

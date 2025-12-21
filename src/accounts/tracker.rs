@@ -25,8 +25,8 @@ pub struct TokenBuy {
     pub detection_method: String, // "instruction" or "balance_fallback"
 
     // 🆕 NEW: Market cap tracking - PRE and POST buy
-    pub mc_at_detection_usd: Option<f64>,  // MC when first detected
-    pub mc_at_entry_usd: Option<f64>,      // MC after TX confirmed (real entry)
+    pub mc_at_detection_sol: Option<f64>,  // MC when first detected (in SOL)
+    pub mc_at_entry_sol: Option<f64>,      // MC after TX confirmed (real entry, in SOL)
     pub token_price_sol: Option<f64>,      // Token price in SOL at detection
 
     // 🆕 NEW: Position tracking for auto-sell
@@ -48,7 +48,7 @@ pub struct TokenBuy {
     
     // 🆕 NEW: Peak tracking for breakeven stop loss
     #[serde(default)]
-    pub peak_mc_usd: Option<f64>,            // Highest MC reached
+    pub peak_mc_sol: Option<f64>,            // Highest MC reached (in SOL)
     #[serde(default)]
     pub peak_pnl_percent: Option<f64>,       // Best PnL percentage reached
     #[serde(default)]
@@ -63,10 +63,10 @@ pub struct TrackerStats {
     pub last_buy: DateTime<Utc>,
     pub buys: Vec<TokenBuy>,
 
-    // 🆕 NEW: MC statistics
-    pub avg_mc_usd: f64,
-    pub min_mc_usd: f64,
-    pub max_mc_usd: f64,
+    // 🆕 NEW: MC statistics (in SOL)
+    pub avg_mc_sol: f64,
+    pub min_mc_sol: f64,
+    pub max_mc_sol: f64,
 }
 
 pub struct TokenTracker {
@@ -103,9 +103,9 @@ impl TokenTracker {
                 session_start,
                 last_buy: session_start,
                 buys: Vec::new(),
-                avg_mc_usd: 0.0,
-                min_mc_usd: f64::MAX,
-                max_mc_usd: 0.0,
+                avg_mc_sol: 0.0,
+                min_mc_sol: f64::MAX,
+                max_mc_sol: 0.0,
             },
             csv_path,
             json_path,
@@ -177,25 +177,25 @@ impl TokenTracker {
         self.stats.last_buy = buy.timestamp;
 
         // Update MC stats (using entry MC as that's the real execution price)
-        if let Some(mc_usd) = buy.mc_at_entry_usd {
+        if let Some(mc_sol) = buy.mc_at_entry_sol {
             // Safety check for NaN and infinite values
-            if mc_usd.is_finite() && !mc_usd.is_nan() {
-                if self.stats.min_mc_usd == f64::MAX || mc_usd < self.stats.min_mc_usd {
-                    self.stats.min_mc_usd = mc_usd;
+            if mc_sol.is_finite() && !mc_sol.is_nan() {
+                if self.stats.min_mc_sol == f64::MAX || mc_sol < self.stats.min_mc_sol {
+                    self.stats.min_mc_sol = mc_sol;
                 }
-                if mc_usd > self.stats.max_mc_usd {
-                    self.stats.max_mc_usd = mc_usd;
+                if mc_sol > self.stats.max_mc_sol {
+                    self.stats.max_mc_sol = mc_sol;
                 }
 
                 // Recalculate average with safety checks
                 let total_mc: f64 = self.stats.buys.iter()
-                    .filter_map(|b| b.mc_at_entry_usd)
+                    .filter_map(|b| b.mc_at_entry_sol)
                     .filter(|&v| v.is_finite() && !v.is_nan())
-                    .sum::<f64>() + mc_usd;
+                    .sum::<f64>() + mc_sol;
                 let count_with_mc = self.stats.buys.iter()
-                    .filter(|b| b.mc_at_entry_usd.is_some())
+                    .filter(|b| b.mc_at_entry_sol.is_some())
                     .filter(|b| {
-                        if let Some(v) = b.mc_at_entry_usd {
+                        if let Some(v) = b.mc_at_entry_sol {
                             v.is_finite() && !v.is_nan()
                         } else {
                             false
@@ -204,10 +204,10 @@ impl TokenTracker {
                     .count() + 1;
                 
                 if count_with_mc > 0 {
-                    self.stats.avg_mc_usd = total_mc / count_with_mc as f64;
+                    self.stats.avg_mc_sol = total_mc / count_with_mc as f64;
                     // Ensure average is also finite
-                    if !self.stats.avg_mc_usd.is_finite() || self.stats.avg_mc_usd.is_nan() {
-                        self.stats.avg_mc_usd = 0.0;
+                    if !self.stats.avg_mc_sol.is_finite() || self.stats.avg_mc_sol.is_nan() {
+                        self.stats.avg_mc_sol = 0.0;
                     }
                 }
             }
@@ -248,13 +248,13 @@ impl TokenTracker {
             0.0
         };
         
-        let mc_detection_str = buy.mc_at_detection_usd
+        let mc_detection_str = buy.mc_at_detection_sol
             .filter(|&v| v.is_finite() && !v.is_nan())
-            .map(|v| format!("{:.0}", v))
+            .map(|v| format!("{:.2}", v))
             .unwrap_or_default();
-        let mc_entry_str = buy.mc_at_entry_usd
+        let mc_entry_str = buy.mc_at_entry_sol
             .filter(|&v| v.is_finite() && !v.is_nan())
-            .map(|v| format!("{:.0}", v))
+            .map(|v| format!("{:.2}", v))
             .unwrap_or_default();
         let token_price_str = buy.token_price_sol
             .filter(|&v| v.is_finite() && !v.is_nan())
@@ -301,14 +301,14 @@ impl TokenTracker {
         if !sanitized_stats.total_sol_spent.is_finite() || sanitized_stats.total_sol_spent.is_nan() {
             sanitized_stats.total_sol_spent = 0.0;
         }
-        if !sanitized_stats.avg_mc_usd.is_finite() || sanitized_stats.avg_mc_usd.is_nan() {
-            sanitized_stats.avg_mc_usd = 0.0;
+        if !sanitized_stats.avg_mc_sol.is_finite() || sanitized_stats.avg_mc_sol.is_nan() {
+            sanitized_stats.avg_mc_sol = 0.0;
         }
-        if !sanitized_stats.min_mc_usd.is_finite() || sanitized_stats.min_mc_usd.is_nan() || sanitized_stats.min_mc_usd == f64::MAX {
-            sanitized_stats.min_mc_usd = 0.0;
+        if !sanitized_stats.min_mc_sol.is_finite() || sanitized_stats.min_mc_sol.is_nan() || sanitized_stats.min_mc_sol == f64::MAX {
+            sanitized_stats.min_mc_sol = 0.0;
         }
-        if !sanitized_stats.max_mc_usd.is_finite() || sanitized_stats.max_mc_usd.is_nan() {
-            sanitized_stats.max_mc_usd = 0.0;
+        if !sanitized_stats.max_mc_sol.is_finite() || sanitized_stats.max_mc_sol.is_nan() {
+            sanitized_stats.max_mc_sol = 0.0;
         }
         
         // Sanitize all buys
@@ -319,12 +319,12 @@ impl TokenTracker {
             if !buy.our_buy_sol.is_finite() || buy.our_buy_sol.is_nan() {
                 buy.our_buy_sol = 0.0;
             }
-            if let Some(mc) = &mut buy.mc_at_detection_usd {
+            if let Some(mc) = &mut buy.mc_at_detection_sol {
                 if !mc.is_finite() || mc.is_nan() {
                     *mc = 0.0;
                 }
             }
-            if let Some(mc) = &mut buy.mc_at_entry_usd {
+            if let Some(mc) = &mut buy.mc_at_entry_sol {
                 if !mc.is_finite() || mc.is_nan() {
                     *mc = 0.0;
                 }
@@ -364,12 +364,13 @@ impl TokenTracker {
                  });
 
         // MC statistics
-        if self.stats.max_mc_usd > 0.0 {
+        if self.stats.max_mc_sol > 0.0 {
+            use crate::utils::{get_cached_sol_price, sol_to_usd};
             println!("║                                                      ║");
             println!("║ 📊 MARKET CAP STATISTICS:                           ║");
-            println!("║   Average MC:      ${:>10.0}                      ║", self.stats.avg_mc_usd);
-            println!("║   Min MC:          ${:>10.0}                      ║", self.stats.min_mc_usd);
-            println!("║   Max MC:          ${:>10.0}                      ║", self.stats.max_mc_usd);
+            println!("║   Average MC:      {:>10.2} SOL (${:.0})           ║", self.stats.avg_mc_sol, sol_to_usd(self.stats.avg_mc_sol));
+            println!("║   Min MC:          {:>10.2} SOL (${:.0})           ║", self.stats.min_mc_sol, sol_to_usd(self.stats.min_mc_sol));
+            println!("║   Max MC:          {:>10.2} SOL (${:.0})           ║", self.stats.max_mc_sol, sol_to_usd(self.stats.max_mc_sol));
         }
 
         println!("║                                                      ║");
@@ -386,8 +387,9 @@ impl TokenTracker {
                                   self.stats.total_sol_spent,
                                   self.stats.total_sol_spent / self.stats.total_buys as f64);
 
-            if self.stats.avg_mc_usd > 0.0 {
-                msg.push_str(&format!(" | Avg MC: ${:.0}", self.stats.avg_mc_usd));
+            if self.stats.avg_mc_sol > 0.0 {
+                use crate::utils::sol_to_usd;
+                msg.push_str(&format!(" | Avg MC: {:.2} SOL (${:.0})", self.stats.avg_mc_sol, sol_to_usd(self.stats.avg_mc_sol)));
             }
 
             println!("{}\n", msg);
@@ -418,9 +420,9 @@ impl TokenTracker {
         self.stats.buys.clear();
         self.stats.total_buys = 0;
         self.stats.total_sol_spent = 0.0;
-        self.stats.avg_mc_usd = 0.0;
-        self.stats.min_mc_usd = f64::MAX;
-        self.stats.max_mc_usd = 0.0;
+        self.stats.avg_mc_sol = 0.0;
+        self.stats.min_mc_sol = f64::MAX;
+        self.stats.max_mc_sol = 0.0;
         self.stats.last_buy = self.stats.session_start;
         
         // Save empty state
@@ -459,16 +461,16 @@ impl TokenTracker {
         
         // Recalculate MC stats
         let mc_values: Vec<f64> = self.stats.buys.iter()
-            .filter_map(|b| b.mc_at_entry_usd)
+            .filter_map(|b| b.mc_at_entry_sol)
             .collect();
         if !mc_values.is_empty() {
-            self.stats.avg_mc_usd = mc_values.iter().sum::<f64>() / mc_values.len() as f64;
-            self.stats.min_mc_usd = mc_values.iter().cloned().fold(f64::MAX, f64::min);
-            self.stats.max_mc_usd = mc_values.iter().cloned().fold(0.0, f64::max);
+            self.stats.avg_mc_sol = mc_values.iter().sum::<f64>() / mc_values.len() as f64;
+            self.stats.min_mc_sol = mc_values.iter().cloned().fold(f64::MAX, f64::min);
+            self.stats.max_mc_sol = mc_values.iter().cloned().fold(0.0, f64::max);
         } else {
-            self.stats.avg_mc_usd = 0.0;
-            self.stats.min_mc_usd = f64::MAX;
-            self.stats.max_mc_usd = 0.0;
+            self.stats.avg_mc_sol = 0.0;
+            self.stats.min_mc_sol = f64::MAX;
+            self.stats.max_mc_sol = 0.0;
         }
         
         // Save updated state
@@ -792,15 +794,15 @@ impl TokenTracker {
     }
 
     /// Update peak MC for a position (used when MC is fetched separately)
-    pub fn update_peak_mc(&mut self, mint: &str, current_mc_usd: f64, breakeven_threshold: f64) -> Result<()> {
+    pub fn update_peak_mc(&mut self, mint: &str, current_mc_sol: f64, breakeven_threshold_sol: f64) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             // Update peak MC if current is higher than existing peak, or if peak is None
-            match buy.peak_mc_usd {
+            match buy.peak_mc_sol {
                 None => {
-                    buy.peak_mc_usd = Some(current_mc_usd);
+                    buy.peak_mc_sol = Some(current_mc_sol);
                 }
-                Some(peak) if current_mc_usd > peak => {
-                    buy.peak_mc_usd = Some(current_mc_usd);
+                Some(peak) if current_mc_sol > peak => {
+                    buy.peak_mc_sol = Some(current_mc_sol);
                 }
                 _ => {
                     // Peak remains the same
@@ -808,7 +810,7 @@ impl TokenTracker {
             }
             
             // Activate breakeven mode if threshold reached
-            if current_mc_usd >= breakeven_threshold {
+            if current_mc_sol >= breakeven_threshold_sol {
                 buy.breakeven_mode_active = true;
             }
             
@@ -863,8 +865,8 @@ mod tests {
             telegram: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(5000.0),
-            mc_at_entry_usd: Some(5000.0),
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5),
             token_price_sol: Some(0.00005),
             token_amount: Some(2000000), // 2 tokens with 6 decimals
             user_token_account: None,
@@ -877,7 +879,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: Some(0.00001),
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -929,8 +931,8 @@ mod tests {
             telegram: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(7000.0),
-            mc_at_entry_usd: Some(7000.0),
+            mc_at_detection_sol: Some(51.0),
+            mc_at_entry_sol: Some(51.0),
             token_price_sol: Some(0.00005),
             token_amount: None,
             user_token_account: None,
@@ -943,41 +945,41 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
 
         tracker.record_buy(buy).unwrap();
 
-        // Update peak MC - should track highest
-        tracker.update_peak_mc("test_mint_mc", 8000.0, 14000.0).unwrap();
+        // Update peak MC - should track highest (using SOL values, ~58 SOL = 8000 USD at 137 SOL/USD)
+        tracker.update_peak_mc("test_mint_mc", 58.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_usd, Some(8000.0));
+        assert_eq!(position.peak_mc_sol, Some(58.0));
         assert_eq!(position.breakeven_mode_active, false); // Not reached threshold yet
 
         // Update with lower MC (peak should remain)
-        tracker.update_peak_mc("test_mint_mc", 7500.0, 14000.0).unwrap();
+        tracker.update_peak_mc("test_mint_mc", 55.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_usd, Some(8000.0)); // Peak should remain
+        assert_eq!(position.peak_mc_sol, Some(58.0)); // Peak should remain
 
         // Update with higher MC (peak should update)
-        tracker.update_peak_mc("test_mint_mc", 10000.0, 14000.0).unwrap();
+        tracker.update_peak_mc("test_mint_mc", 73.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_usd, Some(10000.0)); // Peak should update
+        assert_eq!(position.peak_mc_sol, Some(73.0)); // Peak should update
 
         // Update with MC above threshold (should activate breakeven mode)
-        tracker.update_peak_mc("test_mint_mc", 15000.0, 14000.0).unwrap();
+        tracker.update_peak_mc("test_mint_mc", 110.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_usd, Some(15000.0));
+        assert_eq!(position.peak_mc_sol, Some(110.0));
         assert_eq!(position.breakeven_mode_active, true); // Should activate breakeven mode
         
         // ✅ CRITICAL TEST: Breakeven mode should stay active even when MC drops below threshold
-        // This simulates the scenario where token reaches 14000, then drops back to entry
-        tracker.update_peak_mc("test_mint_mc", 6000.0, 14000.0).unwrap(); // MC drops below threshold
+        // This simulates the scenario where token reaches threshold, then drops back to entry
+        tracker.update_peak_mc("test_mint_mc", 44.0, 102.0).unwrap(); // MC drops below threshold
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
         assert_eq!(position.breakeven_mode_active, true); // Breakeven mode should STAY active
-        assert_eq!(position.peak_mc_usd, Some(15000.0)); // Peak should remain at highest
+        assert_eq!(position.peak_mc_sol, Some(110.0)); // Peak should remain at highest
     }
 
     #[test]
@@ -999,8 +1001,8 @@ mod tests {
             telegram: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(5000.0),
-            mc_at_entry_usd: Some(5000.0), // Entry MC = 5000
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5), // Entry MC = 5000
             token_price_sol: Some(0.00005),
             token_amount: Some(2000000),
             user_token_account: None,
@@ -1013,29 +1015,29 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
 
         tracker.record_buy(buy).unwrap();
 
-        // Step 1: MC reaches 14000 (breakeven threshold) - should activate breakeven mode
-        tracker.update_peak_mc("test_breakeven", 14000.0, 14000.0).unwrap();
+        // Step 1: MC reaches threshold (102 SOL) - should activate breakeven mode
+        tracker.update_peak_mc("test_breakeven", 102.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
         assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should be activated when MC reaches threshold");
-        assert_eq!(position.peak_mc_usd, Some(14000.0));
+        assert_eq!(position.peak_mc_sol, Some(102.0));
 
-        // Step 2: MC drops to 4500 (below entry of 5000) - breakeven mode should still be active
-        // This simulates the scenario where token returns to entry after reaching 14000
-        tracker.update_peak_mc("test_breakeven", 4500.0, 14000.0).unwrap();
+        // Step 2: MC drops to 33 SOL (below entry of 36.5 SOL) - breakeven mode should still be active
+        // This simulates the scenario where token returns to entry after reaching threshold
+        tracker.update_peak_mc("test_breakeven", 33.0, 102.0).unwrap();
         let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
         assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should STAY active even when MC drops below threshold");
-        assert_eq!(position.peak_mc_usd, Some(14000.0), "Peak MC should remain at highest value");
+        assert_eq!(position.peak_mc_sol, Some(102.0), "Peak MC should remain at highest value");
         
         // At this point, the monitoring logic should detect:
         // - breakeven_mode_active = true
-        // - current_mc (4500) < entry_mc (5000)
+        // - current_mc (33 SOL) < entry_mc (36.5 SOL)
         // - Should trigger breakeven stop loss and sell
     }
 
@@ -1058,8 +1060,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(4800.0),
-            mc_at_entry_usd: Some(5000.0),
+            mc_at_detection_sol: Some(35.0),
+            mc_at_entry_sol: Some(36.5),
             token_price_sol: Some(0.00005),
             token_amount: None,
             user_token_account: None,
@@ -1072,14 +1074,14 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
         assert_eq!(tracker.total_buys(), 1);
-        assert_eq!(tracker.get_stats().avg_mc_usd, 5000.0);
+        assert_eq!(tracker.get_stats().avg_mc_sol, 36.5);
     }
 
     #[test]
@@ -1098,9 +1100,9 @@ mod tests {
                 session_start: Utc::now(),
                 last_buy: Utc::now(),
                 buys: Vec::new(),
-                avg_mc_usd: 0.0,
-                min_mc_usd: f64::MAX,
-                max_mc_usd: 0.0,
+                avg_mc_sol: 0.0,
+                min_mc_sol: f64::MAX,
+                max_mc_sol: 0.0,
             },
             csv_path: csv_path.clone(),
             json_path: json_path.clone(),
@@ -1123,8 +1125,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(4800.0),
-            mc_at_entry_usd: Some(5000.0),
+            mc_at_detection_sol: Some(35.0),
+            mc_at_entry_sol: Some(36.5),
             token_price_sol: Some(0.00005),
             token_amount: None,
             user_token_account: None,
@@ -1137,7 +1139,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -1166,9 +1168,9 @@ mod tests {
                 session_start: Utc::now(),
                 last_buy: Utc::now(),
                 buys: Vec::new(),
-                avg_mc_usd: 5000.0,
-                min_mc_usd: 4800.0,
-                max_mc_usd: 5200.0,
+                avg_mc_sol: 36.5,
+                min_mc_sol: 35.0,
+                max_mc_sol: 38.0,
             },
             csv_path,
             json_path: json_path.clone(),
@@ -1180,7 +1182,7 @@ mod tests {
         let content = std::fs::read_to_string(&json_path).unwrap();
         assert!(content.contains("\"total_buys\":2") || content.contains("\"total_buys\": 2"));
         assert!(content.contains("\"total_sol_spent\":0.2") || content.contains("\"total_sol_spent\": 0.2"));
-        assert!(content.contains("\"avg_mc_usd\":5000.0") || content.contains("\"avg_mc_usd\": 5000.0"));
+        assert!(content.contains("\"avg_mc_sol\":36.5") || content.contains("\"avg_mc_sol\": 36.5"));
     }
 
     #[test]
@@ -1203,8 +1205,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(4000.0),
-            mc_at_entry_usd: Some(4500.0),
+            mc_at_detection_sol: Some(29.0),
+            mc_at_entry_sol: Some(33.0),
             token_price_sol: Some(0.00004),
             token_amount: None,
             user_token_account: None,
@@ -1217,7 +1219,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -1236,8 +1238,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(6000.0),
-            mc_at_entry_usd: Some(6500.0),
+            mc_at_detection_sol: Some(44.0),
+            mc_at_entry_sol: Some(47.0),
             token_price_sol: Some(0.00006),
             token_amount: None,
             user_token_account: None,
@@ -1250,7 +1252,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -1259,9 +1261,9 @@ mod tests {
         tracker.record_buy(buy2).unwrap();
 
         let stats = tracker.get_stats();
-        assert_eq!(stats.avg_mc_usd, 5500.0); // (4500 + 6500) / 2
-        assert_eq!(stats.min_mc_usd, 4500.0);
-        assert_eq!(stats.max_mc_usd, 6500.0);
+        assert_eq!(stats.avg_mc_sol, 40.0); // (33 + 47) / 2
+        assert_eq!(stats.min_mc_sol, 33.0);
+        assert_eq!(stats.max_mc_sol, 47.0);
     }
 
     #[test]
@@ -1283,8 +1285,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: None,
-            mc_at_entry_usd: None,
+            mc_at_detection_sol: None,
+            mc_at_entry_sol: None,
             token_price_sol: None,
             token_amount: None,
             user_token_account: None,
@@ -1297,7 +1299,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -1305,7 +1307,7 @@ mod tests {
         assert!(tracker.record_buy(buy).is_ok());
         assert_eq!(tracker.total_buys(), 1);
         // MC stats should remain at defaults
-        assert_eq!(tracker.get_stats().avg_mc_usd, 0.0);
+        assert_eq!(tracker.get_stats().avg_mc_sol, 0.0);
     }
 
     #[test]
@@ -1328,8 +1330,8 @@ mod tests {
             telegram: None,
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
-            mc_at_detection_usd: Some(4800.0),
-            mc_at_entry_usd: Some(5000.0),
+            mc_at_detection_sol: Some(35.0),
+            mc_at_entry_sol: Some(36.5),
             token_price_sol: Some(0.00005),
             token_amount: None,
             user_token_account: None,
@@ -1342,7 +1344,7 @@ mod tests {
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: None,
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };

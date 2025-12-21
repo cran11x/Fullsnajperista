@@ -976,7 +976,7 @@ async fn listen_websocket_once(
                                 Ok(tracker_guard) => {
                                     if let Some(tracker_ref) = tracker_guard.as_ref() {
                                         let buys = tracker_ref.get_recent_buys(1);
-                                        buys.first().and_then(|b| b.mc_at_entry_usd)
+                                        buys.first().and_then(|b| b.mc_at_entry_sol)
                                     } else {
                                         None
                                     }
@@ -1123,8 +1123,8 @@ async fn process_and_buy(
     // SECTION 1: TOKEN INFO
     // ========================================================================
     
-    let min_sol = config.min_dev_buy_usd / config.sol_price_usd;
-    let max_sol = config.max_dev_buy_usd / config.sol_price_usd;
+    let min_sol = config.min_dev_buy_sol;
+    let max_sol = config.max_dev_buy_sol;
     let filter_start = std::time::Instant::now();
     
     // ========================================================================
@@ -1204,16 +1204,15 @@ async fn process_and_buy(
         }
     });
     
-    let mc_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(BondingCurveAccount, f64, f64), anyhow::Error>> + Send>> = Box::pin(fetch_bonding_curve_mc(
+    let mc_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(BondingCurveAccount, f64), anyhow::Error>> + Send>> = Box::pin(fetch_bonding_curve_mc(
         rpc,
         &accounts.bonding_curve,
-        config.sol_price_usd,
     ));
     
     // ⚡ PARALLEL: Await all futures simultaneously using tokio::join!
     let (das_result, mc_result, metadata_result): (
         Result<u32, anyhow::Error>,
-        Result<(BondingCurveAccount, f64, f64), anyhow::Error>,
+        Result<(BondingCurveAccount, f64), anyhow::Error>,
         Option<(Socials, TokenMetadata)>
     ) = tokio::join!(
         das_fut,
@@ -1289,10 +1288,10 @@ async fn process_and_buy(
     };
     
     // Process MC result
-    let (curve, _mc_sol, mc_usd) = match mc_result {
+    let (curve, mc_sol) = match mc_result {
         Ok(data) => data,
         Err(_) => {
-            (BondingCurveAccount::default(), 0.0, 0.0)
+            (BondingCurveAccount::default(), 0.0)
         }
     };
     
@@ -1998,13 +1997,12 @@ async fn process_and_buy(
         let mc_entry_result = fetch_bonding_curve_mc(
             rpc,
             &accounts.bonding_curve,
-            config.sol_price_usd,
         ).await;
         
-        let (mc_entry_usd, token_price_entry) = match mc_entry_result {
-            Ok((curve, _, mc)) => {
+        let (mc_entry_sol, token_price_entry) = match mc_entry_result {
+            Ok((curve, mc_sol)) => {
                 let price = curve.get_token_price_sol();
-                (Some(mc), if price > 0.0 { Some(price) } else { None })
+                (Some(mc_sol), if price > 0.0 { Some(price) } else { None })
             }
             Err(_) => (None, None)
         };
@@ -2042,8 +2040,8 @@ async fn process_and_buy(
                             } else {
                                 "balance_fallback".to_string()
                             },
-                            mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
-                            mc_at_entry_usd: mc_entry_usd,
+                            mc_at_detection_sol: if mc_sol > 0.0 { Some(mc_sol) } else { None },
+                            mc_at_entry_sol: mc_entry_sol,
                             token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
                             token_amount: if token_amount > 0 { Some(token_amount) } else { None },
                             user_token_account: Some(user_ata.to_string()),
@@ -2056,7 +2054,7 @@ async fn process_and_buy(
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: Some(0.0),
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -2068,7 +2066,7 @@ async fn process_and_buy(
                         if let Some(ref history) = history_tracker {
                             let mint_str = mint.to_string();
                             let bonding_curve_str = accounts.bonding_curve.to_string();
-                            let entry_mc = mc_entry_usd.unwrap_or(0.0);
+                            let entry_mc = mc_entry_sol.unwrap_or(0.0);
                             let entry_price = token_price_entry.unwrap_or(token_price_sol);
                             let our_buy_sol = config.buy_amount_sol;
                             let token_amount_opt = if token_amount > 0 { Some(token_amount) } else { None };
@@ -2088,12 +2086,11 @@ async fn process_and_buy(
                             }
                             
                             // 📊 Record initial MC snapshot for mock buy (fetch outside lock)
-                            if let Ok((curve, _, _)) = fetch_bonding_curve_mc(rpc, &accounts.bonding_curve, config.sol_price_usd).await {
+                            if let Ok((curve, _)) = fetch_bonding_curve_mc(rpc, &accounts.bonding_curve).await {
                                 if let Ok(mut history_guard) = history.try_write() {
                                     history_guard.record_from_bonding_curve(
                                         &mint_str,
                                         &curve,
-                                        config.sol_price_usd,
                                         None, None, None,
                                     );
                                     let mint_short = if mint_str.len() > 8 { &mint_str[..8] } else { &mint_str };
@@ -2116,7 +2113,7 @@ async fn process_and_buy(
         let _ = event_tx.send(TokenEvent::Bought {
             mint: accounts.mint.to_string(),
             signature: mock_signature.clone(),
-            mc: mc_entry_usd,
+            mc: mc_entry_sol,
             timestamp: Utc::now(),
         });
         
@@ -2324,7 +2321,6 @@ async fn process_and_buy(
         let mc_entry_result = fetch_bonding_curve_mc(
             rpc,
             &accounts.bonding_curve,
-            config.sol_price_usd,
         ).await;
         
         // Calculate total fees for PnL accuracy
@@ -2473,10 +2469,10 @@ async fn process_and_buy(
         };
         
         // Get MC after buy (for reference, but don't use for entry price)
-        let (mc_entry_usd, token_price_entry) = match mc_entry_result {
-            Ok((curve, _, mc)) => {
+        let (mc_entry_sol, token_price_entry) = match mc_entry_result {
+            Ok((curve, mc_sol)) => {
                 let price = curve.get_token_price_sol();
-                (Some(mc), if price > 0.0 { Some(price) } else { None })
+                (Some(mc_sol), if price > 0.0 { Some(price) } else { None })
             }
             Err(_) => (None, None)
         };
@@ -2533,8 +2529,8 @@ async fn process_and_buy(
                         } else {
                             "balance_fallback".to_string()
                         },
-                        mc_at_detection_usd: if mc_usd > 0.0 { Some(mc_usd) } else { None },
-                        mc_at_entry_usd: mc_entry_usd,
+                        mc_at_detection_sol: if mc_sol > 0.0 { Some(mc_sol) } else { None },
+                        mc_at_entry_sol: mc_entry_sol,
                         token_price_sol: final_entry_price, // Use calculated entry price (invested SOL / actual token amount)
                         token_amount: if actual_token_amount > 0 { Some(actual_token_amount) } else { None },
                         user_token_account: Some(user_ata.to_string()),
@@ -2547,7 +2543,7 @@ async fn process_and_buy(
                         pnl_percent: None,
                         last_pnl_update: None,
                         buy_fees_sol: Some(total_buy_fees),
-                        peak_mc_usd: None,
+                        peak_mc_sol: None,
                         peak_pnl_percent: None,
                         breakeven_mode_active: false,
                     };
@@ -2625,7 +2621,7 @@ async fn process_and_buy(
         if let Some(ref history) = history_tracker {
                     let mint_str = mint.to_string();
                     let bonding_curve_str = accounts.bonding_curve.to_string();
-                    let entry_mc = mc_entry_usd.unwrap_or(0.0);
+                    let entry_mc = mc_entry_sol.unwrap_or(0.0);
                     let entry_price = final_entry_price.unwrap_or(0.0);
                     let our_buy_sol = invested_sol;
                     let token_amount_opt = if actual_token_amount > 0 { Some(actual_token_amount) } else { None };
@@ -2648,10 +2644,9 @@ async fn process_and_buy(
                     // 📊 Record initial MC snapshot immediately after buy (fetch outside lock)
                     // ✅ FIX: Use timeout to prevent blocking on slow RPC
                     match tokio::time::timeout(Duration::from_secs(3), 
-                        fetch_bonding_curve_mc(rpc, &accounts.bonding_curve, config.sol_price_usd)
+                        fetch_bonding_curve_mc(rpc, &accounts.bonding_curve)
                     ).await {
-                        Ok(Ok((curve, _, _))) => {
-                            let current_mc = curve.calculate_mc_usd(config.sol_price_usd);
+                        Ok(Ok((curve, mc_sol))) => {
                             let current_price = curve.get_token_price_sol();
                             
                             // Get initial PnL if available
@@ -2666,15 +2661,16 @@ async fn process_and_buy(
                                 history_guard.record_from_bonding_curve(
                                     &mint_str,
                                     &curve,
-                                    config.sol_price_usd,
                                     initial_pnl_percent,
                                     None, // pnl_sol not calculated yet
                                     None, // current_value_sol not calculated yet
                                 );
                                 
                                 let mint_short = if mint_str.len() > 8 { &mint_str[..8] } else { &mint_str };
-                                eprintln!("📊 HISTORY: Registered and recorded initial MC snapshot for {} (MC: ${:.0}, Price: {:.8})", 
-                                         mint_short, current_mc, current_price);
+                                use crate::utils::sol_to_usd;
+                                let mc_usd = sol_to_usd(mc_sol);
+                                eprintln!("📊 HISTORY: Registered and recorded initial MC snapshot for {} (MC: {:.2} SOL (${:.0}), Price: {:.8})", 
+                                         mint_short, mc_sol, mc_usd, current_price);
                             }
                         }
                         Ok(Err(e)) => {
@@ -3092,8 +3088,8 @@ async fn monitor_positions(
                     
                     // Get SOL price for MC calculation
                     let sol_price = {
-                        let cfg = config.read().unwrap();
-                        cfg.sol_price_usd
+                        use crate::utils::get_cached_sol_price;
+                        get_cached_sol_price()
                     };
                     
                     // Fetch bonding curve and MC for each token
@@ -3108,8 +3104,10 @@ async fn monitor_positions(
                         eprintln!("      - Bonding Curve: {}", bonding_curve);
                         
                         // Try to fetch MC
-                        match fetch_bonding_curve_mc(rpc_arc.as_ref(), &bonding_curve, sol_price).await {
-                            Ok((curve, mc_sol, mc_usd)) => {
+                        match fetch_bonding_curve_mc(rpc_arc.as_ref(), &bonding_curve).await {
+                            Ok((curve, mc_sol)) => {
+                                use crate::utils::sol_to_usd;
+                                let mc_usd = sol_to_usd(mc_sol);
                                 let token_price = curve.get_token_price_sol();
                                 // Balance is in raw units (like lamports), need to check token decimals
                                 // For most tokens, decimals are 6-9, but we'll use the raw balance for now
@@ -3183,10 +3181,14 @@ async fn monitor_positions(
             // Auto-sell monitoring
 
             // Get config values including Helius API key and dead coin settings
-            let (stop_loss_percent, take_profit_mc_usd, _monitor_interval, sol_price_usd, helius_api_key, _sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
+            let (stop_loss_percent, take_profit_mc_sol, _monitor_interval, helius_api_key, _sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
                 let cfg = config.read().unwrap();
-                (cfg.stop_loss_percent, cfg.take_profit_mc_usd, cfg.monitor_interval_sec, cfg.sol_price_usd, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
+                use crate::utils::get_cached_sol_price;
+                (cfg.stop_loss_percent, cfg.take_profit_mc_sol, cfg.monitor_interval_sec, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
             };
+            
+            // Refresh SOL price if needed (every 5 minutes)
+            crate::utils::refresh_sol_price_if_needed().await;
 
             // Clean up positions with zero balance - LIVE (every check, using Helius API for speed)
             let user_wallet = wallet.pubkey();
@@ -3454,7 +3456,7 @@ async fn monitor_positions(
             
             for (idx, (position, bonding_curve)) in positions_cloned.iter().enumerate() {
                 // Get entry_mc if available (for fallback MC check), but don't require it
-                let entry_mc = position.mc_at_entry_usd;
+                let entry_mc = position.mc_at_entry_sol;
                 
                 // Clone all data before moving into task
                 let position_mint = position.mint.clone();
@@ -3483,21 +3485,19 @@ async fn monitor_positions(
                 // Spawn parallel task for each position
                 let task = tokio::spawn(async move {
                     // OPTIMIZED: Use batch-fetched curve data if available, otherwise fetch individually
-                    let (current_price, _current_mc_sol, current_mc_usd) = if let Some(curve) = curve_opt {
+                    let (current_price, current_mc_sol) = if let Some(curve) = curve_opt {
                         // Use batch-fetched data - calculate price and MC from curve
                         let price = curve.get_token_price_sol();
                         let mc_sol = curve.calculate_mc_sol();
-                        let mc_usd = curve.calculate_mc_usd(sol_price_usd);
-                        (price, mc_sol, mc_usd)
+                        (price, mc_sol)
                     } else {
                         // Fallback: fetch individually if batch failed
                         match fetch_bonding_curve_mc(
                             rpc_task.as_ref(),
                             &bonding_curve_clone,
-                            sol_price_usd,
                         ).await {
-                            Ok((curve, mc_sol, mc_usd)) => {
-                                (curve.get_token_price_sol(), mc_sol, mc_usd)
+                            Ok((curve, mc_sol)) => {
+                                (curve.get_token_price_sol(), mc_sol)
                             }
                             Err(_) => return None, // Skip if can't fetch (will retry next cycle)
                         }
@@ -3537,27 +3537,25 @@ async fn monitor_positions(
                             false // Skip normal stop loss in breakeven mode (handled later)
                         } else {
                             // OPTIMIZED: Use batch-fetched MC data (already calculated above)
-                            let current_mc = current_mc_usd;
-                            
                             // Check if we should use breakeven stop loss
                             // ✅ CRITICAL FIX: Check breakeven_mode_active OR if MC reaches threshold
                             // Once breakeven mode is active, it stays active even if MC drops below threshold
-                            if position_clone.breakeven_mode_active || current_mc >= config_clone.breakeven_mc_threshold_usd {
+                            if position_clone.breakeven_mode_active || current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
                                 // Breakeven mode: use entry MC as stop loss
-                                if current_mc < entry_mc_val {
-                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped to {:.2} (entry: {:.2})", 
-                                             current_mc, entry_mc_val);
+                                if current_mc_sol < entry_mc_val {
+                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped to {:.2} SOL (entry: {:.2} SOL)", 
+                                             current_mc_sol, entry_mc_val);
                                     return Some(("breakeven_stop_loss", position_mint.clone()));
                                 }
                                 false // In breakeven mode, only sell if below entry
                             } else {
                                 // Normal stop loss check
                                 let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
-                                if current_mc < stop_loss_threshold {
-                                    eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from ${:.2} to ${:.2} (threshold: ${:.2})", 
-                                             entry_mc_val, current_mc, stop_loss_threshold);
+                                if current_mc_sol < stop_loss_threshold {
+                                    eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from {:.2} SOL to {:.2} SOL (threshold: {:.2} SOL)", 
+                                             entry_mc_val, current_mc_sol, stop_loss_threshold);
                                 }
-                                current_mc < stop_loss_threshold
+                                current_mc_sol < stop_loss_threshold
                             }
                         }
                     } else {
@@ -3583,21 +3581,18 @@ async fn monitor_positions(
                         return Some(("stop_loss", position_mint));
                     }
                     
-                    // OPTIMIZED: Use batch-fetched MC data (already calculated above)
-                    let current_mc = current_mc_usd;
-                    
                     // 🎯 BREAKEVEN STOP LOSS: If breakeven mode is active, use entry MC as stop loss
                     if let Some(entry_mc_val) = entry_mc {
                         if entry_mc_val > 0.0 {
                             // Check if MC reaches threshold (activates breakeven mode)
-                            let breakeven_mode_active = if current_mc >= config_clone.breakeven_mc_threshold_usd {
+                            let breakeven_mode_active = if current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
                                 // Update peak MC in tracker (activates breakeven mode)
                                 if let Ok(mut tracker_guard) = tracker_clone.write() {
                                     if let Some(tracker_ref) = tracker_guard.as_mut() {
                                         let _ = tracker_ref.update_peak_mc(
                                             &position_clone.mint,
-                                            current_mc,
-                                            config_clone.breakeven_mc_threshold_usd,
+                                            current_mc_sol,
+                                            config_clone.breakeven_mc_threshold_sol,
                                         );
                                     }
                                 }
@@ -3621,9 +3616,9 @@ async fn monitor_positions(
                             // and we check if MC drops below entry, regardless of current MC level
                             if breakeven_mode_active {
                                 // Check if MC dropped below entry (breakeven stop loss)
-                                if current_mc < entry_mc_val {
+                                if current_mc_sol < entry_mc_val {
                                     eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from peak to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
-                                             current_mc, entry_mc_val);
+                                             current_mc_sol, entry_mc_val);
                                     
                                     // Execute sell at breakeven
                                     let _ = execute_sell(
@@ -3643,8 +3638,8 @@ async fn monitor_positions(
                         }
                     }
                     
-                    // Check take profit: current_mc >= take_profit_mc_usd
-                    let should_sell_take_profit = current_mc >= take_profit_mc_usd;
+                    // Check take profit: current_mc_sol >= take_profit_mc_sol
+                    let should_sell_take_profit = current_mc_sol >= take_profit_mc_sol;
                     
                     // Check dead coin: no price movement for X seconds
                     let should_sell_dead_coin = if enable_dead_coin_sell {
@@ -3707,7 +3702,7 @@ async fn monitor_positions(
                     Err(_) => continue,
                 };
 
-                let entry_mc = match position.mc_at_entry_usd {
+                let entry_mc = match position.mc_at_entry_sol {
                     Some(mc) => mc,
                     None => continue,
                 };
@@ -3720,11 +3715,13 @@ async fn monitor_positions(
                 let current_mc_result = fetch_bonding_curve_mc(
                     rpc_arc.as_ref(),
                     &bonding_curve,
-                    sol_price_usd,
                 ).await;
 
                 let current_mc = match current_mc_result {
-                    Ok((_, _, mc_usd)) => mc_usd,
+                    Ok((_, mc_sol)) => {
+                        use crate::utils::sol_to_usd;
+                        sol_to_usd(mc_sol)
+                    },
                     Err(_) => continue,
                 };
                 
@@ -3864,10 +3861,9 @@ pub async fn execute_manual_buy(
     
     // Fetch bonding curve for accurate token amount calculation
     let bonding_curve_opt = {
-        // Get SOL price for MC calculation (we only need the curve, not MC)
-        let sol_price_usd = 150.0; // Default fallback, actual value not critical for token amount calc
-        match fetch_bonding_curve_mc(rpc, &accounts.bonding_curve, sol_price_usd).await {
-            Ok((curve, _, _)) => Some(curve),
+        // Get bonding curve (we only need the curve, not MC)
+        match fetch_bonding_curve_mc(rpc, &accounts.bonding_curve).await {
+            Ok((curve, _)) => Some(curve),
             Err(_) => None, // Fallback to initial price if fetch fails
         }
     };
@@ -4025,13 +4021,12 @@ pub async fn execute_manual_buy(
         let mc_result = fetch_bonding_curve_mc(
             rpc,
             &accounts.bonding_curve,
-            config.sol_price_usd,
         ).await;
         
-        let (mc_entry_usd, token_price_entry) = match mc_result {
-            Ok((curve, _, mc)) => {
+        let (mc_entry_sol, token_price_entry) = match mc_result {
+            Ok((curve, mc_sol)) => {
                 let price = curve.get_token_price_sol();
-                (Some(mc), if price > 0.0 { Some(price) } else { None })
+                (Some(mc_sol), if price > 0.0 { Some(price) } else { None })
             }
             Err(_) => (None, None)
         };
@@ -4052,8 +4047,8 @@ pub async fn execute_manual_buy(
             telegram: None,
             creator_token_count: 0,
             detection_method: "manual".to_string(),
-            mc_at_detection_usd: None,
-            mc_at_entry_usd: mc_entry_usd,
+            mc_at_detection_sol: None,
+            mc_at_entry_sol: mc_entry_sol,
             token_price_sol: token_price_entry,
             token_amount: None,
             user_token_account: Some(user_ata.to_string()),
@@ -4066,7 +4061,7 @@ pub async fn execute_manual_buy(
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: Some(0.00002), // Estimate for manual buy
-            peak_mc_usd: None,
+            peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
         };
@@ -4110,7 +4105,7 @@ pub async fn execute_manual_buy(
             if let Some(ref history) = history_tracker {
                 let mint_str = buy_data.mint.clone();
                 let bonding_curve_str = buy_data.bonding_curve.clone().unwrap_or_default();
-                let entry_mc = mc_entry_usd.unwrap_or(0.0);
+                let entry_mc = mc_entry_sol.unwrap_or(0.0);
                 let entry_price = token_price_entry.unwrap_or(0.0);
                 let our_buy_sol = config.buy_amount_sol;
                 let token_amount_opt = buy_data.token_amount;
@@ -4135,10 +4130,12 @@ pub async fn execute_manual_buy(
                     if let Ok(bonding_curve_pubkey) = Pubkey::from_str(&bonding_curve_str) {
                         // Use timeout to prevent hanging on slow RPC
                         match tokio::time::timeout(Duration::from_secs(3), 
-                            fetch_bonding_curve_mc(rpc, &bonding_curve_pubkey, config.sol_price_usd)
+                            fetch_bonding_curve_mc(rpc, &bonding_curve_pubkey)
                         ).await {
-                            Ok(Ok((curve, _, _))) => {
-                                let current_mc = curve.calculate_mc_usd(config.sol_price_usd);
+                            Ok(Ok((curve, _))) => {
+                                let current_mc_sol = curve.calculate_mc_sol();
+                                use crate::utils::sol_to_usd;
+                                let current_mc = sol_to_usd(current_mc_sol);
                                 let current_price = curve.get_token_price_sol();
                                 
                                 // Get initial PnL if available
@@ -4153,7 +4150,6 @@ pub async fn execute_manual_buy(
                                     history_guard.record_from_bonding_curve(
                                         &mint_str,
                                         &curve,
-                                        config.sol_price_usd,
                                         initial_pnl_percent,
                                         None, // pnl_sol not calculated yet
                                         None, // current_value_sol not calculated yet
@@ -4568,9 +4564,12 @@ async fn monitor_pnl_ultra_fast(
         }
         
         // Get config values
-        let (sol_price_usd, _) = {
+        // Refresh SOL price if needed
+        crate::utils::refresh_sol_price_if_needed().await;
+        
+        let _ = {
             let cfg = config.read().unwrap();
-            (cfg.sol_price_usd, cfg.helius_api_key.clone())
+            cfg.helius_api_key.clone()
         };
         
         // Get active positions
@@ -4633,9 +4632,9 @@ async fn monitor_pnl_ultra_fast(
         };
         
         // Process all positions with batch-fetched data
-        let breakeven_threshold = {
+        let breakeven_threshold_sol = {
             let cfg = config.read().unwrap();
-            cfg.breakeven_mc_threshold_usd
+            cfg.breakeven_mc_threshold_sol
         };
         
         for (idx, (mint, _)) in position_data.iter().enumerate() {
@@ -4649,7 +4648,9 @@ async fn monitor_pnl_ultra_fast(
             
             if let Some(curve) = &bonding_curve_data[idx] {
                 let current_price = curve.get_token_price_sol();
-                let current_mc = curve.calculate_mc_usd(sol_price_usd);
+                let current_mc_sol = curve.calculate_mc_sol();
+                use crate::utils::sol_to_usd;
+                let current_mc = sol_to_usd(current_mc_sol);
                 
                 
                 // Variables to capture position data for history recording
@@ -4674,14 +4675,14 @@ async fn monitor_pnl_ultra_fast(
                                 eprintln!("❌ PnL MONITOR: Failed to update PnL for {}: {}", mint_short, e);
                             }
                         }
-                        let _ = tracker.update_peak_mc(mint, current_mc, breakeven_threshold);
+                        let _ = tracker.update_peak_mc(mint, current_mc_sol, breakeven_threshold_sol);
                         
                         // Get position data for history recording
                         if let Some(pos) = tracker.get_active_positions().iter().find(|p| p.mint == *mint) {
                             pnl_percent_for_history = pos.pnl_percent;
                             pnl_sol_for_history = pos.pnl_sol;
                             current_value_for_history = pos.current_value_sol;
-                            entry_mc_for_history = pos.mc_at_entry_usd;
+                            entry_mc_for_history = pos.mc_at_entry_sol;
                             our_buy_sol_for_history = Some(pos.our_buy_sol);
                             token_amount_for_history = pos.token_amount;
                             bonding_curve_for_history = pos.bonding_curve.clone();
@@ -4716,7 +4717,6 @@ async fn monitor_pnl_ultra_fast(
                     history.record_from_bonding_curve(
                         mint,
                         curve,
-                        sol_price_usd,
                         pnl_percent_for_history,
                         pnl_sol_for_history,
                         current_value_for_history,

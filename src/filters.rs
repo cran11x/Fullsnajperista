@@ -16,8 +16,8 @@ pub fn should_process_token(
 ) -> Result<bool> {
     // Dev buy filter
     let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
-    let min_sol = config.min_dev_buy_sol();
-    let max_sol = config.max_dev_buy_sol();
+    let min_sol = config.min_dev_buy_sol;
+    let max_sol = config.max_dev_buy_sol;
 
     if dev_buy_sol < min_sol || dev_buy_sol > max_sol {
         return Ok(false);

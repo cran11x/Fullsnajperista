@@ -15,7 +15,6 @@ pub struct Config {
     pub rpc_url: String,
     pub wss_url: String,
     pub helius_api_key: String,
-    pub sol_price_usd: f64,
     pub buy_amount_sol: f64,
     pub slippage_percent: u32, // Slippage tolerance in percent (e.g., 120 = 20% slippage)
     pub priority_fee: u64,
@@ -28,8 +27,8 @@ pub struct Config {
     pub require_twitter: bool,
     pub require_website: bool,
     pub min_socials_count: usize,
-    pub min_dev_buy_usd: f64,
-    pub max_dev_buy_usd: f64,
+    pub min_dev_buy_sol: f64,
+    pub max_dev_buy_sol: f64,
     pub min_dev_tokens: usize,
     pub max_dev_tokens: usize,
     pub enable_tracker: bool,
@@ -45,8 +44,8 @@ pub struct Config {
     pub fee_program: Pubkey,
     pub enable_auto_sell: bool,
     pub stop_loss_percent: f64,
-    pub take_profit_mc_usd: f64,
-    pub breakeven_mc_threshold_usd: f64,
+    pub take_profit_mc_sol: f64,
+    pub breakeven_mc_threshold_sol: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
     pub enable_dead_coin_sell: bool,
@@ -96,11 +95,6 @@ impl Config {
 
         let wss_url = std::env::var("WSS_URL")
             .unwrap_or_else(|_| format!("wss://mainnet.helius-rpc.com/?api-key={}", helius_api_key));
-
-        let sol_price_usd = std::env::var("SOL_PRICE_USD")
-            .unwrap_or_else(|_| "137.0".to_string())
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid SOL_PRICE_USD"))?;
 
         let buy_amount_sol_str = std::env::var("BUY_AMOUNT_SOL")
             .unwrap_or_else(|_| "0.015".to_string());
@@ -171,15 +165,15 @@ impl Config {
             .parse::<usize>()
             .unwrap_or(0);
 
-        let min_dev_buy_usd = std::env::var("MIN_DEV_BUY_USD")
-            .unwrap_or_else(|_| "100.0".to_string())
+        let min_dev_buy_sol = std::env::var("MIN_DEV_BUY_SOL")
+            .unwrap_or_else(|_| "0.73".to_string()) // ~100 USD at 137 SOL/USD
             .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid MIN_DEV_BUY_USD"))?;
+            .map_err(|_| anyhow!("Invalid MIN_DEV_BUY_SOL"))?;
 
-        let max_dev_buy_usd = std::env::var("MAX_DEV_BUY_USD")
-            .unwrap_or_else(|_| "1000.0".to_string())
+        let max_dev_buy_sol = std::env::var("MAX_DEV_BUY_SOL")
+            .unwrap_or_else(|_| "7.3".to_string()) // ~1000 USD at 137 SOL/USD
             .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid MAX_DEV_BUY_USD"))?;
+            .map_err(|_| anyhow!("Invalid MAX_DEV_BUY_SOL"))?;
 
         let min_dev_tokens = std::env::var("MIN_DEV_TOKENS")
             .unwrap_or_else(|_| "0".to_string())
@@ -269,15 +263,15 @@ impl Config {
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid STOP_LOSS_PERCENT"))?;
 
-        let take_profit_mc_usd = std::env::var("TAKE_PROFIT_MC_USD")
-            .unwrap_or_else(|_| "24000.0".to_string())
+        let take_profit_mc_sol = std::env::var("TAKE_PROFIT_MC_SOL")
+            .unwrap_or_else(|_| "175.0".to_string()) // ~24000 USD at 137 SOL/USD
             .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_USD"))?;
+            .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_SOL"))?;
 
-        let breakeven_mc_threshold_usd = std::env::var("BREAKEVEN_MC_THRESHOLD_USD")
-            .unwrap_or_else(|_| "14000.0".to_string())
+        let breakeven_mc_threshold_sol = std::env::var("BREAKEVEN_MC_THRESHOLD_SOL")
+            .unwrap_or_else(|_| "102.0".to_string()) // ~14000 USD at 137 SOL/USD
             .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid BREAKEVEN_MC_THRESHOLD_USD"))?;
+            .map_err(|_| anyhow!("Invalid BREAKEVEN_MC_THRESHOLD_SOL"))?;
 
         let sell_percent = std::env::var("SELL_PERCENT")
             .unwrap_or_else(|_| "100.0".to_string())
@@ -410,7 +404,6 @@ impl Config {
                 wss_url
             },
             helius_api_key,
-            sol_price_usd,
             buy_amount_sol,
             slippage_percent,
             priority_fee,
@@ -423,8 +416,8 @@ impl Config {
             require_twitter,
             require_website,
             min_socials_count,
-            min_dev_buy_usd,
-            max_dev_buy_usd,
+            min_dev_buy_sol,
+            max_dev_buy_sol,
             min_dev_tokens,
             max_dev_tokens,
             enable_tracker,
@@ -440,8 +433,8 @@ impl Config {
             fee_program,
             enable_auto_sell,
             stop_loss_percent,
-            take_profit_mc_usd,
-            breakeven_mc_threshold_usd,
+            take_profit_mc_sol,
+            breakeven_mc_threshold_sol,
             sell_percent,
             monitor_interval_sec,
             enable_dead_coin_sell,
@@ -465,12 +458,8 @@ impl Config {
             return Err(anyhow!("BUY_AMOUNT_SOL must be > 0"));
         }
 
-        if self.sol_price_usd <= 0.0 {
-            return Err(anyhow!("SOL_PRICE_USD must be > 0"));
-        }
-
-        if self.min_dev_buy_usd >= self.max_dev_buy_usd {
-            return Err(anyhow!("MIN_DEV_BUY_USD must be < MAX_DEV_BUY_USD"));
+        if self.min_dev_buy_sol >= self.max_dev_buy_sol {
+            return Err(anyhow!("MIN_DEV_BUY_SOL must be < MAX_DEV_BUY_SOL"));
         }
 
         if self.min_dev_tokens > self.max_dev_tokens {
@@ -490,8 +479,8 @@ impl Config {
             return Err(anyhow!("STOP_LOSS_PERCENT must be between 0 and 100"));
         }
 
-        if self.take_profit_mc_usd <= 0.0 {
-            return Err(anyhow!("TAKE_PROFIT_MC_USD must be > 0"));
+        if self.take_profit_mc_sol <= 0.0 {
+            return Err(anyhow!("TAKE_PROFIT_MC_SOL must be > 0"));
         }
 
         if self.sell_percent <= 0.0 || self.sell_percent > 100.0 {
@@ -515,14 +504,6 @@ impl Config {
         (self.buy_amount_sol * 1e9) as u64
     }
 
-    /// Get min/max dev buy in SOL
-    pub fn min_dev_buy_sol(&self) -> f64 {
-        self.min_dev_buy_usd / self.sol_price_usd
-    }
-
-    pub fn max_dev_buy_sol(&self) -> f64 {
-        self.max_dev_buy_usd / self.sol_price_usd
-    }
 
     /// Calculate dynamic priority fee based on recent network fees
     /// Returns the 75th percentile of recent prioritization fees, or falls back to configured fee
@@ -591,7 +572,6 @@ impl Default for Config {
             rpc_url: "https://mainnet.helius-rpc.com/?api-key=test".to_string(),
             wss_url: "wss://mainnet.helius-rpc.com/?api-key=test".to_string(),
             helius_api_key: "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string(),
-            sol_price_usd: 137.0,
             buy_amount_sol: 0.015,
             slippage_percent: 200, // Default 200% (100% slippage tolerance)
             priority_fee: 11_000_000,
@@ -604,8 +584,8 @@ impl Default for Config {
             require_twitter: false,
             require_website: false,
             min_socials_count: 0,
-            min_dev_buy_usd: 100.0,
-            max_dev_buy_usd: 1000.0,
+            min_dev_buy_sol: 0.73, // ~100 USD at 137 SOL/USD
+            max_dev_buy_sol: 7.3, // ~1000 USD at 137 SOL/USD
             min_dev_tokens: 0,
             max_dev_tokens: 10,
             enable_tracker: true,
@@ -621,8 +601,8 @@ impl Default for Config {
             fee_program: Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ").unwrap(),
             enable_auto_sell: false,
             stop_loss_percent: 30.0,
-            take_profit_mc_usd: 24_000.0,
-            breakeven_mc_threshold_usd: 14_000.0,
+            take_profit_mc_sol: 175.0, // ~24000 USD at 137 SOL/USD
+            breakeven_mc_threshold_sol: 102.0, // ~14000 USD at 137 SOL/USD
             sell_percent: 100.0,
             monitor_interval_sec: 5,
             enable_dead_coin_sell: false,
@@ -646,7 +626,6 @@ mod tests {
     fn setup_test_env() {
         // Set valid test values (override any existing values)
         env::set_var("HELIUS_API_KEY", "test-api-key-123");
-        env::set_var("SOL_PRICE_USD", "150.0");
         env::set_var("BUY_AMOUNT_SOL", "0.02");
         env::set_var("PRIORITY_FEE", "5000000");
         env::set_var("COMPUTE_UNITS", "300000");
@@ -654,7 +633,6 @@ mod tests {
 
     fn cleanup_test_env() {
         env::remove_var("HELIUS_API_KEY");
-        env::remove_var("SOL_PRICE_USD");
         env::remove_var("BUY_AMOUNT_SOL");
         env::remove_var("PRIORITY_FEE");
         env::remove_var("COMPUTE_UNITS");
@@ -667,8 +645,9 @@ mod tests {
         env::remove_var("REQUIRE_SOCIALS");
         env::remove_var("REQUIRE_TWITTER");
         env::remove_var("MIN_SOCIALS_COUNT");
-        env::remove_var("MIN_DEV_BUY_USD");
-        env::remove_var("MAX_DEV_BUY_USD");
+        env::remove_var("MIN_DEV_BUY_SOL");
+        env::remove_var("MAX_DEV_BUY_SOL");
+        env::remove_var("BREAKEVEN_MC_THRESHOLD_SOL");
         env::remove_var("MIN_DEV_TOKENS");
         env::remove_var("MAX_DEV_TOKENS");
         env::remove_var("ENABLE_TRACKER");
@@ -685,7 +664,6 @@ mod tests {
         
         let config = config.unwrap();
         assert_eq!(config.helius_api_key, "test-api-key-123");
-        assert_eq!(config.sol_price_usd, 150.0);
         assert_eq!(config.buy_amount_sol, 0.02);
         assert_eq!(config.priority_fee, 5000000);
         assert_eq!(config.compute_units, 300000);
@@ -696,20 +674,20 @@ mod tests {
     #[test]
     fn test_breakeven_config_default() {
         let config = Config::default();
-        assert_eq!(config.breakeven_mc_threshold_usd, 14_000.0);
+        assert_eq!(config.breakeven_mc_threshold_sol, 102.0);
     }
 
     #[test]
     fn test_breakeven_config_from_env() {
         setup_test_env();
-        env::set_var("BREAKEVEN_MC_THRESHOLD_USD", "16000.0");
+        env::set_var("BREAKEVEN_MC_THRESHOLD_SOL", "120.0");
         
         let config = Config::from_env();
         assert!(config.is_ok());
         let config = config.unwrap();
-        assert_eq!(config.breakeven_mc_threshold_usd, 16000.0);
+        assert_eq!(config.breakeven_mc_threshold_sol, 120.0);
         
-        env::remove_var("BREAKEVEN_MC_THRESHOLD_USD");
+        env::remove_var("BREAKEVEN_MC_THRESHOLD_SOL");
         cleanup_test_env();
     }
 
@@ -731,13 +709,13 @@ mod tests {
         config.buy_amount_sol = 0.015;
         
         // Invalid: min >= max
-        config.min_dev_buy_usd = 1200.0;
-        config.max_dev_buy_usd = 500.0;
+        config.min_dev_buy_sol = 12.0;
+        config.max_dev_buy_sol = 5.0;
         assert!(config.validate().is_err());
         
         // Reset
-        config.min_dev_buy_usd = 500.0;
-        config.max_dev_buy_usd = 1200.0;
+        config.min_dev_buy_sol = 5.0;
+        config.max_dev_buy_sol = 12.0;
         
         // Invalid: compute_units == 0
         config.compute_units = 0;
@@ -748,14 +726,13 @@ mod tests {
     fn test_config_defaults() {
         let config = Config::default();
         
-        assert_eq!(config.sol_price_usd, 137.0); // Updated default
         assert_eq!(config.buy_amount_sol, 0.015);
         assert_eq!(config.priority_fee, 11_000_000);
         assert_eq!(config.compute_units, 200_000);
         assert_eq!(config.submission_mode, SubmissionMode::Helius);
         assert!(!config.require_socials);
         assert!(!config.require_twitter);
-        assert_eq!(config.breakeven_mc_threshold_usd, 14_000.0); // New field
+        assert_eq!(config.breakeven_mc_threshold_sol, 102.0);
     }
 
     #[test]
@@ -814,10 +791,8 @@ mod tests {
         assert_eq!(config.buy_amount_lamports(), 15_000_000); // 0.015 SOL
         
         // Test min/max dev buy in SOL
-        let min_sol = config.min_dev_buy_sol();
-        let max_sol = config.max_dev_buy_sol();
-        assert!(min_sol > 0.0);
-        assert!(max_sol > min_sol);
+        assert!(config.min_dev_buy_sol > 0.0);
+        assert!(config.max_dev_buy_sol > config.min_dev_buy_sol);
         
         // Test RPC client creation
         let rpc = config.create_rpc_client();
@@ -841,20 +816,11 @@ mod tests {
     #[test]
     fn test_config_invalid_numbers() {
         // Save original values
-        let orig_sol_price = env::var("SOL_PRICE_USD").ok();
         let orig_buy_amount = env::var("BUY_AMOUNT_SOL").ok();
         let orig_api_key = env::var("HELIUS_API_KEY").ok();
         
         // Ensure we have API key for other validations to pass
         env::set_var("HELIUS_API_KEY", "test-key");
-        
-        // Invalid SOL_PRICE_USD
-        env::set_var("SOL_PRICE_USD", "not-a-number");
-        let config = Config::from_env();
-        assert!(config.is_err(), "Expected error for invalid SOL_PRICE_USD");
-        
-        // Reset
-        env::set_var("SOL_PRICE_USD", "150.0");
         
         // Invalid BUY_AMOUNT_SOL
         env::set_var("BUY_AMOUNT_SOL", "invalid");
@@ -862,11 +828,6 @@ mod tests {
         assert!(config.is_err(), "Expected error for invalid BUY_AMOUNT_SOL, got: {:?}", config);
         
         // Restore original values
-        if let Some(val) = orig_sol_price {
-            env::set_var("SOL_PRICE_USD", val);
-        } else {
-            env::remove_var("SOL_PRICE_USD");
-        }
         if let Some(val) = orig_buy_amount {
             env::set_var("BUY_AMOUNT_SOL", val);
         } else {

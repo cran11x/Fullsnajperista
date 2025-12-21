@@ -191,8 +191,9 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                         egui::vec2(col_mc, row_height),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            let mc_str = if let Some(mc) = pos.mc_at_entry_usd {
-                                                format!("${:.0}", mc)
+                                            let mc_str = if let Some(mc_sol) = pos.mc_at_entry_sol {
+                                                use crate::utils::{format_mc_sol_with_usd};
+                                                format_mc_sol_with_usd(mc_sol)
                                             } else {
                                                 "-".to_string()
                                             };
@@ -447,8 +448,9 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                             egui::vec2(col_mc, row_height),
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
-                                                let mc_str = if let Some(mc) = pos.mc_at_entry_usd {
-                                                    format!("${:.0}", mc)
+                                                let mc_str = if let Some(mc_sol) = pos.mc_at_entry_sol {
+                                                    use crate::utils::format_mc_sol_with_usd;
+                                                    format_mc_sol_with_usd(mc_sol)
                                                 } else {
                                                     "-".to_string()
                                                 };

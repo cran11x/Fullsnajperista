@@ -376,7 +376,9 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                                         }
                                         if let Some(mc_val) = mc {
                                             ui.add_space(10.0);
-                                            ui.label(egui::RichText::new(format!("MC: ${:.0}", mc_val))
+                                            use crate::utils::format_mc_sol_with_usd;
+                                            // mc_val is in SOL (converted from USD in event)
+                                            ui.label(egui::RichText::new(format!("MC: {}", format_mc_sol_with_usd(*mc_val)))
                                                 .size(12.0)
                                                 .strong()
                                                 .color(egui::Color32::from_rgb(100, 255, 160)));

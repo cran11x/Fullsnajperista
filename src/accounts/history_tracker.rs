@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceSnapshot {
     pub timestamp: DateTime<Utc>,
-    pub mc_usd: f64,
+    pub mc_sol: f64,
     pub price_sol: f64,
     pub pnl_percent: Option<f64>,
     pub pnl_sol: Option<f64>,
@@ -35,19 +35,19 @@ pub struct PriceSnapshot {
 pub struct TokenHistory {
     pub mint: String,
     pub bonding_curve: String,
-    pub entry_mc_usd: f64,
+    pub entry_mc_sol: f64,
     pub entry_price_sol: f64,
     pub entry_timestamp: DateTime<Utc>,
     pub our_buy_sol: f64,
     pub token_amount: Option<u64>,
     /// All recorded snapshots (time-series data)
     pub snapshots: Vec<PriceSnapshot>,
-    /// Peak MC reached
-    pub peak_mc_usd: f64,
+    /// Peak MC reached (in SOL)
+    pub peak_mc_sol: f64,
     /// Peak PnL percentage reached
     pub peak_pnl_percent: f64,
-    /// Lowest MC reached (for drawdown analysis)
-    pub lowest_mc_usd: f64,
+    /// Lowest MC reached (for drawdown analysis, in SOL)
+    pub lowest_mc_sol: f64,
     /// Is position still active?
     pub is_active: bool,
     /// Sell timestamp if sold
@@ -116,7 +116,7 @@ impl HistoryTracker {
         &mut self,
         mint: &str,
         bonding_curve: &str,
-        entry_mc_usd: f64,
+        entry_mc_sol: f64,
         entry_price_sol: f64,
         our_buy_sol: f64,
         token_amount: Option<u64>,
@@ -130,15 +130,15 @@ impl HistoryTracker {
         let history = TokenHistory {
             mint: mint.to_string(),
             bonding_curve: bonding_curve.to_string(),
-            entry_mc_usd,
+            entry_mc_sol,
             entry_price_sol,
             entry_timestamp: now,
             our_buy_sol,
             token_amount,
             snapshots: Vec::new(),
-            peak_mc_usd: entry_mc_usd,
+            peak_mc_sol: entry_mc_sol,
             peak_pnl_percent: 0.0,
-            lowest_mc_usd: entry_mc_usd,
+            lowest_mc_sol: entry_mc_sol,
             is_active: true,
             sell_timestamp: None,
             final_pnl_percent: None,
@@ -149,7 +149,8 @@ impl HistoryTracker {
         self.dirty = true;
         
         let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
-        eprintln!("📊 HISTORY: Registered token {} for tracking (entry MC: ${:.0})", mint_short, entry_mc_usd);
+        use crate::utils::sol_to_usd;
+        eprintln!("📊 HISTORY: Registered token {} for tracking (entry MC: {:.2} SOL (${:.0}))", mint_short, entry_mc_sol, sol_to_usd(entry_mc_sol));
     }
     
     /// Record a price/MC snapshot for a token
@@ -157,7 +158,7 @@ impl HistoryTracker {
     pub fn record_snapshot(
         &mut self,
         mint: &str,
-        mc_usd: f64,
+        mc_sol: f64,
         price_sol: f64,
         pnl_percent: Option<f64>,
         pnl_sol: Option<f64>,
@@ -191,7 +192,7 @@ impl HistoryTracker {
         // Create snapshot
         let snapshot = PriceSnapshot {
             timestamp: Utc::now(),
-            mc_usd,
+            mc_sol,
             price_sol,
             pnl_percent,
             pnl_sol,
@@ -203,11 +204,11 @@ impl HistoryTracker {
         };
         
         // Update peaks and lows
-        if mc_usd > history.peak_mc_usd {
-            history.peak_mc_usd = mc_usd;
+        if mc_sol > history.peak_mc_sol {
+            history.peak_mc_sol = mc_sol;
         }
-        if mc_usd < history.lowest_mc_usd {
-            history.lowest_mc_usd = mc_usd;
+        if mc_sol < history.lowest_mc_sol {
+            history.lowest_mc_sol = mc_sol;
         }
         if let Some(pnl) = pnl_percent {
             if pnl > history.peak_pnl_percent {
@@ -237,17 +238,16 @@ impl HistoryTracker {
         &mut self,
         mint: &str,
         curve: &crate::accounts::BondingCurveAccount,
-        sol_price_usd: f64,
         pnl_percent: Option<f64>,
         pnl_sol: Option<f64>,
         current_value_sol: Option<f64>,
     ) -> bool {
-        let mc_usd = curve.calculate_mc_usd(sol_price_usd);
+        let mc_sol = curve.calculate_mc_sol();
         let price_sol = curve.get_token_price_sol();
         
         self.record_snapshot(
             mint,
-            mc_usd,
+            mc_sol,
             price_sol,
             pnl_percent,
             pnl_sol,
@@ -335,14 +335,14 @@ impl HistoryTracker {
                 "type": "token_header",
                 "mint": mint,
                 "bonding_curve": history.bonding_curve,
-                "entry_mc_usd": history.entry_mc_usd,
+                "entry_mc_sol": history.entry_mc_sol,
                 "entry_price_sol": history.entry_price_sol,
                 "entry_timestamp": history.entry_timestamp,
                 "our_buy_sol": history.our_buy_sol,
                 "token_amount": history.token_amount,
-                "peak_mc_usd": history.peak_mc_usd,
+                "peak_mc_sol": history.peak_mc_sol,
                 "peak_pnl_percent": history.peak_pnl_percent,
-                "lowest_mc_usd": history.lowest_mc_usd,
+                "lowest_mc_sol": history.lowest_mc_sol,
                 "is_active": history.is_active,
                 "sell_timestamp": history.sell_timestamp,
                 "final_pnl_percent": history.final_pnl_percent,
@@ -355,7 +355,7 @@ impl HistoryTracker {
                     "type": "snapshot",
                     "mint": mint,
                     "timestamp": snapshot.timestamp,
-                    "mc_usd": snapshot.mc_usd,
+                    "mc_sol": snapshot.mc_sol,
                     "price_sol": snapshot.price_sol,
                     "pnl_percent": snapshot.pnl_percent,
                     "pnl_sol": snapshot.pnl_sol,
@@ -432,7 +432,7 @@ mod tests {
         tracker.register_token(
             "test_mint_123456789",
             "test_bonding_curve",
-            5000.0,
+            36.5, // ~5000 USD at 137 SOL/USD
             0.00005,
             0.1,
             Some(2000000),
@@ -441,7 +441,7 @@ mod tests {
         // First snapshot should be recorded
         let recorded = tracker.record_snapshot(
             "test_mint_123456789",
-            5100.0,
+            37.2, // ~5100 USD
             0.000051,
             Some(2.0),
             Some(0.002),
@@ -453,7 +453,7 @@ mod tests {
         // Second immediate snapshot should be skipped (rate limited)
         let recorded2 = tracker.record_snapshot(
             "test_mint_123456789",
-            5200.0,
+            38.0, // ~5200 USD
             0.000052,
             Some(4.0),
             None, None, None, None, None, None,
@@ -465,7 +465,7 @@ mod tests {
         assert!(history.is_some());
         let h = history.unwrap();
         assert_eq!(h.snapshots.len(), 1);
-        assert_eq!(h.peak_mc_usd, 5100.0);
+        assert_eq!(h.peak_mc_sol, 37.2);
     }
     
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         tracker.register_token(
             "test_mint_sold",
             "test_bc",
-            5000.0,
+            36.5, // ~5000 USD at 137 SOL/USD
             0.00005,
             0.1,
             None,
@@ -492,8 +492,8 @@ mod tests {
     fn test_stats() {
         let mut tracker = HistoryTracker::new().unwrap();
         
-        tracker.register_token("mint1", "bc1", 5000.0, 0.00005, 0.1, None);
-        tracker.register_token("mint2", "bc2", 6000.0, 0.00006, 0.1, None);
+        tracker.register_token("mint1", "bc1", 36.5, 0.00005, 0.1, None);
+        tracker.register_token("mint2", "bc2", 43.8, 0.00006, 0.1, None);
         tracker.mark_sold("mint1", Some(10.0));
         
         let stats = tracker.get_stats();

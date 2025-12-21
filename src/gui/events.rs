@@ -57,7 +57,8 @@ impl TokenEvent {
                 format!("⏭️  Filtered: {} - {}", format_address(&mint), reason)
             }
             TokenEvent::Bought { mint, signature, mc, .. } => {
-                let mc_str = mc.map(|m| format!(" (MC: ${:.0})", m)).unwrap_or_default();
+                use crate::utils::format_mc_sol_with_usd;
+                let mc_str = mc.map(|m| format!(" (MC: {})", format_mc_sol_with_usd(m))).unwrap_or_default();
                 format!("✅ Bought: {} {} - {}", format_address(&mint), mc_str, format_address(&signature))
             }
             TokenEvent::Sold { mint, signature, reason, pnl, .. } => {

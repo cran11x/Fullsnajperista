@@ -186,12 +186,13 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                     
                                     // MC
                                     ui.allocate_ui_with_layout(egui::vec2(mc_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        if let Some(mc) = buy.mc_at_entry_usd {
-                                            if mc.is_finite() && mc >= 0.0 {
-                                                let mc_color = if mc > 10000.0 { egui::Color32::from_rgb(100, 255, 160) }
-                                                              else if mc > 1000.0 { egui::Color32::from_rgb(255, 230, 110) }
+                                        if let Some(mc_sol) = buy.mc_at_entry_sol {
+                                            if mc_sol.is_finite() && mc_sol >= 0.0 {
+                                                use crate::utils::format_mc_sol_with_usd;
+                                                let mc_color = if mc_sol > 73.0 { egui::Color32::from_rgb(100, 255, 160) } // ~10000 USD
+                                                              else if mc_sol > 7.3 { egui::Color32::from_rgb(255, 230, 110) } // ~1000 USD
                                                               else { egui::Color32::from_rgb(255, 190, 190) };
-                                                ui.label(egui::RichText::new(format!("${:.0}", mc)).size(font_size).strong().color(mc_color));
+                                                ui.label(egui::RichText::new(format_mc_sol_with_usd(mc_sol)).size(font_size).strong().color(mc_color));
                                             } else {
                                                 ui.label(egui::RichText::new("-").size(font_size).color(egui::Color32::GRAY));
                                             }
