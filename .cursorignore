@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+**/target/
+**/Cargo.lock
+
+# PowerShell scripts - prevent Cursor from parsing these
+*.ps1
+
+# Large data files
+*.csv
+*.json
+!Cargo.toml
+!package.json
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+

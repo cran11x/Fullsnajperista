@@ -696,58 +696,57 @@ impl TokenTracker {
                 let pnl = current_value_net - cost_basis;
                 buy.pnl_sol = Some(pnl);
                 
-                // ✅ FIX: Calculate PnL percentage based on GROSS value change (before fees)
-                // This shows the actual price appreciation, not the net profit after fees
-                // Formula: PnL% = ((current_value_gross - cost_basis) / cost_basis) * 100
-                // This matches how traders typically think about returns (gross appreciation)
-                let pnl_gross = current_value_gross - cost_basis;
-                let pnl_percent_gross = if cost_basis > 0.0 {
-                    (pnl_gross / cost_basis) * 100.0
+                // ✅ FIX: Calculate PnL percentage based on NET value (after all fees)
+                // This shows the actual return including all fees, matching Axiom's calculation
+                // Formula: PnL% = (pnl / cost_basis) * 100
+                // where pnl = current_value_net - cost_basis (already calculated above)
+                // This includes: 1% pump.fun buy fee, 1% pump.fun sell fee, and all network fees
+                let pnl_percent = if cost_basis > 0.0 {
+                    (pnl / cost_basis) * 100.0
                 } else {
                     0.0
                 };
                 
                 
-                // Calculate PnL percentage - use GROSS for percentage (shows price appreciation)
-                // Net PnL (after fees) is stored in pnl_sol for actual profit/loss
+                // Calculate PnL percentage - use NET for percentage (shows actual return after all fees)
                 if cost_basis > 0.0 {
                     // ✅ FIX: Cap PnL% to reasonable range to prevent display of unrealistic values
                     // If entry_price is too small (near 0), PnL% can be astronomical
                     // Cap at ±10000% (100x) to prevent UI showing millions of percent
-                    let capped_pnl_percent = if pnl_percent_gross > 10000.0 {
+                    let capped_pnl_percent = if pnl_percent > 10000.0 {
                         // ✅ FIX: Rate limit warning messages - only show once every 5 minutes to reduce spam
                         static LAST_CAP_WARNING: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
                         static WARNING_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                         
                         let mut last_warning = LAST_CAP_WARNING.lock().unwrap_or_else(|e| e.into_inner());
                         let now = std::time::Instant::now();
-                        let should_log = last_warning
+                        let _should_log = last_warning
                             .map(|last_time| now.duration_since(last_time).as_secs() >= 300) // 5 minutes
                             .unwrap_or(true);
                         
                         *last_warning = Some(now);
                         10000.0
-                    } else if pnl_percent_gross < -10000.0 {
+                    } else if pnl_percent < -10000.0 {
                         // ✅ FIX: Rate limit warning messages for negative capping too
                         static LAST_CAP_WARNING_NEG: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
                         static WARNING_COUNT_NEG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                         
                         let mut last_warning = LAST_CAP_WARNING_NEG.lock().unwrap_or_else(|e| e.into_inner());
                         let now = std::time::Instant::now();
-                        let should_log = last_warning
+                        let _should_log = last_warning
                             .map(|last_time| now.duration_since(last_time).as_secs() >= 300) // 5 minutes
                             .unwrap_or(true);
                         
                         *last_warning = Some(now);
                         -10000.0
                     } else {
-                        pnl_percent_gross
+                        pnl_percent
                     };
                     
                     buy.pnl_percent = Some(capped_pnl_percent);
                     
                     // Update peak PnL if current is better (also capped)
-                    let capped_peak = if pnl_percent_gross > 10000.0 { 10000.0 } else { pnl_percent_gross };
+                    let capped_peak = if pnl_percent > 10000.0 { 10000.0 } else { pnl_percent };
                     if capped_peak > buy.peak_pnl_percent.unwrap_or(f64::MIN) {
                         buy.peak_pnl_percent = Some(capped_peak);
                     }

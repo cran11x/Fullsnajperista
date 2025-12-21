@@ -302,7 +302,7 @@ mod tests {
             virtual_sol_reserves: 30_000_000_000,      // 30 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
-            token_total_supply: 1_000_000_000_000_000, // 1M tokens (6 decimals)
+            token_total_supply: 1_000_000_000_000, // 1M tokens (6 decimals) = 1M * 1e6
             complete: false,
         };
 
@@ -422,7 +422,7 @@ mod tests {
             virtual_sol_reserves: 30_000_000_000, // 30 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
-            token_total_supply: 1_000_000_000_000_000, // 1M tokens
+            token_total_supply: 1_000_000_000_000, // 1M tokens (6 decimals) = 1M * 1e6
             complete: false,
         };
 

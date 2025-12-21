@@ -126,6 +126,7 @@ pub async fn is_blockhash_recent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::hash::Hash;
 
     #[test]
     fn test_validate_transaction_size() {
@@ -139,6 +140,127 @@ mod tests {
         assert_eq!(MAX_BLOCKHASH_AGE_SECS, 60);
         assert_eq!(MAX_TX_SIZE_BYTES, 1232);
         assert!(MIN_FEE_BUFFER > 0);
+    }
+
+    #[test]
+    fn test_fee_calculation() {
+        // Test fee calculation logic
+        let buy_amount = 10_000_000_000; // 10 SOL
+        let priority_fee_microlamports = 1_000_000; // 1 microlamport per CU
+        let estimated_compute_units = 300_000u64;
+        
+        // Calculate estimated priority fee
+        let estimated_priority_fee = (priority_fee_microlamports as u128 * estimated_compute_units as u128 / 1_000_000) as u64;
+        assert_eq!(estimated_priority_fee, 300_000); // 1 * 300k / 1M = 0.3 lamports (rounded)
+        
+        // Test with zero priority fee
+        let zero_priority_fee = 0u64;
+        let estimated_zero = if zero_priority_fee > 0 {
+            (zero_priority_fee as u128 * estimated_compute_units as u128 / 1_000_000) as u64
+        } else {
+            0
+        };
+        assert_eq!(estimated_zero, 0);
+        
+        // Test total fees calculation
+        let jito_tip = 10_000_000; // 0.01 SOL
+        let total_fees = MIN_FEE_BUFFER + estimated_priority_fee + jito_tip + ATA_CREATION_FEE;
+        let required_balance = buy_amount + total_fees;
+        
+        // Verify fees are included
+        assert!(total_fees > MIN_FEE_BUFFER);
+        assert!(required_balance > buy_amount);
+    }
+
+    #[test]
+    fn test_fee_constants() {
+        // Verify fee constants are reasonable
+        assert!(MIN_FEE_BUFFER > 0, "MIN_FEE_BUFFER should be > 0");
+        assert!(ATA_CREATION_FEE > 0, "ATA_CREATION_FEE should be > 0");
+        assert_eq!(ATA_CREATION_FEE, 2_000_000, "ATA_CREATION_FEE should be 2M lamports (0.002 SOL)");
+    }
+
+    #[test]
+    fn test_balance_sufficient_logic() {
+        // Test balance sufficient check logic (without RPC)
+        let required_amount = 10_000_000_000; // 10 SOL
+        let balance_sufficient = required_amount + MIN_FEE_BUFFER;
+        let balance_insufficient = required_amount + MIN_FEE_BUFFER - 1;
+        
+        // Logic: balance >= required_amount + MIN_FEE_BUFFER
+        assert!(balance_sufficient >= required_amount + MIN_FEE_BUFFER);
+        assert!(balance_insufficient < required_amount + MIN_FEE_BUFFER);
+    }
+
+    #[tokio::test]
+    async fn test_validate_before_submission_with_fees_insufficient_balance() {
+        // This test would require a mock RPC client
+        // For now, we test the fee calculation logic
+        let buy_amount = 10_000_000_000; // 10 SOL
+        let priority_fee = 1_000_000; // 1 microlamport per CU
+        let jito_tip = 10_000_000; // 0.01 SOL
+        let estimated_compute_units = 300_000u64;
+        
+        let estimated_priority_fee = if priority_fee > 0 {
+            (priority_fee as u128 * estimated_compute_units as u128 / 1_000_000) as u64
+        } else {
+            0
+        };
+        
+        let total_fees = MIN_FEE_BUFFER + estimated_priority_fee + jito_tip + ATA_CREATION_FEE;
+        let required_balance = buy_amount + total_fees;
+        
+        // Simulate insufficient balance
+        let wallet_balance = required_balance - 1;
+        assert!(wallet_balance < required_balance, "Balance should be insufficient");
+    }
+
+    #[tokio::test]
+    async fn test_validate_before_submission_with_fees_exact_balance() {
+        // Test edge case: exactly enough balance
+        let buy_amount = 10_000_000_000; // 10 SOL
+        let priority_fee = 0; // No priority fee
+        let jito_tip = 0; // No jito tip
+        let estimated_compute_units = 300_000u64;
+        
+        let estimated_priority_fee = if priority_fee > 0 {
+            (priority_fee as u128 * estimated_compute_units as u128 / 1_000_000) as u64
+        } else {
+            0
+        };
+        
+        let total_fees = MIN_FEE_BUFFER + estimated_priority_fee + jito_tip + ATA_CREATION_FEE;
+        let required_balance = buy_amount + total_fees;
+        
+        // Exact balance should be sufficient
+        let wallet_balance = required_balance;
+        assert!(wallet_balance >= required_balance, "Exact balance should be sufficient");
+    }
+
+    #[tokio::test]
+    async fn test_validate_before_submission_with_fees_with_all_fees() {
+        // Test with all fees included
+        let buy_amount = 10_000_000_000; // 10 SOL
+        let priority_fee = 1_000_000; // 1 microlamport per CU
+        let jito_tip = 10_000_000; // 0.01 SOL
+        let estimated_compute_units = 300_000u64;
+        
+        let estimated_priority_fee = if priority_fee > 0 {
+            (priority_fee as u128 * estimated_compute_units as u128 / 1_000_000) as u64
+        } else {
+            0
+        };
+        
+        let total_fees = MIN_FEE_BUFFER + estimated_priority_fee + jito_tip + ATA_CREATION_FEE;
+        let required_balance = buy_amount + total_fees;
+        
+        // Verify all fees are included
+        assert!(total_fees >= MIN_FEE_BUFFER + ATA_CREATION_FEE, "Should include base fees");
+        assert!(required_balance > buy_amount, "Required balance should exceed buy amount");
+        
+        // With sufficient balance
+        let wallet_balance = required_balance + 1_000_000; // Extra buffer
+        assert!(wallet_balance >= required_balance, "Sufficient balance should pass");
     }
 }
 

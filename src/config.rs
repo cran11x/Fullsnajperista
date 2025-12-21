@@ -644,6 +644,7 @@ mod tests {
     use std::env;
 
     fn setup_test_env() {
+        // Set valid test values (override any existing values)
         env::set_var("HELIUS_API_KEY", "test-api-key-123");
         env::set_var("SOL_PRICE_USD", "150.0");
         env::set_var("BUY_AMOUNT_SOL", "0.02");
@@ -842,6 +843,7 @@ mod tests {
         // Save original values
         let orig_sol_price = env::var("SOL_PRICE_USD").ok();
         let orig_buy_amount = env::var("BUY_AMOUNT_SOL").ok();
+        let orig_api_key = env::var("HELIUS_API_KEY").ok();
         
         // Ensure we have API key for other validations to pass
         env::set_var("HELIUS_API_KEY", "test-key");
@@ -857,7 +859,7 @@ mod tests {
         // Invalid BUY_AMOUNT_SOL
         env::set_var("BUY_AMOUNT_SOL", "invalid");
         let config = Config::from_env();
-        assert!(config.is_err(), "Expected error for invalid BUY_AMOUNT_SOL");
+        assert!(config.is_err(), "Expected error for invalid BUY_AMOUNT_SOL, got: {:?}", config);
         
         // Restore original values
         if let Some(val) = orig_sol_price {
@@ -870,7 +872,11 @@ mod tests {
         } else {
             env::remove_var("BUY_AMOUNT_SOL");
         }
-        env::remove_var("HELIUS_API_KEY");
+        if let Some(val) = orig_api_key {
+            env::set_var("HELIUS_API_KEY", val);
+        } else {
+            env::remove_var("HELIUS_API_KEY");
+        }
     }
 
     #[test]

@@ -9,8 +9,22 @@ param(
 )
 
 # Ensure we're in the script's directory (project root)
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Push-Location $scriptDir
+# Handles paths with spaces correctly and prevents Cursor crashes
+$scriptDir = if ($PSScriptRoot) {
+    $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    # Fallback: use current directory if script path is not available
+    (Get-Location).Path
+}
+
+# Use -LiteralPath to handle paths with spaces correctly
+if ($scriptDir) {
+    Push-Location -LiteralPath $scriptDir
+} else {
+    Write-Host "⚠️  Warning: Could not determine script directory, using current location" -ForegroundColor Yellow
+}
 
 Write-Host "🔍 Tražim Cargo..." -ForegroundColor Cyan
 
