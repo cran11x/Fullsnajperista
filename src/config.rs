@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::collections::HashSet;
 
 use crate::constants::PUMP_PROGRAM_ID;
+use crate::sell_strategy::SellStrategyConfig;
 
 /// Bot configuration loaded from environment variables
 #[derive(Debug, Clone)]
@@ -57,6 +58,7 @@ pub struct Config {
     pub max_name_length: usize,
     pub min_ticker_length: usize,
     pub max_ticker_length: usize,
+    pub sell_strategy_config: Option<SellStrategyConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +295,37 @@ impl Config {
             .parse::<u64>()
             .map_err(|_| anyhow!("Invalid DEAD_COIN_TIMEOUT_SEC"))?;
 
+        // Load sell strategy from JSON or use default
+        let sell_strategy_config = if let Ok(json_str) = std::env::var("SELL_STRATEGY_JSON") {
+            match SellStrategyConfig::from_json(&json_str) {
+                Ok(config) => {
+                    eprintln!("✅ Loaded sell strategy from SELL_STRATEGY_JSON");
+                    Some(config)
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Failed to parse SELL_STRATEGY_JSON: {}, using default", e);
+                    Some(SellStrategyConfig::default())
+                }
+            }
+        } else {
+            // Try loading from file
+            if let Ok(json_str) = std::fs::read_to_string("sell_strategy.json") {
+                match SellStrategyConfig::from_json(&json_str) {
+                    Ok(config) => {
+                        eprintln!("✅ Loaded sell strategy from sell_strategy.json");
+                        Some(config)
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Failed to parse sell_strategy.json: {}, using default", e);
+                        Some(SellStrategyConfig::default())
+                    }
+                }
+            } else {
+                // Use default strategy
+                Some(SellStrategyConfig::default())
+            }
+        };
+
         let enable_dynamic_priority_fee = std::env::var("ENABLE_DYNAMIC_PRIORITY_FEE")
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
@@ -446,6 +479,7 @@ impl Config {
             max_name_length,
             min_ticker_length,
             max_ticker_length,
+            sell_strategy_config,
         };
 
         config.validate()?;
@@ -614,6 +648,7 @@ impl Default for Config {
             max_name_length: 20,
             min_ticker_length: 3,
             max_ticker_length: 7,
+            sell_strategy_config: Some(SellStrategyConfig::default()),
         }
     }
 }

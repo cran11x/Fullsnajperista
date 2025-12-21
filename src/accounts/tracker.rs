@@ -53,6 +53,14 @@ pub struct TokenBuy {
     pub peak_pnl_percent: Option<f64>,       // Best PnL percentage reached
     #[serde(default)]
     pub breakeven_mode_active: bool,         // Whether breakeven mode is active
+    
+    // 🆕 NEW: Partial sell tracking for dynamic sell strategy
+    #[serde(default)]
+    pub executed_sell_rules: Vec<String>,    // IDs of executed sell rules
+    #[serde(default)]
+    pub partial_sell_count: u32,             // Number of partial sells executed
+    #[serde(default)]
+    pub total_sold_percent: f64,             // Cumulative sold percentage (0-100)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -509,6 +517,67 @@ impl TokenTracker {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Mark that a sell rule has been executed (for partial sells)
+    pub fn mark_rule_executed(&mut self, mint: &str, rule_id: &str) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            if !buy.executed_sell_rules.contains(&rule_id.to_string()) {
+                buy.executed_sell_rules.push(rule_id.to_string());
+                self.save_json()?;
+            }
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Check if a rule has been executed for a position
+    pub fn is_rule_executed(&self, mint: &str, rule_id: &str) -> bool {
+        if let Some(buy) = self.stats.buys.iter().find(|b| b.mint == mint && !b.sold) {
+            buy.executed_sell_rules.contains(&rule_id.to_string())
+        } else {
+            false
+        }
+    }
+
+    /// Get executed rules for a position
+    pub fn get_executed_rules(&self, mint: &str) -> Vec<String> {
+        if let Some(buy) = self.stats.buys.iter().find(|b| b.mint == mint && !b.sold) {
+            buy.executed_sell_rules.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Record a partial sell
+    pub fn mark_partial_sell(&mut self, mint: &str, rule_id: &str, sell_percent: f64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            if !buy.executed_sell_rules.contains(&rule_id.to_string()) {
+                buy.executed_sell_rules.push(rule_id.to_string());
+            }
+            buy.partial_sell_count += 1;
+            buy.total_sold_percent = (buy.total_sold_percent + sell_percent).min(100.0);
+            
+            // If we've sold 100%, mark as fully sold
+            if buy.total_sold_percent >= 100.0 {
+                buy.sold = true;
+            }
+            
+            self.save_json()?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Get remaining position percentage
+    pub fn get_remaining_percent(&self, mint: &str) -> f64 {
+        if let Some(buy) = self.stats.buys.iter().find(|b| b.mint == mint && !b.sold) {
+            (100.0 - buy.total_sold_percent).max(0.0)
+        } else {
+            0.0
         }
     }
 

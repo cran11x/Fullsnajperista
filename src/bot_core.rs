@@ -2057,6 +2057,9 @@ async fn process_and_buy(
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
                         
                         let _ = tracker.record_buy(buy.clone());
@@ -2546,6 +2549,9 @@ async fn process_and_buy(
                         peak_mc_sol: None,
                         peak_pnl_percent: None,
                         breakeven_mode_active: false,
+                        executed_sell_rules: Vec::new(),
+                        partial_sell_count: 0,
+                        total_sold_percent: 0.0,
                     };
                     
                     if let Err(e) = tracker.record_buy(buy.clone()) {
@@ -3503,11 +3509,85 @@ async fn monitor_positions(
                         }
                     };
                     
+                    // 🎯 DYNAMIC SELL STRATEGY: Use strategy-based evaluation
+                    // Check if we have a sell strategy config
+                    let sell_strategy = config_clone.sell_strategy_config.as_ref();
+                    
+                    // Calculate time since buy
+                    let time_since_buy = {
+                        let now = Utc::now();
+                        let buy_time = position_clone.timestamp;
+                        now.signed_duration_since(buy_time).num_seconds() as u64
+                    };
+                    
+                    // Get executed rules for this position
+                    let executed_rule_ids = if let Ok(tracker_guard) = tracker_clone.read() {
+                        if let Some(tracker_ref) = tracker_guard.as_ref() {
+                            tracker_ref.get_executed_rules(&position_clone.mint)
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    // Calculate current PnL
+                    let entry_price = position_clone.token_price_sol.unwrap_or(0.0);
+                    let current_pnl_percent = if entry_price > 0.0 {
+                        Some(((current_price - entry_price) / entry_price) * 100.0)
+                    } else {
+                        position_clone.pnl_percent
+                    };
+                    
+                    // Check strategy rules if available
+                    if let Some(strategy) = sell_strategy {
+                        if let Some(rule) = strategy.check_rules(
+                            &position_clone,
+                            current_pnl_percent,
+                            Some(current_mc_sol),
+                            position_clone.peak_pnl_percent,
+                            time_since_buy,
+                            &executed_rule_ids,
+                        ) {
+                            eprintln!("🎯 SELL STRATEGY RULE TRIGGERED: '{}' - Selling {:.0}% of position", rule.id, rule.sell_percent);
+                            
+                            // Execute sell with rule's sell_percent
+                            let _ = execute_sell_with_percent(
+                                &config_clone,
+                                &wallet_clone,
+                                rpc_task.as_ref(),
+                                &tracker_clone,
+                                &position_clone,
+                                &format!("strategy_{}", rule.id),
+                                rule.sell_percent,
+                                &event_tx_clone,
+                            ).await;
+                            
+                            // Mark rule as executed in tracker
+                            if let Ok(mut tracker_guard) = tracker_clone.write() {
+                                if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                    if rule.sell_percent >= 100.0 {
+                                        // Full sell
+                                        let _ = tracker_ref.mark_as_sold(&position_clone.mint, "strategy_sell".to_string());
+                                    } else {
+                                        // Partial sell
+                                        let _ = tracker_ref.mark_partial_sell(&position_clone.mint, &rule.id, rule.sell_percent);
+                                    }
+                                }
+                            }
+                            
+                            // Mark rule as executed in strategy config (update in next cycle)
+                            // Note: We track in tracker, strategy config will be updated on next read
+                            
+                            return Some((format!("strategy_{}", rule.id), position_mint));
+                        }
+                    }
+                    
+                    // Fallback to old logic if no strategy config or no rule matched
                     // 🚀 PRIORITY: Check stop loss using PnL PERCENTAGE (not MC) - FIXED!
                     // Calculate PnL based on token price change
                     // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
                     // This prevents incorrect PnL calculation when entry price is not yet available
-                    let entry_price = position_clone.token_price_sol.unwrap_or(0.0);
                     let should_sell_stop_loss = if entry_price > 0.0 {
                         // Check if breakeven mode is active - if so, skip normal stop loss check
                         // (breakeven check is done later with MC data)
@@ -3545,7 +3625,7 @@ async fn monitor_positions(
                                 if current_mc_sol < entry_mc_val {
                                     eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped to {:.2} SOL (entry: {:.2} SOL)", 
                                              current_mc_sol, entry_mc_val);
-                                    return Some(("breakeven_stop_loss", position_mint.clone()));
+                                    return Some(("breakeven_stop_loss".to_string(), position_mint.clone()));
                                 }
                                 false // In breakeven mode, only sell if below entry
                             } else {
@@ -3578,7 +3658,7 @@ async fn monitor_positions(
                             &event_tx_clone,
                         ).await;
                         
-                        return Some(("stop_loss", position_mint));
+                        return Some(("stop_loss".to_string(), position_mint));
                     }
                     
                     // 🎯 BREAKEVEN STOP LOSS: If breakeven mode is active, use entry MC as stop loss
@@ -3631,7 +3711,7 @@ async fn monitor_positions(
                                         &event_tx_clone,
                                     ).await;
                                     
-                                    return Some(("breakeven_stop_loss", position_mint));
+                                    return Some(("breakeven_stop_loss".to_string(), position_mint));
                                 }
                                 // Continue to take profit check (in breakeven mode, skip normal stop loss)
                             }
@@ -3668,7 +3748,7 @@ async fn monitor_positions(
                             &event_tx_clone,
                         ).await;
                         
-                        return Some((reason, position_mint));
+                        return Some((reason.to_string(), position_mint));
                     }
                     
                     None
@@ -4064,6 +4144,9 @@ pub async fn execute_manual_buy(
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
         
         // Try to record buy (non-blocking)
@@ -4530,6 +4613,226 @@ async fn execute_sell(
     });
     
     eprintln!("[SELL] {} - TX: {}", format_addr(&position.mint), format_addr(&signature));
+    Ok(signature)
+}
+
+/// Execute sell with custom sell percent (for partial sells)
+async fn execute_sell_with_percent(
+    config: &Config,
+    wallet: &Keypair,
+    rpc: &RpcClient,
+    tracker: &Arc<std::sync::RwLock<Option<TokenTracker>>>,
+    position: &TokenBuy,
+    reason: &str,
+    sell_percent: f64,  // Custom sell percent (0-100)
+    event_tx: &mpsc::UnboundedSender<TokenEvent>,
+) -> Result<String> {
+    // Same as execute_sell, but use custom sell_percent
+    eprintln!("🎯 PARTIAL SELL EXECUTION: {} - Selling {:.0}% of position", position.mint, sell_percent);
+    let mint = Pubkey::from_str(&position.mint)?;
+    
+    let bonding_curve_str = position.bonding_curve.as_ref()
+        .ok_or_else(|| anyhow!("Bonding curve not found in position"))?;
+    let bonding_curve = Pubkey::from_str(bonding_curve_str)?;
+    
+    let user_wallet = wallet.pubkey();
+    let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+    let user_token_account_from_tracker = position.user_token_account.as_ref()
+        .and_then(|s| Pubkey::from_str(s).ok());
+    let user_token_account_2022 = get_associated_token_address_with_program_id(
+        &user_wallet, &mint, &token_program_2022
+    );
+    
+    // Get balance
+    let mut token_balance = 0u64;
+    let mut user_token_account = user_token_account_2022;
+    let mut token_program_used = token_program_2022;
+    
+    if let Some(tracker_ata) = user_token_account_from_tracker {
+        if let Ok(balance) = rpc.get_token_account_balance(&tracker_ata).await {
+            token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+            if token_balance > 0 {
+                user_token_account = tracker_ata;
+            }
+        }
+    }
+    
+    if token_balance == 0 {
+        if let Ok(balance) = rpc.get_token_account_balance(&user_token_account_2022).await {
+            token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+        }
+    }
+    
+    if token_balance == 0 {
+        let token_program_standard = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+        let user_token_account_standard = get_associated_token_address_with_program_id(
+            &user_wallet, &mint, &token_program_standard
+        );
+        if let Ok(balance) = rpc.get_token_account_balance(&user_token_account_standard).await {
+            token_balance = balance.amount.parse::<u64>().unwrap_or(0);
+            if token_balance > 0 {
+                user_token_account = user_token_account_standard;
+                token_program_used = token_program_standard;
+            }
+        }
+    }
+    
+    if token_balance == 0 {
+        return Err(anyhow!("Token balance is 0"));
+    }
+
+    // Calculate sell amount using custom sell_percent
+    let sell_amount = (token_balance as f64 * (sell_percent / 100.0)) as u64;
+    if sell_amount == 0 {
+        return Err(anyhow!("Sell amount is 0"));
+    }
+
+    let creator = Pubkey::from_str(&position.creator)?;
+    let associated_bonding_curve = get_associated_token_address_with_program_id(
+        &bonding_curve, &mint, &token_program_used
+    );
+    
+    let creator_vault_fut = Box::pin(async move {
+        if position.signature.starts_with("MOCK_") {
+            let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+            Ok::<Pubkey, anyhow::Error>(vault)
+        } else {
+            extract_creator_vault_from_buy_tx(rpc, &position.signature).await
+                .or_else(|_| {
+                    let (vault, _) = crate::pda_derivation::derive_creator_vault_pda(&creator);
+                    Ok::<Pubkey, anyhow::Error>(vault)
+                })
+        }
+    });
+    
+    let (recent_blockhash, creator_vault) = tokio::join!(
+        rpc.get_latest_blockhash(),
+        creator_vault_fut
+    );
+    let recent_blockhash = recent_blockhash?;
+    let creator_vault = creator_vault?;
+    
+    let accounts = PumpBuyAccounts {
+        mint, bonding_curve, associated_bonding_curve, creator_vault,
+        event_authority: config.event_authority, global_volume: config.global_volume,
+        global: config.global_account, fee_recipient: config.fee_recipient,
+        fee_config: config.fee_config, fee_program: config.fee_program,
+        dev_buy_sol: 0, creator, associated_bonding_curve_instruction: None,
+    };
+
+    let (sell_ix, priority_fee) = tokio::join!(
+        build_sell_instruction(&accounts, &user_wallet, &user_token_account, sell_amount),
+        async {
+            if reason.contains("stop_loss") {
+                config.priority_fee
+            } else if config.enable_dynamic_priority_fee {
+                config.calculate_dynamic_priority_fee(rpc).await.unwrap_or(config.priority_fee)
+            } else {
+                config.priority_fee
+            }
+        }
+    );
+    let sell_ix = sell_ix?;
+    
+    let helius_tip_amount = 200_000u64;
+    let helius_tip_account = crate::constants::random_helius_tip_account();
+    let instructions = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(config.compute_units),
+        ComputeBudgetInstruction::set_compute_unit_price(priority_fee),
+        sell_ix,
+        system_instruction::transfer(&user_wallet, &helius_tip_account, helius_tip_amount),
+    ];
+    
+    let msg = v0::Message::try_compile(&user_wallet, &instructions, &[], recent_blockhash)?;
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
+
+    if config.mock_sell {
+        use solana_sdk::signature::Signature;
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut mock_sig_bytes = [0u8; 64];
+        rng.fill(&mut mock_sig_bytes);
+        let mock_signature = format!("MOCK_PARTIAL_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        
+        // Update tracker for partial sell
+        if let Ok(mut tracker_opt) = tracker.write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                if sell_percent >= 100.0 {
+                    let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone());
+                } else {
+                    // Partial sell - update balance
+                    let new_balance = token_balance - sell_amount;
+                    let _ = tracker.update_token_amount(&position.mint, new_balance);
+                }
+            }
+        }
+        
+        let _ = event_tx.send(TokenEvent::Sold {
+            mint: position.mint.clone(),
+            signature: mock_signature.clone(),
+            reason: format!("{} (MOCK, {:.0}%)", reason, sell_percent),
+            pnl: None,
+            timestamp: Utc::now(),
+        });
+        return Ok(mock_signature);
+    }
+
+    let tx_sig = match config.submission_mode {
+        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await?,
+        crate::config::SubmissionMode::Jito => {
+            return Ok(format!("Jito: {}", send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?));
+        }
+        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await?.to_string(),
+        crate::config::SubmissionMode::All => {
+            let tx_helius = tx.clone();
+            let tx_jito = tx.clone();
+            let tx_rpc = tx.clone();
+            let wallet_bytes = wallet.to_bytes();
+            let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
+            let jito_tip = config.jito_tip;
+            let rpc_url = config.rpc_url.clone();
+            
+            tokio::select! {
+                res = tokio::spawn(async move { send_helius_transaction(tx_helius).await }) => {
+                    res??.to_string()
+                }
+                res = tokio::spawn(async move { send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await }) => {
+                    return Ok(format!("Jito: {}", res??));
+                }
+                res = tokio::spawn(async move {
+                    RpcClient::new(rpc_url).send_transaction(&tx_rpc).await
+                }) => {
+                    res??.to_string()
+                }
+            }
+        }
+    };
+
+    let signature = tx_sig.to_string();
+
+    // Update tracker based on sell type
+    if let Ok(mut tracker_opt) = tracker.write() {
+        if let Some(tracker) = tracker_opt.as_mut() {
+            if sell_percent >= 100.0 {
+                // Full sell
+                let _ = tracker.mark_as_sold(&position.mint, signature.clone());
+            } else {
+                // Partial sell - update balance and track
+                let new_balance = token_balance - sell_amount;
+                let _ = tracker.update_token_amount(&position.mint, new_balance);
+            }
+        }
+    }
+
+    let _ = event_tx.send(TokenEvent::Sold {
+        mint: position.mint.clone(),
+        signature: signature.clone(),
+        reason: format!("{} ({:.0}%)", reason, sell_percent),
+        pnl: None,
+        timestamp: Utc::now(),
+    });
+    
+    eprintln!("✅ PARTIAL SELL COMPLETED: {} - Sold {:.0}% - TX: {}", format_addr(&position.mint), sell_percent, format_addr(&signature));
     Ok(signature)
 }
 

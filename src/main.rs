@@ -8,6 +8,7 @@ pub mod account_subscription;
 pub mod bot_core;
 pub mod buy;
 pub mod sell;
+pub mod sell_strategy;
 pub mod config;
 pub mod constants;
 pub mod das_check;
