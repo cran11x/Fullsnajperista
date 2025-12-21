@@ -4,6 +4,7 @@
 
 pub mod accounts;
 // pub mod blockhash_cache;
+pub mod account_subscription;
 pub mod bot_core;
 pub mod buy;
 pub mod sell;
@@ -124,7 +125,6 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            eprintln!("✅ Loaded .env from: {:?} (manual parsing)", env_path);
         }
     }
     
@@ -159,14 +159,10 @@ fn main() -> Result<()> {
         Ok(key) => {
             if key.trim().is_empty() {
                 eprintln!("⚠️  Warning: SOLANA_PRIVATE_KEY is empty in .env file");
-            } else {
-                eprintln!("✅ SOLANA_PRIVATE_KEY loaded ({} chars)", key.len());
             }
         }
         Err(_) => {
             eprintln!("⚠️  Warning: SOLANA_PRIVATE_KEY not found in environment");
-            eprintln!("   Current directory: {:?}", current_dir);
-            eprintln!("   Looking for .env at: {:?}", env_path);
         }
     }
     

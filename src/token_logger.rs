@@ -39,6 +39,7 @@ pub struct SocialsInfo {
 }
 
 pub struct TokenLogger {
+    #[allow(dead_code)]
     file_path: String,
     writer: Mutex<BufWriter<File>>,
 }

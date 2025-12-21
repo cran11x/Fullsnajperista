@@ -5,7 +5,8 @@ use anyhow::Result;
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 /// Bonding curve account structure (from pump.fun program)
 #[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
@@ -28,20 +29,21 @@ pub struct BondingCurveAccount {
 
 impl BondingCurveAccount {
     /// Calculate current market cap in SOL
-    /// Formula: MC = (virtual_sol / virtual_token) * total_supply
+    /// Formula: MC = price_per_token * (token_total_supply / 1e6)
+    /// Uses get_token_price_sol() for consistency
     pub fn calculate_mc_sol(&self) -> f64 {
         if self.virtual_token_reserves == 0 {
             return 0.0;
         }
 
-        // Current price per token in SOL (using virtual reserves)
-        let price_per_token = self.virtual_sol_reserves as f64 / self.virtual_token_reserves as f64;
+        // Get price per token using the same formula as get_token_price_sol()
+        let price_per_token = self.get_token_price_sol();
 
-        // MC = price * total supply
-        let mc_lamports = price_per_token * self.token_total_supply as f64;
+        // token_total_supply is in raw units (6 decimals), convert to actual tokens
+        let tokens_actual = self.token_total_supply as f64 / 1e6;
 
-        // Convert to SOL
-        mc_lamports / 1e9
+        // MC = price * actual token supply
+        price_per_token * tokens_actual
     }
 
     /// Calculate current market cap in USD
@@ -103,10 +105,10 @@ impl BondingCurveAccount {
         println!("      📊 Bonding Curve State:");
         println!("         Virtual: {} SOL / {} tokens",
                  self.virtual_sol_reserves as f64 / 1e9,
-                 self.virtual_token_reserves as f64 / 1e9);
+                 self.virtual_token_reserves as f64 / 1e6); // ✅ FIX: 6 decimals for tokens, not 9
         println!("         Real: {} SOL / {} tokens",
                  self.real_sol_reserves as f64 / 1e9,
-                 self.real_token_reserves as f64 / 1e9);
+                 self.real_token_reserves as f64 / 1e6); // ✅ FIX: 6 decimals for tokens, not 9
         println!("         💰 Token Price: {:.8} SOL (${:.6})",
                  self.get_token_price_sol(),
                  self.get_token_price_sol() * sol_price_usd);
@@ -116,12 +118,116 @@ impl BondingCurveAccount {
     }
 }
 
+/// Bonding curve cache for reducing RPC calls
+/// Thread-safe cache with TTL of 2 seconds
+pub struct BondingCurveCache {
+    data: HashMap<String, (BondingCurveAccount, Instant)>,
+    ttl: Duration,
+}
+
+impl BondingCurveCache {
+    /// Create new cache with default TTL of 2 seconds
+    pub fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+            ttl: Duration::from_secs(2),
+        }
+    }
+
+    /// Create new cache with custom TTL
+    pub fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            data: HashMap::new(),
+            ttl,
+        }
+    }
+
+    /// Get cached bonding curve or fetch from RPC
+    /// Returns cached value if available and not expired, otherwise fetches from RPC
+    pub async fn get_or_fetch(
+        &mut self,
+        bonding_curve: &Pubkey,
+        rpc: &RpcClient,
+        sol_price_usd: f64,
+    ) -> Result<(BondingCurveAccount, f64, f64)> {
+        let key = bonding_curve.to_string();
+        let now = Instant::now();
+
+        // Check cache
+        if let Some((cached_curve, timestamp)) = self.data.get(&key) {
+            if now.duration_since(*timestamp) < self.ttl {
+                // Cache hit - return cached value
+                let mc_sol = cached_curve.calculate_mc_sol();
+                let mc_usd = cached_curve.calculate_mc_usd(sol_price_usd);
+                return Ok((cached_curve.clone(), mc_sol, mc_usd));
+            } else {
+                // Cache expired - remove from cache
+                self.data.remove(&key);
+            }
+        }
+
+        // Cache miss or expired - fetch from RPC
+        let (curve, mc_sol, mc_usd) = try_fetch_once(rpc, bonding_curve, sol_price_usd).await?;
+
+        // Update cache
+        self.data.insert(key, (curve.clone(), now));
+
+        Ok((curve, mc_sol, mc_usd))
+    }
+
+    /// Clear expired entries from cache
+    pub fn cleanup_expired(&mut self) {
+        let now = Instant::now();
+        self.data.retain(|_, (_, timestamp)| {
+            now.duration_since(*timestamp) < self.ttl
+        });
+    }
+
+    /// Clear all cache entries
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    /// Get cache size
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+impl Default for BondingCurveCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Fetch bonding curve account and calculate MC (WITH RETRY for fresh tokens)
+/// Optionally uses cache if provided
 pub async fn fetch_bonding_curve_mc(
     rpc: &RpcClient,
     bonding_curve: &Pubkey,
     sol_price_usd: f64,
 ) -> Result<(BondingCurveAccount, f64, f64)> {
+    fetch_bonding_curve_mc_with_cache(rpc, bonding_curve, sol_price_usd, None).await
+}
+
+/// Fetch bonding curve account and calculate MC with optional cache
+pub async fn fetch_bonding_curve_mc_with_cache(
+    rpc: &RpcClient,
+    bonding_curve: &Pubkey,
+    sol_price_usd: f64,
+    cache: Option<&mut BondingCurveCache>,
+) -> Result<(BondingCurveAccount, f64, f64)> {
+    // Try cache first if available
+    if let Some(cache_ref) = cache {
+        match cache_ref.get_or_fetch(bonding_curve, rpc, sol_price_usd).await {
+            Ok(result) => return Ok(result),
+            Err(_) => {
+                // Cache fetch failed, fall through to retry logic
+            }
+        }
+    }
+
+    // Original retry logic (if cache not available or cache fetch failed)
     let max_attempts = 3; // Reduced from 5 to 3 for premium RPC
     let mut last_error = None;
 
@@ -192,21 +298,24 @@ mod tests {
     fn test_mc_calculation() {
         let curve = BondingCurveAccount {
             discriminator: 1,
-            virtual_token_reserves: 1_000_000_000_000, // 1000 tokens
+            virtual_token_reserves: 1_000_000_000_000, // 1M tokens (6 decimals)
             virtual_sol_reserves: 30_000_000_000,      // 30 SOL
             real_token_reserves: 500_000_000_000,
             real_sol_reserves: 15_000_000_000,
-            token_total_supply: 1_000_000_000_000_000, // 1M tokens
+            token_total_supply: 1_000_000_000_000_000, // 1M tokens (6 decimals)
             complete: false,
         };
 
-        // Price = 30 / 1000 = 0.03 SOL per token
-        // MC = 0.03 * 1M = 30,000 SOL
+        // Price = (30e9 / 1e12) / 1000 = 0.00003 SOL per token
+        // MC = 0.00003 * 1M = 30 SOL
+        let price = curve.get_token_price_sol();
+        assert!((price - 0.00003).abs() < 0.0000001, "Price should be 0.00003 but got {}", price);
+        
         let mc_sol = curve.calculate_mc_sol();
-        assert!((mc_sol - 30_000.0).abs() < 0.1);
+        assert!((mc_sol - 30.0).abs() < 0.1, "MC should be 30 SOL but got {}", mc_sol);
 
         let mc_usd = curve.calculate_mc_usd(100.0);
-        assert!((mc_usd - 3_000_000.0).abs() < 100.0);
+        assert!((mc_usd - 3_000.0).abs() < 10.0, "MC USD should be 3000 but got {}", mc_usd);
     }
 
     #[test]
@@ -317,14 +426,14 @@ mod tests {
             complete: false,
         };
 
-        // MC = 30,000 SOL
+        // MC = 30 SOL (price 0.00003 * 1M tokens)
         let mc_sol = curve.calculate_mc_sol();
-        assert!((mc_sol - 30_000.0).abs() < 0.1);
+        assert!((mc_sol - 30.0).abs() < 0.1, "MC should be 30 SOL but got {}", mc_sol);
 
         // Test with different SOL prices
-        assert!((curve.calculate_mc_usd(100.0) - 3_000_000.0).abs() < 100.0);
-        assert!((curve.calculate_mc_usd(200.0) - 6_000_000.0).abs() < 100.0);
-        assert!((curve.calculate_mc_usd(50.0) - 1_500_000.0).abs() < 100.0);
+        assert!((curve.calculate_mc_usd(100.0) - 3_000.0).abs() < 10.0);
+        assert!((curve.calculate_mc_usd(200.0) - 6_000.0).abs() < 10.0);
+        assert!((curve.calculate_mc_usd(50.0) - 1_500.0).abs() < 10.0);
     }
 
     #[test]
@@ -349,6 +458,103 @@ mod tests {
         // Integration test - would require mock RPC client
         // This would test the actual fetch_bonding_curve_mc function
         // with a mock RPC that returns known bonding curve data
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_basic() {
+        let cache = BondingCurveCache::new();
+        assert_eq!(cache.len(), 0);
+        
+        // Test default TTL
+        assert_eq!(cache.ttl, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_with_custom_ttl() {
+        let custom_ttl = Duration::from_secs(5);
+        let cache = BondingCurveCache::with_ttl(custom_ttl);
+        assert_eq!(cache.ttl, custom_ttl);
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_clear() {
+        let mut cache = BondingCurveCache::new();
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_cleanup_expired() {
+        let mut cache = BondingCurveCache::with_ttl(Duration::from_millis(100));
+        let bonding_curve = Pubkey::new_unique();
+        let curve = BondingCurveAccount::default();
+        
+        // Manually insert expired entry (by manipulating internal state)
+        // Note: This is a bit of a hack since we can't easily create expired entries
+        // In real usage, entries expire naturally after TTL
+        cache.data.insert(bonding_curve.to_string(), (curve, Instant::now() - Duration::from_secs(10)));
+        
+        cache.cleanup_expired();
+        // Expired entry should be removed
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_ttl_behavior() {
+        // Test that cache respects TTL
+        let mut cache = BondingCurveCache::with_ttl(Duration::from_millis(100));
+        let bonding_curve1 = Pubkey::new_unique();
+        let bonding_curve2 = Pubkey::new_unique();
+        let curve = BondingCurveAccount::default();
+        
+        let now = Instant::now();
+        
+        // Insert fresh entry
+        cache.data.insert(bonding_curve1.to_string(), (curve.clone(), now));
+        
+        // Insert expired entry
+        cache.data.insert(bonding_curve2.to_string(), (curve, now - Duration::from_secs(10)));
+        
+        // Only fresh entry should remain after cleanup
+        cache.cleanup_expired();
+        assert_eq!(cache.len(), 1);
+        assert!(cache.data.contains_key(&bonding_curve1.to_string()));
+        assert!(!cache.data.contains_key(&bonding_curve2.to_string()));
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_multiple_entries() {
+        let mut cache = BondingCurveCache::new();
+        let curves: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
+        let curve_data = BondingCurveAccount::default();
+        
+        // Insert multiple entries
+        for curve_pubkey in &curves {
+            cache.data.insert(curve_pubkey.to_string(), (curve_data.clone(), Instant::now()));
+        }
+        
+        assert_eq!(cache.len(), 10);
+        
+        // Clear all
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_bonding_curve_cache_ordering() {
+        // Test that cache preserves order when checking multiple entries
+        let mut cache = BondingCurveCache::new();
+        let curves: Vec<Pubkey> = (0..5).map(|_| Pubkey::new_unique()).collect();
+        let curve_data = BondingCurveAccount::default();
+        
+        for curve_pubkey in &curves {
+            cache.data.insert(curve_pubkey.to_string(), (curve_data.clone(), Instant::now()));
+        }
+        
+        // All entries should be present
+        for curve_pubkey in &curves {
+            assert!(cache.data.contains_key(&curve_pubkey.to_string()));
+        }
     }
 }
 

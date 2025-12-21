@@ -63,6 +63,11 @@ struct SettingsState {
     blacklisted_tokens_str: Option<String>,
     blacklisted_creators_str: Option<String>,
     whitelisted_tokens_str: Option<String>,
+    // Token metadata filters
+    require_uppercase_token: bool,
+    max_name_length_str: Option<String>,
+    min_ticker_length_str: Option<String>,
+    max_ticker_length_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -213,6 +218,24 @@ impl SettingsState {
                 }
                 self.breakeven_mc_threshold_str.as_mut().unwrap()
             }
+            "max_name_length" => {
+                if self.max_name_length_str.is_none() {
+                    self.max_name_length_str = Some(default);
+                }
+                self.max_name_length_str.as_mut().unwrap()
+            }
+            "min_ticker_length" => {
+                if self.min_ticker_length_str.is_none() {
+                    self.min_ticker_length_str = Some(default);
+                }
+                self.min_ticker_length_str.as_mut().unwrap()
+            }
+            "max_ticker_length" => {
+                if self.max_ticker_length_str.is_none() {
+                    self.max_ticker_length_str = Some(default);
+                }
+                self.max_ticker_length_str.as_mut().unwrap()
+            }
             _ => panic!("Unknown field id: {}", id),
         }
     }
@@ -275,6 +298,16 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     if state.breakeven_mc_threshold_str.is_none() {
         state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_usd.to_string());
     }
+    if state.max_name_length_str.is_none() {
+        state.max_name_length_str = Some(config_clone.max_name_length.to_string());
+    }
+    if state.min_ticker_length_str.is_none() {
+        state.min_ticker_length_str = Some(config_clone.min_ticker_length.to_string());
+    }
+    if state.max_ticker_length_str.is_none() {
+        state.max_ticker_length_str = Some(config_clone.max_ticker_length.to_string());
+    }
+    state.require_uppercase_token = config_clone.require_uppercase_token;
     
     // Enhanced Wallet Private Key Section with premium styling
     ui.group(|ui| {
@@ -1176,6 +1209,13 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
+        ui.add_space(6.0);
+        if ui.checkbox(&mut config_clone.require_website, egui::RichText::new("Require Website")
+                .size(13.0)).changed() {
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
         ui.add_space(8.0);
         
         ui.horizontal(|ui| {
@@ -1190,6 +1230,85 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .changed() {
                 if let Ok(val) = count_str.parse::<usize>() {
                     config_clone.min_socials_count = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+    });
+    
+    ui.add_space(12.0);
+    
+    // Enhanced Token Metadata Filters
+    ui.group(|ui| {
+        ui.set_min_height(180.0);
+        ui.heading(egui::RichText::new("🏷️  Token Metadata Filters")
+            .size(19.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 200, 100)));
+        ui.add_space(16.0);
+        
+        if ui.checkbox(&mut config_clone.require_uppercase_token, egui::RichText::new("Require Uppercase Token")
+                .size(13.0)).changed() {
+            // ✅ LIVE UPDATE: Apply immediately
+            apply_config_live(&config, &control_tx, &config_clone);
+            state.last_update_time = Some(std::time::Instant::now());
+        }
+        ui.add_space(12.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Max Name Length:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let max_name_str = state.get_or_init("max_name_length", config_clone.max_name_length.to_string());
+            if ui.add(egui::TextEdit::singleline(max_name_str)
+                    .desired_width(150.0))
+                    .changed() {
+                if let Ok(val) = max_name_str.parse::<usize>() {
+                    config_clone.max_name_length = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        ui.add_space(8.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Min Ticker Length:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let min_ticker_str = state.get_or_init("min_ticker_length", config_clone.min_ticker_length.to_string());
+            if ui.add(egui::TextEdit::singleline(min_ticker_str)
+                    .desired_width(150.0))
+                    .changed() {
+                if let Ok(val) = min_ticker_str.parse::<usize>() {
+                    config_clone.min_ticker_length = val;
+                    // ✅ LIVE UPDATE: Apply immediately
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        ui.add_space(8.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Max Ticker Length:")
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let max_ticker_str = state.get_or_init("max_ticker_length", config_clone.max_ticker_length.to_string());
+            if ui.add(egui::TextEdit::singleline(max_ticker_str)
+                    .desired_width(150.0))
+                    .changed() {
+                if let Ok(val) = max_ticker_str.parse::<usize>() {
+                    config_clone.max_ticker_length = val;
                     // ✅ LIVE UPDATE: Apply immediately
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
@@ -1312,6 +1431,22 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             if let Some(min_socials_count_str) = &state_clone.min_socials_count_str {
                 if let Ok(val) = min_socials_count_str.parse::<usize>() {
                     config_clone.min_socials_count = val;
+                }
+            }
+            config_clone.require_uppercase_token = state_clone.require_uppercase_token;
+            if let Some(max_name_length_str) = &state_clone.max_name_length_str {
+                if let Ok(val) = max_name_length_str.parse::<usize>() {
+                    config_clone.max_name_length = val;
+                }
+            }
+            if let Some(min_ticker_length_str) = &state_clone.min_ticker_length_str {
+                if let Ok(val) = min_ticker_length_str.parse::<usize>() {
+                    config_clone.min_ticker_length = val;
+                }
+            }
+            if let Some(max_ticker_length_str) = &state_clone.max_ticker_length_str {
+                if let Ok(val) = max_ticker_length_str.parse::<usize>() {
+                    config_clone.max_ticker_length = val;
                 }
             }
             if let Some(target_mint_str) = &state_clone.target_mint_str {

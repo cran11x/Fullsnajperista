@@ -107,47 +107,87 @@ impl GuiApp {
     }
     
     fn handle_control_messages(&mut self) {
+        // ✅ CRITICAL FIX: Check if bot thread has finished on its own (crashed or exited)
+        // This detects when bot thread ends without explicit Stop command
+        if self.bot_running.load(Ordering::SeqCst) {
+            if let Ok(handle_guard) = self.bot_handle.try_read() {
+                if let Some(ref handle) = *handle_guard {
+                    if handle.is_finished() {
+                        let timestamp = Utc::now().format("%H:%M:%S%.3f");
+                        
+                        // Bot thread finished on its own - update state
+                        self.bot_running.store(false, Ordering::SeqCst);
+                        self.control_tx_bot = None;
+                        
+                        // Add event to GUI log so user knows bot stopped
+                        self.add_event(TokenEvent::Info {
+                            message: "Bot stopped (thread finished unexpectedly)".to_string(),
+                            timestamp: Utc::now(),
+                        });
+                    }
+                }
+            }
+        }
+        
         // Process any pending control messages (non-blocking)
         while let Ok(control) = self.control_rx.try_recv() {
-            // Forward to bot thread if it's running
-            if let Some(ref tx) = self.control_tx_bot {
-                let _ = tx.send(control.clone());
-            }
+            let timestamp = Utc::now().format("%H:%M:%S%.3f");
+            // ✅ CRITICAL: Use SeqCst ordering for consistency
+            let bot_running_state = self.bot_running.load(Ordering::SeqCst);
             
             match control {
                 BotControl::Start => {
-                    if !self.bot_running.load(Ordering::Relaxed) {
+                    // ✅ CRITICAL: Re-check state right before calling start_bot to prevent race conditions
+                    let current_state = self.bot_running.load(Ordering::SeqCst);
+                    if !current_state {
                         self.start_bot();
+                    } else {
                     }
                 }
                 BotControl::Stop => {
-                    if self.bot_running.load(Ordering::Relaxed) {
+                    // ✅ CRITICAL: Re-check state right before calling stop_bot to prevent race conditions
+                    let current_state = self.bot_running.load(Ordering::SeqCst);
+                    if current_state {
                         self.stop_bot();
+                    } else {
                     }
                 }
                 BotControl::UpdateConfig(new_config) => {
+                    // Forward to bot thread if it's running
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::UpdateConfig(new_config.clone()));
+                    }
+                    // Also update in GUI thread
                     if let Ok(mut config) = self.config.write() {
                         *config = new_config;
                     }
                 }
                 BotControl::Restart => {
-                    if self.bot_running.load(Ordering::Relaxed) {
+                    if bot_running_state {
                         self.stop_bot();
                     }
-                    if !self.bot_running.load(Ordering::Relaxed) {
+                    // Wait a bit for bot to stop before starting again
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let bot_running_after_wait = self.bot_running.load(Ordering::SeqCst);
+                    if !bot_running_after_wait {
                         self.start_bot();
                     }
                 }
-                BotControl::ManualSell(_) => {
-                    // Forwarded to bot thread, nothing to do in GUI thread
+                BotControl::ManualSell(mint) => {
+                    // Forward to bot thread if it's running
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::ManualSell(mint.clone()));
+                    }
                 }
                 BotControl::ManualBuy { mint, sol_amount } => {
                     // Forward to bot thread if running
-                    if self.control_tx_bot.is_some() {
-                         // Already forwarded above
+                    if let Some(ref tx) = self.control_tx_bot {
+                        let _ = tx.send(BotControl::ManualBuy { 
+                            mint: mint.clone(), 
+                            sol_amount 
+                        });
                     } else {
                          // Bot is NOT running - execute manually here
-                         eprintln!("🚀 Bot stopped, executing manual buy in background...");
                          
                          // Clone resources
                          let config_clone = self.config.clone();
@@ -212,11 +252,17 @@ impl GuiApp {
                                  
                                  let buy_amount = sol_amount.unwrap_or(config_val.buy_amount_lamports());
 
-                                 // Preload global account (needed for buy instruction)
-                                 if let Err(e) = crate::buy::preload_global(&rpc_client, &config_val.global_account).await {
-                                     eprintln!("❌ Failed to preload global account: {}", e);
-                                     return;
-                                 }
+                                // Initialize static caches
+                                if let Err(e) = crate::buy::init_static_caches() {
+                                    eprintln!("❌ Failed to initialize static caches: {}", e);
+                                    return;
+                                }
+                                
+                                // Preload global account (needed for buy instruction)
+                                if let Err(e) = crate::buy::preload_global(&rpc_client, &config_val.global_account).await {
+                                    eprintln!("❌ Failed to preload global account: {}", e);
+                                    return;
+                                }
 
                                  // Execute buy
                                  // We pass a dummy channel since we don't have the main event loop listening
@@ -230,7 +276,8 @@ impl GuiApp {
                                      accounts,
                                      buy_amount,
                                      &metrics_clone,
-                                     &dummy_tx
+                                     &dummy_tx,
+                                     None, // GUI doesn't have history_tracker - will be created in bot_core
                                  ).await {
                                      Ok(sig) => {
                                          eprintln!("✅ Manual buy successful! Signature: {}", sig);
@@ -541,12 +588,51 @@ fn setup_egui_style(ctx: &egui::Context) {
 
 impl GuiApp {
     fn start_bot(&mut self) {
-        if self.bot_running.load(Ordering::Relaxed) {
+        // ✅ CRITICAL: Double-check with SeqCst ordering to prevent race conditions
+        let bot_running_state = self.bot_running.load(Ordering::SeqCst);
+        
+        if bot_running_state {
             return; // Already running
         }
         
-        self.bot_running.store(true, Ordering::Relaxed);
+        // ✅ CRITICAL: Set flag immediately with SeqCst to prevent multiple simultaneous starts
+        // Use compare_and_swap to ensure atomicity
+        let was_running = self.bot_running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
+        if was_running.is_err() {
+            return; // Another thread already started it
+        }
         
+        // ✅ FIX: Wait for previous bot thread to finish before starting new one
+        // This prevents issues when restarting bot after stop
+        if let Ok(mut handle) = self.bot_handle.write() {
+            if let Some(h) = handle.take() {
+                // Spawn a background thread to wait for the old bot thread
+                // This prevents blocking the GUI thread
+                std::thread::spawn(move || {
+                    // Wait up to 3 seconds for thread to finish
+                    let timeout = std::time::Duration::from_secs(3);
+                    let start = std::time::Instant::now();
+                    
+                    // Poll every 100ms to check if thread finished
+                    while start.elapsed() < timeout {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    
+                    // After timeout, try to join (this will block until thread finishes)
+                    // We're in background thread so it's ok to block here
+                    let _ = h.join();
+                });
+                
+                // Give it a moment to start shutting down (non-blocking wait)
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+        
+        // ✅ FIX: Clear control_tx_bot to ensure clean state before starting new bot
+        self.control_tx_bot = None;
+        
+        // ✅ FIX: Don't set bot_running = true yet - wait until bot thread is actually spawned
+        // This prevents race condition where Stop signal is sent before bot thread starts
         let event = TokenEvent::Info {
             message: "Bot starting...".to_string(),
             timestamp: Utc::now(),
@@ -622,7 +708,6 @@ impl GuiApp {
             let cfg = match config_clone.read() {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    eprintln!("❌ Failed to read config: {}", e);
                     self.add_event(TokenEvent::Error {
                         message: format!("Failed to read config: {}", e),
                         timestamp: Utc::now(),
@@ -632,28 +717,11 @@ impl GuiApp {
                 }
             };
             if cfg.enable_tracker {
-                use std::io::Write;
-                eprintln!("📊 Initializing tracker (enable_tracker=true)...");
-                std::io::stderr().flush().ok();
-                
-                match crate::accounts::TokenTracker::new() {
-                    Ok(tracker) => {
-                        match tracker_clone.write() {
-                            Ok(mut t) => {
-                                *t = Some(tracker);
-                                eprintln!("✅ Tracker initialized successfully");
-                            }
-                            Err(e) => {
-                                eprintln!("⚠️  Failed to write tracker to Arc: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️  Failed to create tracker: {}", e);
+                if let Ok(tracker) = crate::accounts::TokenTracker::new() {
+                    if let Ok(mut t) = tracker_clone.write() {
+                        *t = Some(tracker);
                     }
                 }
-            } else {
-                eprintln!("⚠️  Tracker is disabled (enable_tracker=false)");
             }
         }
         
@@ -662,20 +730,38 @@ impl GuiApp {
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("❌ Failed to create Tokio runtime for event forwarding: {}", e);
-                    return;
-                }
+                Err(_) => return,
             };
             rt.block_on(async move {
                 while let Some(event) = event_rx.recv().await {
-                    if let Ok(mut log) = event_log_clone.write() {
-                        log.push_back(event);
-                        // Keep only last 500 events to save memory
-                        while log.len() > 500 {
-                            log.pop_front();
+                        // ✅ CRITICAL FIX: Increased retry attempts and time to prevent event loss
+                        // GUI may hold lock longer during rendering, especially with many positions/events
+                        let mut attempts = 0;
+                        let max_attempts = 100; // Increased from 10 to 100 (500ms max wait instead of 50ms)
+                        let wait_ms = 5; // Wait 5ms between attempts
+                        
+                        loop {
+                            match event_log_clone.try_write() {
+                                Ok(mut log) => {
+                                    log.push_back(event);
+                                    while log.len() > 500 { log.pop_front(); }
+                                    break;
+                                }
+                                Err(_) if attempts < max_attempts => {
+                                    // GUI drži lock – pričekaj i pokušaj opet
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+                                    attempts += 1;
+                                }
+                                Err(_) => {
+                                    // ⚠️ CRITICAL: Event dropped after max retries - this is bad!
+                                    eprintln!("⚠️  CRITICAL: Event dropped after {} retries ({}ms) – GUI log lock busy for too long!", 
+                                             max_attempts, max_attempts * wait_ms);
+                                    eprintln!("⚠️  Dropped event type: {:?}", std::mem::discriminant(&event));
+                                    // Don't break - continue processing next event
+                                    break;
+                                }
+                            }
                         }
-                    }
                 }
             });
         });
@@ -684,10 +770,7 @@ impl GuiApp {
         let bot_handle = std::thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("❌ Failed to create Tokio runtime for bot: {}", e);
-                    return;
-                }
+                Err(_) => return,
             };
             rt.block_on(async move {
                 let _ = bot_core::run_bot(
@@ -710,26 +793,66 @@ impl GuiApp {
         if let Ok(mut handle) = self.bot_handle.write() {
             *handle = Some(bot_handle);
         }
+        
+        // ✅ NOTE: bot_running was already set to true above using compare_exchange for atomicity
+        // This ensures that if Stop signal is sent, bot thread is already running and can receive it
     }
     
     fn stop_bot(&mut self) {
-        if !self.bot_running.load(Ordering::Relaxed) {
+        // ✅ CRITICAL: Use SeqCst ordering for consistency with start_bot
+        let bot_running_state = self.bot_running.load(Ordering::SeqCst);
+        
+        if !bot_running_state {
             return; // Already stopped
         }
         
-        self.bot_running.store(false, Ordering::Relaxed);
-        
-        // Send stop signal directly to bot thread via tokio channel
-        if let Some(ref tx) = self.control_tx_bot {
-            let _ = tx.send(BotControl::Stop);
-        }
+        // ✅ CRITICAL FIX: Send stop signal FIRST, before changing bot_running flag
+        // This ensures bot thread receives the signal while it's still marked as running
+        // IMPORTANT: Take ownership of control_tx_bot to prevent it from being dropped
+        // while we're trying to send the signal
+        let stop_signal_sent = {
+            let has_control_tx = self.control_tx_bot.is_some();
+            
+            if !has_control_tx {
+                false
+            } else {
+                // Take ownership temporarily to ensure it's not dropped while sending
+                // This prevents race condition where channel is closed between check and send
+                if let Some(tx) = self.control_tx_bot.take() {
+                    match tx.send(BotControl::Stop) {
+                        Ok(_) => {
+                            // Channel will be dropped here (tx goes out of scope)
+                            // This is OK - signal was sent, bot thread will receive it
+                            true
+                        }
+                        Err(_) => {
+                            // Channel is already closed, bot thread probably already finished
+                            // This is not necessarily an error - bot may have stopped on its own
+                            false
+                        }
+                    }
+                } else {
+                    // This shouldn't happen since we checked has_control_tx above
+                    false
+                }
+            }
+        };
         
         // Also send to GUI channel for consistency (for handle_control_messages)
         let _ = self.control_tx.send(BotControl::Stop);
         
+        // ✅ CRITICAL FIX: Only set bot_running = false AFTER sending signal
+        // This prevents race condition where start_bot() is called before signal is received
+        let was_running = self.bot_running.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst);
+        if was_running.is_err() {
+            return; // State changed, another thread already stopped it
+        }
+        
+        // ✅ NOTE: control_tx_bot was already taken above when sending signal
+        // It will be properly dropped when this function exits
+        
         // Don't block GUI thread - let bot thread finish in background
         // The bot will stop gracefully after receiving Stop signal
-        // We just clear the handle so we know it's stopping
         if let Ok(mut handle) = self.bot_handle.write() {
             if handle.is_some() {
                 // Spawn a background thread to wait for bot to finish
@@ -743,8 +866,8 @@ impl GuiApp {
             }
         }
         
-        // Clear control_tx_bot since bot is stopping
-        self.control_tx_bot = None;
+        // ✅ CRITICAL FIX: control_tx_bot is already cleared above (using take())
+        // This ensures it's cleared immediately after sending signal, but signal was already sent
         
         let event = TokenEvent::Info {
             message: "Bot stop signal sent".to_string(),

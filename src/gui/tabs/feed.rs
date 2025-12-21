@@ -147,7 +147,20 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
     
     ui.add_space(12.0);
     
-    let log = event_log.read().unwrap();
+    // ✅ Snapshot events to avoid holding read-lock while rendering
+    let log: Vec<TokenEvent> = match event_log.try_read() {
+        Ok(guard) => guard.iter().cloned().collect(),
+        Err(_) => {
+            // Lock is held by another thread (likely bot thread) - show message and return
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(egui::RichText::new("Loading events...")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(160, 170, 185)));
+            });
+            return;
+        }
+    };
     
     // Count events by type
     let (detected_count, filtered_count, bought_count, sold_count, error_count, _info_count) = {
