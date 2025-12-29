@@ -235,15 +235,22 @@ pub fn get_cached_sol_price() -> f64 {
 
 /// Refresh SOL price if cache is older than 5 minutes
 pub async fn refresh_sol_price_if_needed() {
-    let needs_refresh = {
+    let (needs_refresh, old_price) = {
         let cache = SOL_PRICE_CACHE.read().unwrap();
-        cache.1.elapsed().as_secs() >= 300 // 5 minutes
+        let elapsed = cache.1.elapsed().as_secs();
+        // Refresh if cache is older than 5 minutes OR if still using default price on first run
+        let is_old = elapsed >= 300;
+        let is_default_on_startup = cache.0 == 150.0 && elapsed < 60; // Default price and cache was recently initialized
+        (is_old || is_default_on_startup, cache.0)
     };
     
     if needs_refresh {
         if let Ok(price) = fetch_sol_price_usd().await {
             let mut cache = SOL_PRICE_CACHE.write().unwrap();
             *cache = (price, Instant::now());
+            eprintln!("💱 SOL price updated: ${:.2} -> ${:.2}", old_price, price);
+        } else {
+            eprintln!("⚠️  Failed to refresh SOL price, using cached value (${:.2})", old_price);
         }
     }
 }
@@ -292,6 +299,36 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
         assert!(attempts.load(Ordering::SeqCst) >= 3);
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default - requires network connection to Jupiter API
+    async fn test_sol_price_refresh_on_startup() {
+        // Test that refresh happens when using default price (first run)
+        // This simulates the bot startup scenario
+        let initial_price = get_cached_sol_price();
+        
+        // Call refresh - should update from default 150.0 to real price
+        refresh_sol_price_if_needed().await;
+        
+        let updated_price = get_cached_sol_price();
+        
+        // Price should be updated (not 150.0 default) and should be reasonable (between 50-500 USD)
+        assert_ne!(updated_price, 150.0, "Price should be updated from default 150.0");
+        assert!(updated_price > 50.0 && updated_price < 500.0, 
+            "SOL price should be reasonable (50-500 USD), got {}", updated_price);
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default - requires network connection to Jupiter API
+    async fn test_sol_price_fetch() {
+        // Test that we can actually fetch SOL price from API
+        let result = fetch_sol_price_usd().await;
+        assert!(result.is_ok(), "Should be able to fetch SOL price from Jupiter API");
+        
+        let price = result.unwrap();
+        assert!(price > 50.0 && price < 500.0, 
+            "SOL price should be reasonable (50-500 USD), got {}", price);
     }
 
     #[tokio::test]

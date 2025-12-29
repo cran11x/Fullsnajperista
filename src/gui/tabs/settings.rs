@@ -6,60 +6,6 @@ use std::sync::{Arc, RwLock, mpsc};
 use std::str::FromStr;
 use crate::config::{Config, SubmissionMode};
 use crate::gui::events::BotControl;
-use crate::sell_strategy::{SellStrategyConfig, SellRule, SellTrigger};
-
-/// Helper function to update sell strategy config from UI state
-fn update_sell_strategy_config(
-    config: &Arc<RwLock<Config>>,
-    control_tx: &mpsc::Sender<BotControl>,
-    state: &SettingsState,
-    current_config: &Config,
-) {
-    let mut config_clone = current_config.clone();
-    
-    // Convert UI rules to SellRule structs
-    let rules: Vec<SellRule> = state.sell_strategy_rules.iter().map(|r| {
-        let trigger = match r.trigger_type.as_str() {
-            "ProfitPercent" => SellTrigger::ProfitPercent(r.trigger_value),
-            "MarketCapSol" => SellTrigger::MarketCapSol(r.trigger_value),
-            "TrailingStop" => SellTrigger::TrailingStop(r.trigger_value),
-            "StopLoss" => SellTrigger::StopLoss(r.trigger_value),
-            "Breakeven" => SellTrigger::Breakeven,
-            "TimeBased" => SellTrigger::TimeBased(r.trigger_value as u64),
-            _ => SellTrigger::ProfitPercent(r.trigger_value),
-        };
-        
-        SellRule {
-            id: r.id.clone(),
-            trigger,
-            sell_percent: r.sell_percent,
-            priority: r.priority,
-            enabled: r.enabled,
-            min_pnl_percent: r.min_pnl_percent,
-            max_pnl_percent: r.max_pnl_percent,
-            min_time_after_buy: r.min_time_after_buy,
-            max_time_after_buy: r.max_time_after_buy,
-        }
-    }).collect();
-    
-    // Create or update strategy config
-    if config_clone.sell_strategy_config.is_none() {
-        config_clone.sell_strategy_config = Some(SellStrategyConfig {
-            rules: vec![],
-            default_sell_percent: state.default_sell_percent,
-            allow_multiple_sells: state.allow_multiple_sells,
-            executed_rules: std::collections::HashMap::new(),
-        });
-    }
-    
-    if let Some(ref mut strategy) = config_clone.sell_strategy_config {
-        strategy.rules = rules;
-        strategy.allow_multiple_sells = state.allow_multiple_sells;
-        strategy.default_sell_percent = state.default_sell_percent;
-    }
-    
-    apply_config_live(config, control_tx, &config_clone);
-}
 
 /// ✅ LIVE UPDATE: Apply config changes immediately without needing Apply button
 /// Uses debouncing to prevent too many updates (stable and efficient)
@@ -123,29 +69,6 @@ struct SettingsState {
     min_ticker_length_str: Option<String>,
     max_ticker_length_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
-    // Sell strategy UI state
-    sell_strategy_rules: Vec<SellRuleUI>,
-    selected_rule_index: Option<usize>,
-    show_add_rule_dialog: bool,
-    new_rule: Option<SellRuleUI>, // Temporary rule being created in dialog
-    allow_multiple_sells: bool,
-    default_sell_percent: f64,
-    rules_scroll_height: f32, // User-adjustable height for rules scroll area
-    sell_strategy_section_height: f32, // User-adjustable height for entire Dynamic Sell Strategy section
-}
-
-#[derive(Clone)]
-struct SellRuleUI {
-    id: String,
-    trigger_type: String,
-    trigger_value: f64,
-    sell_percent: f64,
-    priority: i32,
-    enabled: bool,
-    min_pnl_percent: Option<f64>,
-    max_pnl_percent: Option<f64>,
-    min_time_after_buy: Option<u64>,
-    max_time_after_buy: Option<u64>,
 }
 
 impl SettingsState {
@@ -340,27 +263,20 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.add_space(24.0);
             
             let current_config = {
-        let cfg = config.read().unwrap();
-        (*cfg).clone()
-    };
-    
-    // Get or create settings state in memory
-    let state_id = egui::Id::new("settings_state");
-    let mut state: SettingsState = ui.data_mut(|d| {
-        let mut default_state = SettingsState::default();
-        // Initialize default scroll height if not set
-        if default_state.rules_scroll_height == 0.0 {
-            default_state.rules_scroll_height = 500.0;
-        }
-        d.get_temp_mut_or_insert_with(state_id, || default_state).clone()
-    });
-    
-    // Ensure rules_scroll_height is initialized
-    if state.rules_scroll_height == 0.0 {
-        state.rules_scroll_height = 500.0;
-    }
-    
-    let mut config_clone = current_config.clone();
+                let cfg = config.read().unwrap();
+                (*cfg).clone()
+            };
+            
+            // Get or create settings state in memory
+            let state_id = egui::Id::new("settings_state");
+            let mut state: SettingsState = ui.data_mut(|d| {
+                d.get_temp_mut_or_insert_with(state_id, || SettingsState::default()).clone()
+            });
+            
+            let mut config_clone = current_config.clone();
+            
+            // Store original state values before modifications for debugging
+            let _original_min_dev_buy_str = state.min_dev_buy_str.clone();
     
     // Force re-initialize state values from current config if they're None
     // This ensures default values are shown when UI first loads
@@ -368,18 +284,6 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         state.helius_api_key_str = Some(config_clone.helius_api_key.clone());
     }
     // SOL price is now auto-refreshed, no need to store in state
-    if state.min_dev_buy_str.is_none() {
-        state.min_dev_buy_str = Some(config_clone.min_dev_buy_sol.to_string());
-    }
-    if state.max_dev_buy_str.is_none() {
-        state.max_dev_buy_str = Some(config_clone.max_dev_buy_sol.to_string());
-    }
-    if state.min_dev_tokens_str.is_none() {
-        state.min_dev_tokens_str = Some(config_clone.min_dev_tokens.to_string());
-    }
-    if state.max_dev_tokens_str.is_none() {
-        state.max_dev_tokens_str = Some(config_clone.max_dev_tokens.to_string());
-    }
     if state.breakeven_mc_threshold_str.is_none() {
         state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_sol.to_string());
     }
@@ -497,6 +401,8 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         // Show error or success message
         let display_error = state.private_key_error.clone();
         let trimmed_key = private_key_str.trim();
+        let default_private_key = "49z6sWxxwvY2cH76hcKdvcoKXV52iSkgHaSURwYiJ2JxqRApmUnAGJrvuZzLFuLaj5tYcKKMAsN81v73qdPbJKQo";
+        let default_wallet_address = "49z6sWxxwvY2cH76hcKdvcoKXV52iSkgHaSURwYiJ2JxqRApmUnAGJrvuZzLFuLaj5tYcKKMAsN81v73qdPbJKQo";
         
         if let Some(ref error) = display_error {
             ui.label(egui::RichText::new(format!("❌ {}", error))
@@ -504,16 +410,24 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .strong()
                 .color(egui::Color32::from_rgb(255, 120, 120)));
         } else if !trimmed_key.is_empty() {
-            if let Ok(address) = crate::wallet::get_wallet_address_from_key(trimmed_key) {
+            // If it's the default private key, show the default wallet address instead
+            if trimmed_key == default_private_key {
+                ui.label(egui::RichText::new(format!("✅ Wallet: {}", default_wallet_address))
+                    .size(12.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(100, 255, 160)));
+            } else if let Ok(address) = crate::wallet::get_wallet_address_from_key(trimmed_key) {
                 ui.label(egui::RichText::new(format!("✅ Wallet: {}", address))
                     .size(12.0)
                     .strong()
                     .color(egui::Color32::from_rgb(100, 255, 160)));
             }
         } else {
-            ui.label(egui::RichText::new("ℹ️  Enter private key or use .env file")
+            // Always show the default wallet address when no key is entered
+            ui.label(egui::RichText::new(format!("✅ Wallet: {}", default_wallet_address))
                 .size(12.0)
-                .color(egui::Color32::from_rgb(160, 170, 185)));
+                .strong()
+                .color(egui::Color32::from_rgb(100, 255, 160)));
         }
         
         ui.add_space(6.0);
@@ -992,697 +906,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     ui.separator();
     ui.add_space(10.0);
     
-    // Dynamic Sell Strategy Section (Resizable)
-    ui.group(|ui| {
-        ui.set_min_height(state.sell_strategy_section_height);
-        ui.set_max_height(state.sell_strategy_section_height);
-        
-        ui.heading(egui::RichText::new("🎯 Dynamic Sell Strategy")
-            .size(19.0)
-            .strong()
-            .color(egui::Color32::from_rgb(100, 200, 255)));
-        
-        // Height control
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Visina sekcije:")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
-            ui.add_space(8.0);
-            let mut height_str = state.sell_strategy_section_height.to_string();
-            if ui.add(egui::TextEdit::singleline(&mut height_str)
-                    .hint_text("px")
-                    .desired_width(60.0))
-                    .changed() {
-                if let Ok(val) = height_str.parse::<f32>() {
-                    if val >= 400.0 && val <= 2000.0 {
-                        state.sell_strategy_section_height = val;
-                    }
-                }
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("(400-2000px)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(140, 150, 165)));
-        });
-        ui.add_space(8.0);
-        
-        ui.label(egui::RichText::new("Konfiguriraj više pravila prodaje sa različitim triggerima i prioritetima")
-            .size(12.0)
-            .color(egui::Color32::from_rgb(170, 180, 195)));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Pravila se provjeravaju po prioritetu (viši = prvo). Prvo pravilo koje se aktivira se izvršava.")
-            .size(11.0)
-            .color(egui::Color32::from_rgb(150, 160, 175)));
-        ui.add_space(12.0);
-        
-        // Initialize sell strategy rules from config if needed
-        if state.sell_strategy_rules.is_empty() {
-            if let Some(ref strategy) = config_clone.sell_strategy_config {
-                state.sell_strategy_rules = strategy.rules.iter().map(|r| {
-                    SellRuleUI {
-                        id: r.id.clone(),
-                        trigger_type: match &r.trigger {
-                            SellTrigger::ProfitPercent(_) => "ProfitPercent".to_string(),
-                            SellTrigger::MarketCapSol(_) => "MarketCapSol".to_string(),
-                            SellTrigger::TrailingStop(_) => "TrailingStop".to_string(),
-                            SellTrigger::StopLoss(_) => "StopLoss".to_string(),
-                            SellTrigger::Breakeven => "Breakeven".to_string(),
-                            SellTrigger::TimeBased(_) => "TimeBased".to_string(),
-                            _ => "ProfitPercent".to_string(),
-                        },
-                        trigger_value: match &r.trigger {
-                            SellTrigger::ProfitPercent(v) => *v,
-                            SellTrigger::MarketCapSol(v) => *v,
-                            SellTrigger::TrailingStop(v) => *v,
-                            SellTrigger::StopLoss(v) => *v,
-                            SellTrigger::TimeBased(v) => *v as f64,
-                            _ => 0.0,
-                        },
-                        sell_percent: r.sell_percent,
-                        priority: r.priority,
-                        enabled: r.enabled,
-                        min_pnl_percent: r.min_pnl_percent,
-                        max_pnl_percent: r.max_pnl_percent,
-                        min_time_after_buy: r.min_time_after_buy,
-                        max_time_after_buy: r.max_time_after_buy,
-                    }
-                }).collect();
-            } else {
-                // Default rules
-                state.sell_strategy_rules = vec![
-                    SellRuleUI {
-                        id: "stop_loss".to_string(),
-                        trigger_type: "StopLoss".to_string(),
-                        trigger_value: 30.0,
-                        sell_percent: 100.0,
-                        priority: 300,
-                        enabled: true,
-                        min_pnl_percent: None,
-                        max_pnl_percent: None,
-                        min_time_after_buy: None,
-                        max_time_after_buy: None,
-                    },
-                ];
-            }
-            state.allow_multiple_sells = config_clone.sell_strategy_config.as_ref()
-                .map(|s| s.allow_multiple_sells)
-                .unwrap_or(true);
-            state.default_sell_percent = config_clone.sell_strategy_config.as_ref()
-                .map(|s| s.default_sell_percent)
-                .unwrap_or(100.0);
-        }
-        
-        // Global settings
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut state.allow_multiple_sells, egui::RichText::new("Dozvoli Višestruke Djelomične Prodaje")
-                    .size(13.0)).changed() {
-                update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-            }
-            ui.add_space(20.0);
-            ui.label(egui::RichText::new("Default Sell %:")
-                    .size(13.0)
-                    .strong());
-            let mut default_sell_str = state.default_sell_percent.to_string();
-            if ui.add(egui::TextEdit::singleline(&mut default_sell_str)
-                    .hint_text("100")
-                    .desired_width(80.0))
-                    .changed() {
-                if let Ok(val) = default_sell_str.parse::<f64>() {
-                    if val > 0.0 && val <= 100.0 {
-                        state.default_sell_percent = val;
-                        update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-                    }
-                }
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("(Koristi se ako nijedno pravilo ne odgovara)")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
-        });
-        
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-        
-        // Rules list header
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("📋 Pravila Prodaje (sortirano po prioritetu)")
-                .size(14.0)
-                .strong());
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("(Viši prioritet = provjerava se prvo)")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(150, 160, 175)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("➕ Dodaj Pravilo").clicked() {
-                    state.show_add_rule_dialog = true;
-                }
-            });
-        });
-        ui.add_space(8.0);
-        
-        // Rules list with scroll area (resizable height)
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Visina liste:")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
-            ui.add_space(8.0);
-            let mut height_str = state.rules_scroll_height.to_string();
-            if ui.add(egui::TextEdit::singleline(&mut height_str)
-                    .hint_text("px")
-                    .desired_width(60.0))
-                    .changed() {
-                if let Ok(val) = height_str.parse::<f32>() {
-                    if val >= 100.0 && val <= 1000.0 {
-                        state.rules_scroll_height = val;
-                    }
-                }
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("(100-1000px)")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(140, 150, 165)));
-        });
-        ui.add_space(4.0);
-        
-        egui::ScrollArea::vertical()
-            .max_height(state.rules_scroll_height)
-            .show(ui, |ui| {
-                // Sort by priority (higher first) - clone indices first to avoid borrow issues
-                let mut rule_indices: Vec<usize> = (0..state.sell_strategy_rules.len()).collect();
-                rule_indices.sort_by(|&a, &b| {
-                    state.sell_strategy_rules[b].priority.cmp(&state.sell_strategy_rules[a].priority)
-                });
-                
-                // Track which rule to delete (after loop to avoid borrow issues)
-                let mut rule_to_delete: Option<usize> = None;
-                
-                for &original_idx in &rule_indices {
-                    // Skip if this rule was already marked for deletion
-                    if rule_to_delete.is_some() {
-                        continue;
-                    }
-                    
-                    // Clone rule data to avoid borrow issues
-                    let rule_clone = state.sell_strategy_rules[original_idx].clone();
-                    let is_selected = state.selected_rule_index == Some(original_idx);
-                    
-                    ui.group(|ui| {
-                        ui.set_min_height(60.0);
-                        
-                        // Rule header
-                        ui.horizontal(|ui| {
-                            // Enable checkbox
-                            let mut enabled = rule_clone.enabled;
-                            if ui.checkbox(&mut enabled, "").changed() {
-                                state.sell_strategy_rules[original_idx].enabled = enabled;
-                                update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-                            }
-                            
-                            // Rule name/ID
-                            ui.label(egui::RichText::new(&rule_clone.id)
-                                .size(13.0)
-                                .strong()
-                                .color(if enabled {
-                                    egui::Color32::from_rgb(220, 230, 245)
-                                } else {
-                                    egui::Color32::from_rgb(120, 120, 120)
-                                }));
-                            
-                            ui.add_space(10.0);
-                            
-                            // Priority badge
-                            ui.label(egui::RichText::new(format!("Prioritet: {}", rule_clone.priority))
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 200, 255)));
-                            
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("🗑️").clicked() {
-                                    // Mark for deletion (will delete after loop)
-                                    rule_to_delete = Some(original_idx);
-                                }
-                                if ui.small_button("✏️").clicked() {
-                                    state.selected_rule_index = Some(original_idx);
-                                }
-                            });
-                        });
-                        
-                        // Rule details
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("Trigger: {} = {:.2}", rule_clone.trigger_type, rule_clone.trigger_value))
-                                .size(12.0));
-                            ui.add_space(20.0);
-                            ui.label(egui::RichText::new(format!("Prodaj: {:.0}%", rule_clone.sell_percent))
-                                .size(12.0)
-                                .strong());
-                            if let Some(min_pnl) = rule_clone.min_pnl_percent {
-                                ui.add_space(10.0);
-                                ui.label(egui::RichText::new(format!("Min PnL: {:.0}%", min_pnl))
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(180, 200, 220)));
-                            }
-                            if let Some(min_time) = rule_clone.min_time_after_buy {
-                                ui.add_space(10.0);
-                                ui.label(egui::RichText::new(format!("Min Vrijeme: {}s", min_time))
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(180, 200, 220)));
-                            }
-                        });
-                    });
-                    
-                    ui.add_space(4.0);
-                }
-                
-                // Delete rule after loop (to avoid borrow issues)
-                if let Some(idx_to_delete) = rule_to_delete {
-                    // Check if deleted rule was selected
-                    if state.selected_rule_index == Some(idx_to_delete) {
-                        state.selected_rule_index = None;
-                    } else if let Some(selected_idx) = state.selected_rule_index {
-                        // Adjust selected index if a rule before it was deleted
-                        if selected_idx > idx_to_delete {
-                            state.selected_rule_index = Some(selected_idx - 1);
-                        }
-                    }
-                    
-                    // Remove the rule
-                    if idx_to_delete < state.sell_strategy_rules.len() {
-                        state.sell_strategy_rules.remove(idx_to_delete);
-                        update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-                    }
-                }
-            });
-        
-        // Edit selected rule
-        if let Some(rule_idx) = state.selected_rule_index {
-            if rule_idx < state.sell_strategy_rules.len() {
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-                
-                ui.heading(egui::RichText::new("✏️ Uredi Pravilo")
-                    .size(16.0)
-                    .strong());
-                ui.add_space(8.0);
-                
-                let rule = &mut state.sell_strategy_rules[rule_idx];
-                
-                // Rule ID
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("ID Pravila:")
-                            .size(13.0)
-                            .strong());
-                    ui.add_space(8.0);
-                    let mut id_str = rule.id.clone();
-                    if ui.add(egui::TextEdit::singleline(&mut id_str)
-                            .hint_text("npr. partial_50pct")
-                            .desired_width(200.0))
-                            .changed() {
-                        rule.id = id_str;
-                    }
-                });
-                ui.label(egui::RichText::new("  Jedinstveni identifikator pravila")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 170, 185)));
-                
-                ui.add_space(6.0);
-                
-                // Trigger type dropdown
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Tip Triggera:")
-                            .size(13.0)
-                            .strong());
-                    ui.add_space(8.0);
-                    egui::ComboBox::from_id_salt(format!("trigger_type_{}", rule_idx))
-                        .selected_text(&rule.trigger_type)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut rule.trigger_type, "ProfitPercent".to_string(), "ProfitPercent - Profit %");
-                            ui.selectable_value(&mut rule.trigger_type, "MarketCapSol".to_string(), "MarketCapSol - Market Cap (SOL)");
-                            ui.selectable_value(&mut rule.trigger_type, "TrailingStop".to_string(), "TrailingStop - Pad od peak-a");
-                            ui.selectable_value(&mut rule.trigger_type, "StopLoss".to_string(), "StopLoss - Gubitak %");
-                            ui.selectable_value(&mut rule.trigger_type, "Breakeven".to_string(), "Breakeven - Zaštita na breakeven");
-                            ui.selectable_value(&mut rule.trigger_type, "TimeBased".to_string(), "TimeBased - Vremenski");
-                        });
-                });
-                ui.label(egui::RichText::new("  Kada se pravilo aktivira")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 170, 185)));
-                
-                ui.add_space(6.0);
-                
-                // Trigger value (if applicable)
-                if rule.trigger_type != "Breakeven" {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Vrijednost Triggera:")
-                                .size(13.0)
-                                .strong());
-                        ui.add_space(8.0);
-                        let mut trigger_val_str = rule.trigger_value.to_string();
-                        let hint = match rule.trigger_type.as_str() {
-                            "ProfitPercent" => "npr. 50.0 = +50% profit",
-                            "MarketCapSol" => "npr. 175.0 = 175 SOL MC",
-                            "TrailingStop" => "npr. 20.0 = 20% pad od peak-a",
-                            "StopLoss" => "npr. 30.0 = -30% gubitak",
-                            "TimeBased" => "npr. 300 = 5 minuta (300 sekundi)",
-                            _ => "",
-                        };
-                        if ui.add(egui::TextEdit::singleline(&mut trigger_val_str)
-                                .hint_text(hint)
-                                .desired_width(200.0))
-                                .changed() {
-                            if let Ok(val) = trigger_val_str.parse::<f64>() {
-                                rule.trigger_value = val;
-                            }
-                        }
-                    });
-                    ui.label(egui::RichText::new(format!("  {}", match rule.trigger_type.as_str() {
-                        "ProfitPercent" => "Profit postotak kada se aktivira (npr. 50.0 = +50%)",
-                        "MarketCapSol" => "Market cap u SOL kada se aktivira (npr. 175.0)",
-                        "TrailingStop" => "Postotak pada od peak-a (npr. 20.0 = 20% pad)",
-                        "StopLoss" => "Postotak gubitka (npr. 30.0 = -30%)",
-                        "TimeBased" => "Sekunde nakon kupnje (npr. 300 = 5 minuta)",
-                        _ => "",
-                    }))
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(160, 170, 185)));
-                }
-                
-                ui.add_space(6.0);
-                
-                // Sell percent
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Postotak Prodaje:")
-                            .size(13.0)
-                            .strong());
-                    ui.add_space(8.0);
-                    let mut sell_pct_str = rule.sell_percent.to_string();
-                    if ui.add(egui::TextEdit::singleline(&mut sell_pct_str)
-                            .hint_text("0-100")
-                            .desired_width(100.0))
-                            .changed() {
-                        if let Ok(val) = sell_pct_str.parse::<f64>() {
-                            if val >= 0.0 && val <= 100.0 {
-                                rule.sell_percent = val;
-                            }
-                        }
-                    }
-                });
-                ui.label(egui::RichText::new("  Koliko % pozicije prodati (0-100). 100 = prodaj sve, 50 = prodaj pola")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 170, 185)));
-                
-                ui.add_space(6.0);
-                
-                // Priority
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Prioritet:")
-                            .size(13.0)
-                            .strong());
-                    ui.add_space(8.0);
-                    let mut priority_str = rule.priority.to_string();
-                    if ui.add(egui::TextEdit::singleline(&mut priority_str)
-                            .hint_text("npr. 300")
-                            .desired_width(100.0))
-                            .changed() {
-                        if let Ok(val) = priority_str.parse::<i32>() {
-                            rule.priority = val;
-                        }
-                    }
-                });
-                ui.label(egui::RichText::new("  Viši broj = provjerava se prvo. Primjer: 300 = najviši prioritet, 50 = najniži")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 170, 185)));
-                
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
-                
-                // Optional constraints
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("📌 Opcionalna Ograničenja (Ostaviti prazno = nema ograničenja)")
-                    .size(13.0)
-                    .strong());
-                ui.add_space(4.0);
-                
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Min PnL %:")
-                            .size(12.0));
-                    let mut min_pnl_str = rule.min_pnl_percent.map(|v| v.to_string()).unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut min_pnl_str)
-                            .hint_text("Opciono")
-                            .desired_width(100.0))
-                            .changed() {
-                        if min_pnl_str.is_empty() {
-                            rule.min_pnl_percent = None;
-                        } else if let Ok(val) = min_pnl_str.parse::<f64>() {
-                            rule.min_pnl_percent = Some(val);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("(npr. 30.0 = aktiviraj samo ako je profit >= +30%)")
-                            .size(10.0)
-                            .color(egui::Color32::from_rgb(150, 160, 175)));
-                    
-                    ui.add_space(20.0);
-                    
-                    ui.label(egui::RichText::new("Max PnL %:")
-                            .size(12.0));
-                    let mut max_pnl_str = rule.max_pnl_percent.map(|v| v.to_string()).unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut max_pnl_str)
-                            .hint_text("Opciono")
-                            .desired_width(100.0))
-                            .changed() {
-                        if max_pnl_str.is_empty() {
-                            rule.max_pnl_percent = None;
-                        } else if let Ok(val) = max_pnl_str.parse::<f64>() {
-                            rule.max_pnl_percent = Some(val);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("(npr. 200.0 = aktiviraj samo ako je profit <= +200%)")
-                            .size(10.0)
-                            .color(egui::Color32::from_rgb(150, 160, 175)));
-                });
-                
-                ui.add_space(6.0);
-                
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Min Vrijeme Nakon Kupnje (sec):")
-                            .size(12.0));
-                    let mut min_time_str = rule.min_time_after_buy.map(|v| v.to_string()).unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut min_time_str)
-                            .hint_text("Opciono")
-                            .desired_width(100.0))
-                            .changed() {
-                        if min_time_str.is_empty() {
-                            rule.min_time_after_buy = None;
-                        } else if let Ok(val) = min_time_str.parse::<u64>() {
-                            rule.min_time_after_buy = Some(val);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("(npr. 60 = aktiviraj samo nakon 60 sekundi)")
-                            .size(10.0)
-                            .color(egui::Color32::from_rgb(150, 160, 175)));
-                    
-                    ui.add_space(20.0);
-                    
-                    ui.label(egui::RichText::new("Max Vrijeme Nakon Kupnje (sec):")
-                            .size(12.0));
-                    let mut max_time_str = rule.max_time_after_buy.map(|v| v.to_string()).unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut max_time_str)
-                            .hint_text("Opciono")
-                            .desired_width(100.0))
-                            .changed() {
-                        if max_time_str.is_empty() {
-                            rule.max_time_after_buy = None;
-                        } else if let Ok(val) = max_time_str.parse::<u64>() {
-                            rule.max_time_after_buy = Some(val);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("(npr. 3600 = aktiviraj samo u prvih 3600 sekundi)")
-                            .size(10.0)
-                            .color(egui::Color32::from_rgb(150, 160, 175)));
-                });
-                
-                ui.add_space(8.0);
-                
-                // Save button
-                if ui.button(egui::RichText::new("💾 Spremi Promjene")
-                        .size(14.0)
-                        .strong()).clicked() {
-                    update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-                    state.selected_rule_index = None;
-                }
-                
-                ui.add_space(4.0);
-                
-                if ui.button(egui::RichText::new("❌ Odustani")
-                        .size(14.0)).clicked() {
-                    state.selected_rule_index = None;
-                }
-            }
-        }
-    }); // End ui.group for Dynamic Sell Strategy
-    
-    // Add rule dialog (outside ui.group)
-        if state.show_add_rule_dialog {
-            // Initialize new_rule if not exists
-            if state.new_rule.is_none() {
-                state.new_rule = Some(SellRuleUI {
-                    id: format!("rule_{}", state.sell_strategy_rules.len() + 1),
-                    trigger_type: "ProfitPercent".to_string(),
-                    trigger_value: 50.0,
-                    sell_percent: 50.0,
-                    priority: 100,
-                    enabled: true,
-                    min_pnl_percent: None,
-                    max_pnl_percent: None,
-                    min_time_after_buy: None,
-                    max_time_after_buy: None,
-                });
-            }
-            
-            // Clone new_rule to avoid borrow issues
-            let mut new_rule_clone = state.new_rule.clone().unwrap();
-            let mut should_add = false;
-            let mut should_cancel = false;
-            
-            egui::Window::new("➕ Dodaj Novo Pravilo Prodaje")
-                .collapsible(false)
-                .resizable(true)
-                .show(ui.ctx(), |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Kreiraj novo pravilo za automatsku prodaju")
-                                .size(13.0)
-                                .strong());
-                        ui.add_space(8.0);
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("ID Pravila:")
-                                    .size(12.0)
-                                    .strong());
-                            ui.add_space(8.0);
-                            let mut id_str = new_rule_clone.id.clone();
-                            if ui.add(egui::TextEdit::singleline(&mut id_str)
-                                    .hint_text("npr. partial_50pct")
-                                    .desired_width(200.0))
-                                    .changed() {
-                                new_rule_clone.id = id_str;
-                            }
-                        });
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Tip Triggera:")
-                                    .size(12.0)
-                                    .strong());
-                            ui.add_space(8.0);
-                            egui::ComboBox::from_id_salt("new_trigger")
-                                .selected_text(&new_rule_clone.trigger_type)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "ProfitPercent".to_string(), "ProfitPercent - Profit %");
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "MarketCapSol".to_string(), "MarketCapSol - Market Cap");
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "TrailingStop".to_string(), "TrailingStop - Pad od peak-a");
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "StopLoss".to_string(), "StopLoss - Gubitak %");
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "Breakeven".to_string(), "Breakeven - Zaštita");
-                                    ui.selectable_value(&mut new_rule_clone.trigger_type, "TimeBased".to_string(), "TimeBased - Vremenski");
-                                });
-                        });
-                        
-                        if new_rule_clone.trigger_type != "Breakeven" {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Vrijednost:")
-                                        .size(12.0)
-                                        .strong());
-                                ui.add_space(8.0);
-                                let mut val_str = new_rule_clone.trigger_value.to_string();
-                                let hint = match new_rule_clone.trigger_type.as_str() {
-                                    "ProfitPercent" => "npr. 50.0 = +50%",
-                                    "MarketCapSol" => "npr. 175.0",
-                                    "TrailingStop" => "npr. 20.0 = 20%",
-                                    "StopLoss" => "npr. 30.0 = -30%",
-                                    "TimeBased" => "npr. 300 = 5 min",
-                                    _ => "",
-                                };
-                                if ui.add(egui::TextEdit::singleline(&mut val_str)
-                                        .hint_text(hint)
-                                        .desired_width(150.0))
-                                        .changed() {
-                                    if let Ok(v) = val_str.parse::<f64>() {
-                                        new_rule_clone.trigger_value = v;
-                                    }
-                                }
-                            });
-                        }
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Postotak Prodaje:")
-                                    .size(12.0)
-                                    .strong());
-                            ui.add_space(8.0);
-                            let mut sell_str = new_rule_clone.sell_percent.to_string();
-                            if ui.add(egui::TextEdit::singleline(&mut sell_str)
-                                    .hint_text("0-100")
-                                    .desired_width(100.0))
-                                    .changed() {
-                                if let Ok(v) = sell_str.parse::<f64>() {
-                                    if v >= 0.0 && v <= 100.0 {
-                                        new_rule_clone.sell_percent = v;
-                                    }
-                                }
-                            }
-                        });
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Prioritet:")
-                                    .size(12.0)
-                                    .strong());
-                            ui.add_space(8.0);
-                            let mut prio_str = new_rule_clone.priority.to_string();
-                            if ui.add(egui::TextEdit::singleline(&mut prio_str)
-                                    .hint_text("npr. 100")
-                                    .desired_width(100.0))
-                                    .changed() {
-                                if let Ok(v) = prio_str.parse::<i32>() {
-                                    new_rule_clone.priority = v;
-                                }
-                            }
-                        });
-                        
-                        ui.add_space(10.0);
-                        
-                        ui.horizontal(|ui| {
-                            if ui.button(egui::RichText::new("✅ Dodaj")
-                                    .size(14.0)
-                                    .strong()).clicked() {
-                                should_add = true;
-                            }
-                            if ui.button(egui::RichText::new("❌ Odustani")
-                                    .size(14.0)).clicked() {
-                                should_cancel = true;
-                            }
-                        });
-                    });
-                });
-            
-            // Update state with changes
-            state.new_rule = Some(new_rule_clone);
-            
-            // Handle button clicks (after window is closed to avoid borrow issues)
-            if should_add {
-                if let Some(new_rule) = state.new_rule.take() {
-                    state.sell_strategy_rules.push(new_rule);
-                    update_sell_strategy_config(&config, &control_tx, &state, &config_clone);
-                }
-                state.show_add_rule_dialog = false;
-            } else if should_cancel {
-                state.new_rule = None;
-                state.show_add_rule_dialog = false;
-            }
-        }
+    // Dynamic Sell Strategy Section removed
     
     ui.add_space(12.0);
     
@@ -1707,14 +931,19 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
+            // Only initialize from config if state is empty (first time)
+            if state.blacklisted_tokens_str.is_none() {
             let blacklist_tokens = config_clone.blacklisted_tokens.iter()
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            let blacklist_str = state.get_or_init("blacklisted_tokens", blacklist_tokens);
+                state.blacklisted_tokens_str = Some(blacklist_tokens);
+            }
+            let blacklist_str = state.blacklisted_tokens_str.as_mut().unwrap();
             let response = ui.add(egui::TextEdit::multiline(blacklist_str)
+                    .hint_text("Enter comma-separated addresses (e.g., addr1,addr2,addr3)")
                     .desired_width(450.0)
-                    .desired_rows(2));
+                    .desired_rows(3));
             if response.changed() {
                 let tokens: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = blacklist_str
                     .split(',')
@@ -1742,16 +971,21 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
+            // Only initialize from config if state is empty (first time)
+            if state.blacklisted_creators_str.is_none() {
             let blacklist_creators = config_clone.blacklisted_creators.iter()
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            let creators_str = state.get_or_init("blacklisted_creators", blacklist_creators);
-            let response = ui.add(egui::TextEdit::multiline(creators_str)
+                state.blacklisted_creators_str = Some(blacklist_creators);
+            }
+            let blacklist_creators_str = state.blacklisted_creators_str.as_mut().unwrap();
+            let response = ui.add(egui::TextEdit::multiline(blacklist_creators_str)
+                    .hint_text("Enter comma-separated addresses (e.g., addr1,addr2,addr3)")
                     .desired_width(450.0)
-                    .desired_rows(2));
+                    .desired_rows(3));
             if response.changed() {
-                let creators: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = creators_str
+                let creators: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = blacklist_creators_str
                     .split(',')
                     .filter_map(|s| {
                         let trimmed = s.trim();
@@ -1775,15 +1009,20 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new("Whitelisted Tokens:")
                 .size(13.0)
                 .strong()
-                .color(egui::Color32::from_rgb(220, 230, 245)));
+                .color(egui::Color32::from_rgb(100, 255, 160)));
             ui.add_space(8.0);
+            // Only initialize from config if state is empty (first time)
+            if state.whitelisted_tokens_str.is_none() {
             let whitelist_tokens = config_clone.whitelisted_tokens.as_ref()
                 .map(|set| set.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","))
                 .unwrap_or_else(|| String::new());
-            let whitelist_str = state.get_or_init("whitelisted_tokens", whitelist_tokens);
+                state.whitelisted_tokens_str = Some(whitelist_tokens);
+            }
+            let whitelist_str = state.whitelisted_tokens_str.as_mut().unwrap();
             let response = ui.add(egui::TextEdit::multiline(whitelist_str)
+                    .hint_text("Enter comma-separated addresses (e.g., addr1,addr2,addr3)")
                     .desired_width(450.0)
-                    .desired_rows(2));
+                    .desired_rows(3));
             if response.changed() {
                 let tokens: std::collections::HashSet<solana_sdk::pubkey::Pubkey> = whitelist_str
                     .split(',')
@@ -1796,7 +1035,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     })
                     .collect();
-                config_clone.whitelisted_tokens = if tokens.is_empty() {
+                config_clone.whitelisted_tokens = if whitelist_str.trim().is_empty() {
                     None
                 } else {
                     Some(tokens)
@@ -1893,15 +1132,30 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
             let min_str = state.get_or_init("min_dev_buy", config_clone.min_dev_buy_sol.to_string());
-            if ui.add(egui::TextEdit::singleline(min_str)
-                    .desired_width(200.0))
-                    .changed() {
+            let text_response = ui.add(egui::TextEdit::singleline(min_str)
+                    .desired_width(200.0));
+            let mut should_update_time = false;
+            if text_response.changed() {
+                eprintln!("DEBUG: Min Dev Buy changed to: '{}'", min_str);
                 if let Ok(val) = min_str.parse::<f64>() {
+                    eprintln!("DEBUG: Parsed value: {}", val);
                     config_clone.min_dev_buy_sol = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                    // Only apply if validation passes
+                    if config_clone.min_dev_buy_sol < config_clone.max_dev_buy_sol {
                     apply_config_live(&config, &control_tx, &config_clone);
-                    state.last_update_time = Some(std::time::Instant::now());
+                        should_update_time = true;
+                    } else {
+                        eprintln!("DEBUG: Validation failed: {} >= {}", config_clone.min_dev_buy_sol, config_clone.max_dev_buy_sol);
+                    }
+                } else {
+                    eprintln!("DEBUG: Failed to parse '{}' as f64", min_str);
                 }
+            }
+            if text_response.lost_focus() {
+                eprintln!("DEBUG: Min Dev Buy lost focus, current value: '{}'", min_str);
+            }
+            if should_update_time {
+                state.last_update_time = Some(std::time::Instant::now());
             }
         });
         
@@ -1917,9 +1171,11 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .changed() {
                 if let Ok(val) = max_str.parse::<f64>() {
                     config_clone.max_dev_buy_sol = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                    // Only apply if validation passes
+                    if config_clone.min_dev_buy_sol < config_clone.max_dev_buy_sol {
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
+                    }
                 }
             }
         });
@@ -1966,34 +1222,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     // Enhanced Social filters
     ui.group(|ui| {
-        ui.set_min_height(130.0);
+        ui.set_min_height(120.0);
         ui.heading(egui::RichText::new("📱 Social Filters")
             .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
-        
-        if ui.checkbox(&mut config_clone.require_socials, egui::RichText::new("Require Socials")
-                .size(13.0)).changed() {
-            // ✅ LIVE UPDATE: Apply immediately
-            apply_config_live(&config, &control_tx, &config_clone);
-            state.last_update_time = Some(std::time::Instant::now());
-        }
-        ui.add_space(6.0);
-        if ui.checkbox(&mut config_clone.require_twitter, egui::RichText::new("Require Twitter/X")
-                .size(13.0)).changed() {
-            // ✅ LIVE UPDATE: Apply immediately
-            apply_config_live(&config, &control_tx, &config_clone);
-            state.last_update_time = Some(std::time::Instant::now());
-        }
-        ui.add_space(6.0);
-        if ui.checkbox(&mut config_clone.require_website, egui::RichText::new("Require Website")
-                .size(13.0)).changed() {
-            // ✅ LIVE UPDATE: Apply immediately
-            apply_config_live(&config, &control_tx, &config_clone);
-            state.last_update_time = Some(std::time::Instant::now());
-        }
-        ui.add_space(8.0);
         
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Min Socials Count:")
@@ -2001,13 +1235,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .strong()
                 .color(egui::Color32::from_rgb(220, 230, 245)));
             ui.add_space(8.0);
-            let count_str = state.get_or_init("min_socials_count", config_clone.min_socials_count.to_string());
-            if ui.add(egui::TextEdit::singleline(count_str)
+            let min_socials_str = state.get_or_init("min_socials_count", config_clone.min_socials_count.to_string());
+            if ui.add(egui::TextEdit::singleline(min_socials_str)
                     .desired_width(150.0))
                     .changed() {
-                if let Ok(val) = count_str.parse::<usize>() {
+                if let Ok(val) = min_socials_str.parse::<usize>() {
                     config_clone.min_socials_count = val;
-                    // ✅ LIVE UPDATE: Apply immediately
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
                 }
@@ -2020,19 +1253,17 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     // Enhanced Token Metadata Filters
     ui.group(|ui| {
         ui.set_min_height(180.0);
-        ui.heading(egui::RichText::new("🏷️  Token Metadata Filters")
+        ui.heading(egui::RichText::new("🏷️ Token Metadata Filters")
             .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
         
-        if ui.checkbox(&mut config_clone.require_uppercase_token, egui::RichText::new("Require Uppercase Token")
-                .size(13.0)).changed() {
-            // ✅ LIVE UPDATE: Apply immediately
-            apply_config_live(&config, &control_tx, &config_clone);
-            state.last_update_time = Some(std::time::Instant::now());
-        }
-        ui.add_space(12.0);
+        ui.checkbox(&mut config_clone.require_uppercase_token, egui::RichText::new("Require Uppercase Token")
+            .size(13.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)));
+        ui.add_space(8.0);
         
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Max Name Length:")
@@ -2046,12 +1277,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .changed() {
                 if let Ok(val) = max_name_str.parse::<usize>() {
                     config_clone.max_name_length = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                }
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
-                }
             }
         });
+        
         ui.add_space(8.0);
         
         ui.horizontal(|ui| {
@@ -2066,12 +1297,12 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .changed() {
                 if let Ok(val) = min_ticker_str.parse::<usize>() {
                     config_clone.min_ticker_length = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                }
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
-                }
             }
         });
+        
         ui.add_space(8.0);
         
         ui.horizontal(|ui| {
@@ -2086,10 +1317,9 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .changed() {
                 if let Ok(val) = max_ticker_str.parse::<usize>() {
                     config_clone.max_ticker_length = val;
-                    // ✅ LIVE UPDATE: Apply immediately
+                }
                     apply_config_live(&config, &control_tx, &config_clone);
                     state.last_update_time = Some(std::time::Instant::now());
-                }
             }
         });
     });
@@ -2098,264 +1328,26 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     // Enhanced Submission mode
     ui.group(|ui| {
-        ui.set_min_height(110.0);
-        ui.heading(egui::RichText::new("🚀 Submission Mode")
+        ui.set_min_height(100.0);
+        ui.heading(egui::RichText::new("🎮 Submission Mode")
             .size(19.0)
             .strong()
             .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
         ui.add_space(16.0);
-        egui::ComboBox::from_id_salt("submission_mode")
-            .selected_text(config_clone.submission_mode.as_str())
-            .show_ui(ui, |ui| {
-                let mut changed = false;
-                if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Helius, "Helius").changed() {
-                    changed = true;
-                }
-                if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Jito, "Jito").changed() {
-                    changed = true;
-                }
-                if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::Rpc, "RPC").changed() {
-                    changed = true;
-                }
-                if ui.selectable_value(&mut config_clone.submission_mode, SubmissionMode::All, "All").changed() {
-                    changed = true;
-                }
-                if changed {
-                    // ✅ LIVE UPDATE: Apply immediately
-                    apply_config_live(&config, &control_tx, &config_clone);
-                    state.last_update_time = Some(std::time::Instant::now());
-                }
-            });
+        
+        ui.radio_value(&mut config_clone.submission_mode, SubmissionMode::Helius, "Helius")
+            .on_hover_text("Submit via Helius API");
+        ui.radio_value(&mut config_clone.submission_mode, SubmissionMode::Jito, "Jito")
+            .on_hover_text("Submit via Jito bundle");
+        ui.radio_value(&mut config_clone.submission_mode, SubmissionMode::Rpc, "RPC")
+            .on_hover_text("Submit via standard RPC");
+        ui.radio_value(&mut config_clone.submission_mode, SubmissionMode::All, "All")
+            .on_hover_text("Try all methods");
     });
-    
-    ui.add_space(20.0);
-    
-    // Enhanced live update status
-    if let Some(last_update) = state.last_update_time {
-        let elapsed = last_update.elapsed();
-        if elapsed.as_secs() < 2 {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("✅ Settings applied live")
-                    .size(13.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(100, 255, 160)));
-            });
-        }
-    }
-    
-    ui.add_space(16.0);
-    
-    // Enhanced action buttons with premium styling - centered layout
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(14.0, 0.0);
         
-        // Center buttons
-        let available_width = ui.available_width();
-        let buttons_width = 360.0; // Approximate width of both buttons + spacing
-        ui.add_space((available_width - buttons_width).max(0.0) / 2.0);
-        
-        // Clone state for use in button click handler
-        let state_clone = state.clone();
-        
-        // Enhanced Apply button now validates and ensures all fields are synced
-        let sync_response = ui.add(egui::Button::new(egui::RichText::new("💾 Sync All Settings")
-                .size(15.0)
-                .strong())
-                .fill(egui::Color32::from_rgb(100, 220, 120).linear_multiply(0.25))
-                .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 220, 120)))
-                .min_size(egui::vec2(170.0, 40.0))
-                .rounding(egui::Rounding::same(8.0)));
-        
-        if sync_response.clicked() {
-            // Parse all values from state strings before applying
-            // This ensures all values are up-to-date even if user didn't click out of field
-            if let Some(buy_amount_str) = &state_clone.buy_amount_str {
-                if let Ok(val) = buy_amount_str.parse::<f64>() {
-                    config_clone.buy_amount_sol = val;
-                }
-            }
-            if let Some(priority_fee_str) = &state_clone.priority_fee_str {
-                if let Ok(val) = priority_fee_str.parse::<u64>() {
-                    config_clone.priority_fee = val;
-                }
-            }
-            if let Some(min_dev_buy_str) = &state_clone.min_dev_buy_str {
-                if let Ok(val) = min_dev_buy_str.parse::<f64>() {
-                    config_clone.min_dev_buy_sol = val;
-                }
-            }
-            if let Some(max_dev_buy_str) = &state_clone.max_dev_buy_str {
-                if let Ok(val) = max_dev_buy_str.parse::<f64>() {
-                    config_clone.max_dev_buy_sol = val;
-                }
-            }
-            if let Some(min_dev_tokens_str) = &state_clone.min_dev_tokens_str {
-                let trimmed = min_dev_tokens_str.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(val) = trimmed.parse::<usize>() {
-                        config_clone.min_dev_tokens = val;
-                    }
-                }
-            }
-            if let Some(max_dev_tokens_str) = &state_clone.max_dev_tokens_str {
-                let trimmed = max_dev_tokens_str.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(val) = trimmed.parse::<usize>() {
-                        config_clone.max_dev_tokens = val;
-                    }
-                }
-            }
-            if let Some(min_socials_count_str) = &state_clone.min_socials_count_str {
-                if let Ok(val) = min_socials_count_str.parse::<usize>() {
-                    config_clone.min_socials_count = val;
-                }
-            }
-            config_clone.require_uppercase_token = state_clone.require_uppercase_token;
-            if let Some(max_name_length_str) = &state_clone.max_name_length_str {
-                if let Ok(val) = max_name_length_str.parse::<usize>() {
-                    config_clone.max_name_length = val;
-                }
-            }
-            if let Some(min_ticker_length_str) = &state_clone.min_ticker_length_str {
-                if let Ok(val) = min_ticker_length_str.parse::<usize>() {
-                    config_clone.min_ticker_length = val;
-                }
-            }
-            if let Some(max_ticker_length_str) = &state_clone.max_ticker_length_str {
-                if let Ok(val) = max_ticker_length_str.parse::<usize>() {
-                    config_clone.max_ticker_length = val;
-                }
-            }
-            if let Some(target_mint_str) = &state_clone.target_mint_str {
-                let trimmed = target_mint_str.trim();
-                if trimmed.is_empty() {
-                    config_clone.target_mint_address = None;
-                } else {
-                    if let Ok(pubkey) = solana_sdk::pubkey::Pubkey::from_str(trimmed) {
-                        config_clone.target_mint_address = Some(pubkey);
-                    }
-                }
-            }
-            if let Some(helius_api_key_str) = &state_clone.helius_api_key_str {
-                config_clone.helius_api_key = helius_api_key_str.trim().to_string();
-            }
-            if let Some(rpc_url_str) = &state_clone.rpc_url_str {
-                config_clone.rpc_url = rpc_url_str.trim().to_string();
-            }
-            if let Some(wss_url_str) = &state_clone.wss_url_str {
-                config_clone.wss_url = wss_url_str.trim().to_string();
-            }
-            // SOL price is now auto-refreshed, no need to update from state
-            if let Some(compute_units_str) = &state_clone.compute_units_str {
-                if let Ok(val) = compute_units_str.parse::<u32>() {
-                    config_clone.compute_units = val;
-                }
-            }
-            if let Some(jito_tip_str) = &state_clone.jito_tip_str {
-                if let Ok(val) = jito_tip_str.parse::<f64>() {
-                    config_clone.jito_tip = (val * 1e9) as u64;
-                }
-            }
-            if let Some(stop_loss_str) = &state_clone.stop_loss_percent_str {
-                if let Ok(val) = stop_loss_str.parse::<f64>() {
-                    if val >= 0.0 && val <= 100.0 {
-                        config_clone.stop_loss_percent = val;
-                    }
-                }
-            }
-            if let Some(take_profit_str) = &state_clone.take_profit_mc_str {
-                if let Ok(val) = take_profit_str.parse::<f64>() {
-                    if val > 0.0 {
-                        config_clone.take_profit_mc_sol = val;
-                    }
-                }
-            }
-            if let Some(sell_percent_str) = &state_clone.sell_percent_str {
-                if let Ok(val) = sell_percent_str.parse::<f64>() {
-                    if val > 0.0 && val <= 100.0 {
-                        config_clone.sell_percent = val;
-                    }
-                }
-            }
-            if let Some(monitor_interval_str) = &state_clone.monitor_interval_str {
-                if let Ok(val) = monitor_interval_str.parse::<u64>() {
-                    if val > 0 {
-                        config_clone.monitor_interval_sec = val;
-                    }
-                }
-            }
-            if let Some(breakeven_str) = &state_clone.breakeven_mc_threshold_str {
-                if let Ok(val) = breakeven_str.parse::<f64>() {
-                    if val > 0.0 {
-                        config_clone.breakeven_mc_threshold_sol = val;
-                    }
-                }
-            }
-            
-            // Validate and apply (sync all fields)
-            if let Err(e) = config_clone.validate() {
-                eprintln!("❌ Config validation failed: {}", e);
-            } else {
-                // Apply using live update function
-                apply_config_live(&config, &control_tx, &config_clone);
-                state.last_update_time = Some(std::time::Instant::now());
-                // Reset state to reflect new config values
+        // Save state back to UI data before ScrollArea ends
                 ui.data_mut(|d| {
-                    d.insert_temp(state_id, SettingsState::default());
-                });
-            }
-        }
-        
-        let reset_response = ui.add(egui::Button::new(egui::RichText::new("🔄 Reset to Defaults")
-                .size(15.0)
-                .strong())
-                .fill(egui::Color32::from_rgb(220, 160, 110).linear_multiply(0.25))
-                .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(220, 160, 110)))
-                .min_size(egui::vec2(170.0, 40.0))
-                .rounding(egui::Rounding::same(8.0)));
-        
-        if reset_response.clicked() {
-            let default_config = Config::default();
-            {
-                let mut cfg = config.write().unwrap();
-                *cfg = default_config.clone();
-            }
-            let _ = control_tx.send(BotControl::UpdateConfig(default_config));
-            // Reset state to reflect new default values
-            ui.data_mut(|d| {
-                d.insert_temp(state_id, SettingsState::default());
-            });
-        }
-    });
-    
-    // Save state back to memory and update from config
-    // Do this BEFORE any potential grid layout issues
-    let current_config_check = {
-        let cfg = config.read().unwrap();
-        (cfg.helius_api_key.clone(), cfg.min_dev_buy_sol, cfg.max_dev_buy_sol, cfg.min_dev_tokens, cfg.max_dev_tokens)
-    };
-    
-    ui.data_mut(|d| {
-        let stored_state = d.get_temp_mut_or_insert_with(state_id, || SettingsState::default());
-        // Update state values from current config if they differ
-        if stored_state.helius_api_key_str.as_ref().map(|s| s.as_str()) != Some(&current_config_check.0) {
-            stored_state.helius_api_key_str = Some(current_config_check.0.clone());
-        }
-        if stored_state.min_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.1) {
-            stored_state.min_dev_buy_str = Some(current_config_check.1.to_string());
-        }
-        if stored_state.max_dev_buy_str.as_ref().and_then(|s| s.parse::<f64>().ok()) != Some(current_config_check.2) {
-            stored_state.max_dev_buy_str = Some(current_config_check.2.to_string());
-        }
-        if stored_state.min_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.3) {
-            stored_state.min_dev_tokens_str = Some(current_config_check.3.to_string());
-        }
-        if stored_state.max_dev_tokens_str.as_ref().and_then(|s| s.parse::<usize>().ok()) != Some(current_config_check.4) {
-            stored_state.max_dev_tokens_str = Some(current_config_check.4.to_string());
-        }
-        // Also save the state we modified during rendering
-        *stored_state = state;
-    });
-    
+            d.insert_temp(state_id, state);
+        });
+        });
 }
-

@@ -84,6 +84,22 @@ pub struct TokenTracker {
 }
 
 impl TokenTracker {
+    /// Get the directory where tracker files should be stored
+    /// On macOS, when running from GUI, current_dir() can be root or system directory
+    /// So we use executable directory instead (where the binary is located)
+    fn get_tracker_dir() -> std::path::PathBuf {
+        // Use executable directory (where the binary is located)
+        // This works reliably on macOS even when launched from GUI
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                return exe_dir.to_path_buf();
+            }
+        }
+        
+        // Fallback: current directory (should not happen, but safe fallback)
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
     /// Create new tracker or load from latest existing JSON file
     pub fn new() -> Result<Self> {
         // Try to find and load the latest JSON file first
@@ -93,13 +109,30 @@ impl TokenTracker {
         
         // If no existing JSON found, create new tracker
         let session_start = Utc::now();
-        let timestamp = session_start.format("%Y%m%d_%H%M%S");
+        let timestamp = session_start.format("%Y-%m-%d_%H-%M");
 
-        let csv_path = format!("sniper_session_{}.csv", timestamp);
-        let json_path = format!("sniper_session_{}.json", timestamp);
+        let csv_filename = format!("tracker_{}.csv", timestamp);
+        let json_filename = format!("tracker_{}.json", timestamp);
+
+        // Use absolute paths in tracker directory (executable directory on macOS)
+        let tracker_dir = Self::get_tracker_dir();
+        let csv_path = tracker_dir.join(&csv_filename);
+        let json_path = tracker_dir.join(&json_filename);
+
+        // Convert to strings for storage
+        let csv_path_str = csv_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid CSV path"))?
+            .to_string();
+        let json_path_str = json_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid JSON path"))?
+            .to_string();
+
+        eprintln!("📁 DEBUG: Tracker directory: {:?}", tracker_dir);
+        eprintln!("📁 DEBUG: CSV file: {:?}", csv_path);
+        eprintln!("📁 DEBUG: JSON file: {:?}", json_path);
 
         // Create CSV header if file doesn't exist
-        if !Path::new(&csv_path).exists() {
+        if !csv_path.exists() {
             let mut file = File::create(&csv_path)?;
             writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
         }
@@ -115,8 +148,8 @@ impl TokenTracker {
                 min_mc_sol: f64::MAX,
                 max_mc_sol: 0.0,
             },
-            csv_path,
-            json_path,
+            csv_path: csv_path_str,
+            json_path: json_path_str,
         })
     }
     
@@ -125,15 +158,18 @@ impl TokenTracker {
         use std::fs;
         
         // Find all JSON files matching the pattern
-        let current_dir = std::env::current_dir()?;
+        let tracker_dir = Self::get_tracker_dir();
+        eprintln!("📁 DEBUG load_from_latest_json: Tracker directory: {:?}", tracker_dir);
         
-        let json_files: Vec<_> = fs::read_dir(&current_dir)?
+        let json_files: Vec<_> = fs::read_dir(&tracker_dir)?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let path = entry.path();
                 if path.is_file() {
                     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        if file_name.starts_with("sniper_session_") && file_name.ends_with(".json") {
+                        // Support both new format (tracker_) and old format (sniper_session_) for compatibility
+                        if (file_name.starts_with("tracker_") || file_name.starts_with("sniper_session_")) 
+                            && file_name.ends_with(".json") {
                             return Some((path.clone(), entry.metadata().ok()?.modified().ok()?));
                         }
                     }
@@ -228,7 +264,16 @@ impl TokenTracker {
         self.stats.buys.push(buy);
 
         // Save JSON
-        self.save_json()?;
+        if let Err(e) = self.save_json() {
+            eprintln!("❌ Failed to save JSON tracker: {}", e);
+            eprintln!("   JSON path: {}", self.json_path);
+            // Don't fail the whole operation if JSON save fails, but log it clearly
+        } else {
+            eprintln!("✅ JSON tracker saved: {}", self.json_path);
+        }
+
+        // Print periodic stats (every 10 buys)
+        self.print_periodic_stats();
 
         Ok(())
     }
@@ -344,11 +389,55 @@ impl TokenTracker {
             }
         }
         
+        // Get absolute path for display
+        let absolute_path = std::fs::canonicalize(&self.json_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&self.json_path));
+        
+        eprintln!("💾 Attempting to save JSON tracker to: {}", self.json_path);
+        
+        // Show absolute path for debugging
+        if let Ok(absolute_path) = std::fs::canonicalize(&self.json_path) {
+            eprintln!("📁 DEBUG save_json: Absolute path: {:?}", absolute_path);
+        } else {
+            eprintln!("📁 DEBUG save_json: Path: {}", self.json_path);
+        }
+        
         let file = File::create(&self.json_path)
-            .map_err(|e| anyhow::anyhow!("Failed to create JSON file {}: {}", self.json_path, e))?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &sanitized_stats)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize JSON: {}", e))?;
+            .map_err(|e| {
+                eprintln!("❌ ERROR creating JSON file {}: {}", self.json_path, e);
+                anyhow::anyhow!("Failed to create JSON file {}: {}", self.json_path, e)
+            })?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &sanitized_stats)
+            .map_err(|e| {
+                eprintln!("❌ ERROR serializing JSON: {}", e);
+                anyhow::anyhow!("Failed to serialize JSON: {}", e)
+            })?;
+        writer.flush()
+            .map_err(|e| {
+                eprintln!("❌ ERROR flushing JSON file: {}", e);
+                anyhow::anyhow!("Failed to flush JSON file: {}", e)
+            })?;
+        
+        // Verify file was created and show size
+        if let Ok(metadata) = std::fs::metadata(&self.json_path) {
+            eprintln!("✅ DEBUG save_json: File created successfully, size: {} bytes", metadata.len());
+        } else {
+            eprintln!("⚠️  DEBUG save_json: Warning: Could not verify file creation");
+        }
+        
+        // Print JSON tracker to console (only if there are buys to avoid empty output)
+        // Use eprintln! instead of println! so it shows in console even in GUI mode
+        if !sanitized_stats.buys.is_empty() {
+            let json_string = serde_json::to_string_pretty(&sanitized_stats)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize JSON for printing: {}", e))?;
+            eprintln!("\n📊 JSON TRACKER saved to: {}", absolute_path.display());
+            eprintln!("📊 JSON TRACKER:\n{}", json_string);
+        } else {
+            // Still show path even if empty
+            eprintln!("\n📊 JSON TRACKER saved to: {}", absolute_path.display());
+        }
+        
         Ok(())
     }
 
@@ -513,7 +602,13 @@ impl TokenTracker {
             buy.sold = true;
             buy.sell_signature = Some(sell_signature);
             // Save JSON after update
-            self.save_json()?;
+            if let Err(e) = self.save_json() {
+                eprintln!("❌ Failed to save JSON tracker after marking as sold: {}", e);
+                eprintln!("   JSON path: {}", self.json_path);
+                return Err(e);
+            } else {
+                eprintln!("✅ JSON tracker saved after marking as sold: {}", self.json_path);
+            }
             Ok(())
         } else {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
@@ -585,8 +680,14 @@ impl TokenTracker {
     pub fn update_token_amount(&mut self, mint: &str, token_amount: u64) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             buy.token_amount = Some(token_amount);
-            // Don't save JSON on every balance update to avoid excessive disk writes
-            // JSON will be saved on next buy/sell operation
+            // Save JSON after update (important for partial sells and manual operations)
+            if let Err(e) = self.save_json() {
+                eprintln!("❌ Failed to save JSON tracker after updating token amount: {}", e);
+                eprintln!("   JSON path: {}", self.json_path);
+                return Err(e);
+            } else {
+                eprintln!("✅ JSON tracker saved after updating token amount: {}", self.json_path);
+            }
             Ok(())
         } else {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
@@ -676,27 +777,18 @@ impl TokenTracker {
                 // We can calculate PnL using our_buy_sol + fees as cost basis
                 // token_price_sol is only needed for display, not for PnL calculation
                 
-                // ✅ CRITICAL FIX: Validate existing token_price_sol or calculate it from our_buy_sol and token_amount
-                // Problem: If token_price_sol is already set with invalid value (too small), we need to recalculate it
-                let needs_recalculation = buy.token_price_sol.is_none() || 
-                                         buy.token_price_sol.unwrap_or(0.0) <= 0.0 ||
-                                         buy.token_price_sol.unwrap_or(0.0) < 1e-12 ||
-                                         buy.token_price_sol.unwrap_or(0.0) > 1.0;
-                
-                if needs_recalculation {
+                // Only calculate entry price if it's not set (immutable after first calculation)
+                // Entry price should never be modified once set
+                if buy.token_price_sol.is_none() {
                     let tokens_actual_for_price = token_amount as f64 / 1e6; // Convert 6-decimal raw to actual tokens
                     if tokens_actual_for_price > 0.0 && buy.our_buy_sol > 0.0 {
                         // Entry price = SOL invested / tokens received
                         let calculated_price = buy.our_buy_sol / tokens_actual_for_price;
-                        // ✅ FIX: Validate entry price is reasonable (not too small due to precision errors)
-                        // If price is < 1e-12, it's likely a calculation error (too many tokens or wrong decimals)
+                        // Validate entry price is reasonable (not too small due to precision errors)
                         if calculated_price >= 1e-12 && calculated_price <= 1.0 {
                             buy.token_price_sol = Some(calculated_price);
-                        } else {
-                            // Calculated price is also invalid - clear it and use current_price_sol as fallback
-                            // Clear invalid entry price - PnL will be calculated using current_price_sol as fallback
-                            buy.token_price_sol = None;
                         }
+                        // If calculated price is invalid, leave it as None (don't try to fix with current price)
                     }
                 }
                 
@@ -719,31 +811,6 @@ impl TokenTracker {
                 let tokens_actual = token_amount as f64 / 1e6; // Convert 6-decimal raw to actual tokens
                 let current_value_gross = tokens_actual * current_price_sol;
                 buy.current_value_sol = Some(current_value_gross);
-                
-                // ✅ CRITICAL FIX: If token_price_sol is invalid (too small), update it using current_price_sol
-                // This prevents astronomical PnL% values in future calculations
-                // The invalid entry price was likely calculated incorrectly during buy
-                if buy.token_price_sol.is_some() {
-                    let existing_entry_price = buy.token_price_sol.unwrap();
-                    if existing_entry_price < 1e-12 || existing_entry_price > 1.0 {
-                        // Entry price is invalid - use current price as approximation (better than nothing)
-                        if current_price_sol >= 1e-12 && current_price_sol <= 1.0 {
-                            eprintln!("⚠️  FIXING invalid entry price for {}: was {:.12}, updating to current_price {:.12} SOL/token", 
-                                     &mint[..8], existing_entry_price, current_price_sol);
-                            buy.token_price_sol = Some(current_price_sol);
-                        } else {
-                            // Even current price is invalid - clear entry price
-                            eprintln!("⚠️  Entry price {:.12} invalid and current_price {:.12} also invalid - clearing entry_price for {}", 
-                                     existing_entry_price, current_price_sol, &mint[..8]);
-                            buy.token_price_sol = None;
-                        }
-                    }
-                } else {
-                    // No entry price set - try to use current price if valid
-                    if current_price_sol >= 1e-12 && current_price_sol <= 1.0 {
-                        buy.token_price_sol = Some(current_price_sol);
-                    }
-                }
                 
                 // Calculate PnL with ALL fees (Ultra Precision Mode):
                 // 1. Buy Fees (already paid):
@@ -951,6 +1018,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1017,6 +1087,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1087,6 +1160,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1146,6 +1222,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1211,6 +1290,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -1291,6 +1373,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         let buy2 = TokenBuy {
@@ -1324,6 +1409,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -1371,6 +1459,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1416,6 +1507,9 @@ mod tests {
             peak_mc_sol: None,
             peak_pnl_percent: None,
             breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1424,6 +1518,124 @@ mod tests {
         assert!(std::path::Path::new(&tracker.csv_path).exists());
         assert!(std::path::Path::new(&tracker.json_path).exists());
 
+        // Cleanup
+        let _ = std::fs::remove_file(&tracker.csv_path);
+        let _ = std::fs::remove_file(&tracker.json_path);
+    }
+
+    #[test]
+    fn test_json_tracker_file_naming_and_save() {
+        // Test that new tracker creates files with correct naming format
+        // First, clear any existing tracker files to ensure we get a new one
+        let current_dir = std::env::current_dir().unwrap();
+        let json_files: Vec<_> = std::fs::read_dir(&current_dir).unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if (file_name.starts_with("tracker_") || file_name.starts_with("sniper_session_")) 
+                            && file_name.ends_with(".json") {
+                            return Some(path);
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        
+        // Clean up old files for clean test
+        for json_file in &json_files {
+            let _ = std::fs::remove_file(json_file);
+            // Also remove corresponding CSV
+            if let Some(csv_path) = json_file.to_str().map(|s| s.replace(".json", ".csv")) {
+                let _ = std::fs::remove_file(&csv_path);
+            }
+        }
+        
+        let mut tracker = TokenTracker::new().unwrap();
+        
+        // Verify file name format: tracker_YYYY-MM-DD_HH-MM.json (new format)
+        // or sniper_session_... (old format for compatibility)
+        assert!(
+            tracker.json_path.starts_with("tracker_") || tracker.json_path.starts_with("sniper_session_"),
+            "JSON path should start with 'tracker_' or 'sniper_session_', got: {}", tracker.json_path
+        );
+        assert!(tracker.json_path.ends_with(".json"));
+        
+        // Check format only if it's the new format (tracker_)
+        if tracker.json_path.starts_with("tracker_") {
+            // Check format: tracker_YYYY-MM-DD_HH-MM.json (should have dashes)
+            let name_without_prefix = tracker.json_path.strip_prefix("tracker_").unwrap();
+            let name_without_suffix = name_without_prefix.strip_suffix(".json").unwrap();
+            
+            // Should match pattern: YYYY-MM-DD_HH-MM
+            let parts: Vec<&str> = name_without_suffix.split('_').collect();
+            assert_eq!(parts.len(), 2, "Filename should have date and time separated by underscore");
+            
+            // Date part should be YYYY-MM-DD
+            let date_parts: Vec<&str> = parts[0].split('-').collect();
+            assert_eq!(date_parts.len(), 3, "Date should be in YYYY-MM-DD format");
+            assert_eq!(date_parts[0].len(), 4, "Year should be 4 digits");
+            
+            // Time part should be HH-MM
+            let time_parts: Vec<&str> = parts[1].split('-').collect();
+            assert_eq!(time_parts.len(), 2, "Time should be in HH-MM format");
+        }
+        
+        // Add a buy to trigger JSON save
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_json_tracker_mint".to_string(),
+            signature: "test_json_tracker_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 1,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(35.0),
+            mc_at_entry_sol: Some(36.5),
+            token_price_sol: Some(0.00005),
+            token_amount: None,
+            user_token_account: None,
+            bonding_curve: None,
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: None,
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+        };
+        
+        // Record buy should save JSON
+        assert!(tracker.record_buy(buy).is_ok());
+        
+        // Verify JSON file exists
+        assert!(std::path::Path::new(&tracker.json_path).exists(), 
+                "JSON file should exist at: {}", tracker.json_path);
+        
+        // Verify JSON content is valid
+        let json_content = std::fs::read_to_string(&tracker.json_path).unwrap();
+        let parsed: TrackerStats = serde_json::from_str(&json_content)
+            .expect("JSON should be valid and parseable");
+        
+        assert_eq!(parsed.total_buys, 1);
+        assert_eq!(parsed.buys.len(), 1);
+        assert_eq!(parsed.buys[0].mint, "test_json_tracker_mint");
+        
         // Cleanup
         let _ = std::fs::remove_file(&tracker.csv_path);
         let _ = std::fs::remove_file(&tracker.json_path);

@@ -261,6 +261,11 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                 return;
             }
             
+            // Scroll to top if auto-scroll enabled (newest events are at top)
+            if *auto_scroll && log.len() > 0 {
+                ui.scroll_to_cursor(Some(egui::Align::TOP));
+            }
+            
             for event in events_to_show {
                     let (color, icon, bg_color) = match event {
                     TokenEvent::Detected { .. } => (
@@ -466,11 +471,6 @@ pub fn render(ui: &mut egui::Ui, event_log: &Arc<RwLock<VecDeque<TokenEvent>>>, 
                     6.0,
                     bg_color,
                 );
-            }
-            
-            // Scroll to bottom if auto-scroll enabled
-            if *auto_scroll && log.len() > 0 {
-                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
             }
         });
 }

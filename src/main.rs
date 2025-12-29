@@ -175,16 +175,16 @@ fn main() -> Result<()> {
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([600.0, 400.0]) // Minimum width to fit all 7 tabs
             .with_title(if cfg!(debug_assertions) {
-                "Pump.fun Sniper Bot - DEBUG BUILD"
+                "SNIPER - DEBUG BUILD"
             } else {
-                "Pump.fun Sniper Bot"
+                "SNIPER"
             }),
         ..Default::default()
     };
     
     // Run with better error handling
     if let Err(e) = eframe::run_native(
-        "Pump.fun Sniper",
+        "SNIPER",
         options,
         Box::new(|cc| {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gui::GuiApp::new(cc))) {

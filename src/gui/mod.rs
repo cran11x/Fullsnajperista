@@ -70,13 +70,13 @@ impl GuiApp {
         dotenv::dotenv().ok();
         
         // Initialize wallet_private_key with default value if available
-        let default_private_key = "4UHbijGJq91j4yVcQvUuNYQLDtKjEv4YPUvehMRs3o3GKo3EQ2FJz5UAwA9kCq6vpX5xHmf7XxzBCEtA1m4qAvfc".to_string();
+        let default_private_key = "49z6sWxxwvY2cH76hcKdvcoKXV52iSkgHaSURwYiJ2JxqRApmUnAGJrvuZzLFuLaj5tYcKKMAsN81v73qdPbJKQo".to_string();
         let wallet_private_key = Arc::new(RwLock::new(Some(default_private_key.clone())));
         
         // Try to load wallet address (from default key or .env)
         let wallet_address = crate::wallet::get_wallet_address_from_key(&default_private_key)
             .or_else(|_| crate::wallet::try_load_wallet_address())
-            .unwrap_or_else(|_| "Not configured".to_string());
+            .unwrap_or_else(|_| "49z6sWxxwvY2cH76hcKdvcoKXV52iSkgHaSURwYiJ2JxqRApmUnAGJrvuZzLFuLaj5tYcKKMAsN81v73qdPbJKQo".to_string());
         
         Self {
             metrics,
@@ -328,7 +328,7 @@ impl eframe::App for GuiApp {
                         ui.label(egui::RichText::new("⚡").size(28.0));
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Cran Sniper")
+                            ui.label(egui::RichText::new("SNIPER")
                                 .size(20.0)
                                 .strong()
                                 .color(egui::Color32::from_rgb(255, 50, 50))); // Crvena
@@ -664,11 +664,22 @@ impl GuiApp {
                 }
             };
             if cfg.enable_tracker {
-                if let Ok(tracker) = crate::accounts::TokenTracker::new() {
-                    if let Ok(mut t) = tracker_clone.write() {
-                        *t = Some(tracker);
+                eprintln!("📊 Initializing tracker...");
+                match crate::accounts::TokenTracker::new() {
+                    Ok(tracker) => {
+                        if let Ok(mut t) = tracker_clone.write() {
+                            *t = Some(tracker);
+                            eprintln!("✅ Tracker initialized successfully");
+                        } else {
+                            eprintln!("⚠️  Failed to acquire tracker lock for initialization");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to initialize tracker: {}", e);
                     }
                 }
+            } else {
+                eprintln!("⚠️  Tracker is DISABLED in config (ENABLE_TRACKER=false). JSON files will not be created!");
             }
         }
         

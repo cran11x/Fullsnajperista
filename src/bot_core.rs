@@ -80,6 +80,9 @@ pub async fn run_bot(
     let call_number = RUN_BOT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     eprintln!("[BOT] Started (call #{})", call_number);
     
+    // Refresh SOL price on bot startup (before any operations that might use it)
+    crate::utils::refresh_sol_price_if_needed().await;
+    
     // Load initial config
     let initial_config = {
         let cfg = config.read().unwrap();
@@ -211,6 +214,14 @@ pub async fn run_bot(
                         // ✅ FIX: Signal shutdown to background tasks
                         let _ = shutdown_tx.send(true);
                         tokio::time::sleep(Duration::from_millis(100)).await;
+                        
+                        // Print tracker summary before stopping
+                        if let Ok(tracker_guard) = tracker.write() {
+                            if let Some(tracker_ref) = tracker_guard.as_ref() {
+                                tracker_ref.print_summary();
+                            }
+                        }
+                        
                         eprintln!("[BOT] Stopped");
                         return Ok(());
                     }
@@ -4159,7 +4170,11 @@ pub async fn execute_manual_buy(
                     eprintln!("✅ Successfully recorded manual buy in tracker");
                     buy_recorded = true;
                 }
+            } else {
+                eprintln!("⚠️  CRITICAL: Tracker is None - cannot record buy! Make sure ENABLE_TRACKER is true in config.");
             }
+        } else {
+            eprintln!("⚠️  Failed to acquire tracker lock for manual buy");
         }
         
         // ✅ RETRY LOGIC: If initial try failed, retry after delay
@@ -4811,15 +4826,50 @@ async fn execute_sell_with_percent(
     let signature = tx_sig.to_string();
 
     // Update tracker based on sell type
-    if let Ok(mut tracker_opt) = tracker.write() {
-        if let Some(tracker) = tracker_opt.as_mut() {
-            if sell_percent >= 100.0 {
-                // Full sell
-                let _ = tracker.mark_as_sold(&position.mint, signature.clone());
+    let update_result = {
+        if let Ok(mut tracker_opt) = tracker.try_write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                if sell_percent >= 100.0 {
+                    // Full sell
+                    tracker.mark_as_sold(&position.mint, signature.clone())
+                } else {
+                    // Partial sell - update balance and track
+                    let new_balance = token_balance - sell_amount;
+                    tracker.update_token_amount(&position.mint, new_balance)
+                }
             } else {
-                // Partial sell - update balance and track
-                let new_balance = token_balance - sell_amount;
-                let _ = tracker.update_token_amount(&position.mint, new_balance);
+                Err(anyhow::anyhow!("Tracker is None"))
+            }
+        } else {
+            Err(anyhow::anyhow!("Failed to acquire tracker lock"))
+        }
+    };
+    
+    match update_result {
+        Ok(_) => {
+            eprintln!("✅ Position updated in tracker, JSON saved");
+        }
+        Err(e) => {
+            eprintln!("⚠️  Failed to update tracker: {}, will retry...", e);
+            // Retry after delay (lock is dropped, so we can await safely)
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if let Ok(mut tracker_opt) = tracker.try_write() {
+                if let Some(tracker) = tracker_opt.as_mut() {
+                    let retry_result = if sell_percent >= 100.0 {
+                        tracker.mark_as_sold(&position.mint, signature.clone())
+                    } else {
+                        let new_balance = token_balance - sell_amount;
+                        tracker.update_token_amount(&position.mint, new_balance)
+                    };
+                    match retry_result {
+                        Ok(_) => eprintln!("✅ Position updated in tracker (retry), JSON saved"),
+                        Err(e) => eprintln!("❌ CRITICAL: Failed to save sell to tracker even after retry: {} - JSON may not be updated!", e),
+                    }
+                } else {
+                    eprintln!("❌ CRITICAL: Tracker is None after retry - JSON may not be updated!");
+                }
+            } else {
+                eprintln!("❌ CRITICAL: Failed to acquire tracker lock even after retry - JSON may not be updated!");
             }
         }
     }
