@@ -1419,5 +1419,112 @@ mod tests {
         };
         assert!(!should_process_token(&config, &accounts, None, Some(&metadata_short_ticker)).unwrap());
     }
+
+    #[test]
+    fn test_ticker_3_7_and_twitter_community_filter() {
+        let mut config = create_test_config();
+        // Set ticker length filter: 3-7 characters
+        config.min_ticker_length = 3;
+        config.max_ticker_length = 7;
+        // Enable Twitter Community filter
+        config.enable_twitter_community = true;
+
+        let accounts = create_test_accounts(5.0); // Valid dev buy amount
+
+        // Test 1: Valid token - ticker length 4 (in range 3-7) + Twitter Community
+        let metadata_valid = TokenMetadata {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(), // 4 chars, in range 3-7
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        let socials_community = Socials {
+            twitter: Some("https://x.com/i/communities/123456".to_string()), // Community URL
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_valid)).unwrap(),
+            "Token with ticker length 4 and Twitter Community should pass");
+
+        // Test 2: Invalid - ticker too short (2 chars)
+        let metadata_short = TokenMetadata {
+            name: "Test Token".to_string(),
+            symbol: "TE".to_string(), // 2 chars, too short
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_short)).unwrap(),
+            "Token with ticker length 2 should fail");
+
+        // Test 3: Invalid - ticker too long (8 chars)
+        let metadata_long = TokenMetadata {
+            name: "Test Token".to_string(),
+            symbol: "TESTTEST".to_string(), // 8 chars, too long
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_long)).unwrap(),
+            "Token with ticker length 8 should fail");
+
+        // Test 4: Invalid - Twitter Account (not Community)
+        let socials_account = Socials {
+            twitter: Some("https://x.com/testaccount".to_string()), // Account URL, not Community
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, Some(&socials_account), Some(&metadata_valid)).unwrap(),
+            "Token with Twitter Account (not Community) should fail");
+
+        // Test 5: Invalid - Twitter Status (not Community)
+        let socials_status = Socials {
+            twitter: Some("https://x.com/testaccount/status/123456".to_string()), // Status URL, not Community
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(!should_process_token(&config, &accounts, Some(&socials_status), Some(&metadata_valid)).unwrap(),
+            "Token with Twitter Status (not Community) should fail");
+
+        // Test 6: Invalid - No socials at all
+        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap(),
+            "Token with no socials should fail when Twitter Community filter is enabled");
+
+        // Test 7: Valid - ticker length exactly 3 (minimum)
+        let metadata_min = TokenMetadata {
+            name: "Test Token".to_string(),
+            symbol: "ABC".to_string(), // 3 chars, minimum
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_min)).unwrap(),
+            "Token with ticker length 3 (minimum) should pass");
+
+        // Test 8: Valid - ticker length exactly 7 (maximum)
+        let metadata_max = TokenMetadata {
+            name: "Test Token".to_string(),
+            symbol: "ABCDEFG".to_string(), // 7 chars, maximum
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_max)).unwrap(),
+            "Token with ticker length 7 (maximum) should pass");
+    }
 }
 
