@@ -224,6 +224,12 @@ impl SettingsState {
                 }
                 self.breakeven_mc_threshold_str.as_mut().unwrap()
             }
+            "breakeven_mc_threshold_usd" => {
+                if self.breakeven_mc_threshold_str.is_none() {
+                    self.breakeven_mc_threshold_str = Some(default);
+                }
+                self.breakeven_mc_threshold_str.as_mut().unwrap()
+            }
             "max_name_length" => {
                 if self.max_name_length_str.is_none() {
                     self.max_name_length_str = Some(default);
