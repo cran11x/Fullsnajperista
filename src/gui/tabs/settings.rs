@@ -182,6 +182,12 @@ impl SettingsState {
                 }
                 self.take_profit_mc_str.as_mut().unwrap()
             }
+            "take_profit_mc_usd" => {
+                if self.take_profit_mc_str.is_none() {
+                    self.take_profit_mc_str = Some(default);
+                }
+                self.take_profit_mc_str.as_mut().unwrap()
+            }
             "sell_percent" => {
                 if self.sell_percent_str.is_none() {
                     self.sell_percent_str = Some(default);
