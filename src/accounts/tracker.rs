@@ -21,6 +21,8 @@ pub struct TokenBuy {
     pub twitter: Option<String>,
     pub website: Option<String>,
     pub telegram: Option<String>,
+    pub discord: Option<String>,
+    pub twitter_type: Option<String>, // "account", "community", "status", or None
     pub creator_token_count: u32,
     pub detection_method: String, // "instruction" or "balance_fallback"
 
@@ -152,7 +154,7 @@ impl TokenTracker {
         // Create CSV header if file doesn't exist
         if !csv_path.exists() {
             let mut file = File::create(&csv_path)?;
-            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
+            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
         }
 
         Ok(Self {
@@ -338,7 +340,7 @@ impl TokenTracker {
         
         writeln!(
             writer,
-            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
             buy.token_number,
             escape_csv(&buy.mint),
             escape_csv(&buy.signature),
@@ -348,8 +350,10 @@ impl TokenTracker {
             buy.timestamp.to_rfc3339(),
             buy.has_socials,
             buy.twitter.as_deref().map(escape_csv).unwrap_or_default(),
+            buy.twitter_type.as_deref().map(escape_csv).unwrap_or_default(),
             buy.website.as_deref().map(escape_csv).unwrap_or_default(),
             buy.telegram.as_deref().map(escape_csv).unwrap_or_default(),
+            buy.discord.as_deref().map(escape_csv).unwrap_or_default(),
             buy.creator_token_count,
             escape_csv(&buy.detection_method),
             mc_detection_str,
@@ -607,7 +611,7 @@ impl TokenTracker {
         // Clear CSV file
         if let Ok(mut file) = std::fs::File::create(&self.csv_path) {
             use std::io::Write;
-            let _ = writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL");
+            let _ = writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL");
         }
         
         Ok(())
@@ -1073,6 +1077,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),
@@ -1148,6 +1154,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(51.0),
@@ -1227,6 +1235,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),
@@ -1295,6 +1305,8 @@ mod tests {
             twitter: Some("@test".to_string()),
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: Some("account".to_string()),
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(35.0),
@@ -1356,7 +1368,7 @@ mod tests {
         };
 
         // Create CSV header
-        std::fs::write(&csv_path, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,Website,Telegram,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL\n").unwrap();
+        std::fs::write(&csv_path, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL\n").unwrap();
 
         let buy = TokenBuy {
             token_number: 1,
@@ -1370,6 +1382,8 @@ mod tests {
             twitter: Some("@test".to_string()),
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: Some("account".to_string()),
             creator_token_count: 1,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(35.0),
@@ -1800,6 +1814,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),
@@ -1874,6 +1890,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),
@@ -1942,6 +1960,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),
@@ -2021,6 +2041,8 @@ mod tests {
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "instruction".to_string(),
             mc_at_detection_sol: Some(36.5),

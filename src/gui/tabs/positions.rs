@@ -934,7 +934,12 @@ fn render_token_info_window(
                                 if let Some(twitter) = &pos.twitter {
                                     if !twitter.is_empty() {
                                         ui.label(egui::RichText::new("Twitter:").strong());
-                                        if ui.link(egui::RichText::new(twitter.clone())
+                                        let twitter_display = if let Some(ref twitter_type) = pos.twitter_type {
+                                            format!("{} ({})", twitter, twitter_type)
+                                        } else {
+                                            twitter.clone()
+                                        };
+                                        if ui.link(egui::RichText::new(twitter_display.clone())
                                             .color(egui::Color32::from_rgb(160, 210, 255))
                                         ).clicked() {
                                             let _ = open::that(twitter.clone());
@@ -967,7 +972,19 @@ fn render_token_info_window(
                                     }
                                 }
                                 
-                                if pos.twitter.is_none() && pos.website.is_none() && pos.telegram.is_none() {
+                                if let Some(discord) = &pos.discord {
+                                    if !discord.is_empty() {
+                                        ui.label(egui::RichText::new("Discord:").strong());
+                                        if ui.link(egui::RichText::new(discord.clone())
+                                            .color(egui::Color32::from_rgb(160, 210, 255))
+                                        ).clicked() {
+                                            let _ = open::that(discord.clone());
+                                        }
+                                        ui.end_row();
+                                    }
+                                }
+                                
+                                if pos.twitter.is_none() && pos.website.is_none() && pos.telegram.is_none() && pos.discord.is_none() {
                                     ui.label(egui::RichText::new("Socials:").strong());
                                     ui.label(egui::RichText::new("None")
                                         .color(egui::Color32::from_rgb(160, 160, 160)));

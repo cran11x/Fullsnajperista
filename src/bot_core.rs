@@ -2079,13 +2079,26 @@ async fn process_and_buy(
                             twitter: socials_opt.as_ref().and_then(|s| s.twitter.clone()),
                             website: socials_opt.as_ref().and_then(|s| s.website.clone()),
                             telegram: socials_opt.as_ref().and_then(|s| s.telegram.clone()),
+                            discord: socials_opt.as_ref().and_then(|s| s.discord.clone()),
+                            twitter_type: socials_opt.as_ref().and_then(|s| {
+                                s.twitter.as_ref().map(|url| {
+                                    use crate::filters::get_twitter_type;
+                                    match get_twitter_type(url) {
+                                        crate::filters::TwitterType::Account => "account".to_string(),
+                                        crate::filters::TwitterType::Community => "community".to_string(),
+                                        crate::filters::TwitterType::Status => "status".to_string(),
+                                        crate::filters::TwitterType::Unknown => "unknown".to_string(),
+                                    }
+                                })
+                            }),
                             has_socials: {
                                 // Set has_socials based on actual fields, not just socials_opt
                                 // This ensures has_socials is correct even if socials fetch failed but fields are set
                                 let twitter = socials_opt.as_ref().and_then(|s| s.twitter.clone());
                                 let website = socials_opt.as_ref().and_then(|s| s.website.clone());
                                 let telegram = socials_opt.as_ref().and_then(|s| s.telegram.clone());
-                                twitter.is_some() || website.is_some() || telegram.is_some()
+                                let discord = socials_opt.as_ref().and_then(|s| s.discord.clone());
+                                twitter.is_some() || website.is_some() || telegram.is_some() || discord.is_some()
                             },
                             creator_token_count: creator_count,
                             detection_method: if dev_buy_lamports > 0 {
@@ -2585,6 +2598,18 @@ async fn process_and_buy(
                         twitter: socials_opt.as_ref().and_then(|s| s.twitter.clone()),
                         website: socials_opt.as_ref().and_then(|s| s.website.clone()),
                         telegram: socials_opt.as_ref().and_then(|s| s.telegram.clone()),
+                        discord: socials_opt.as_ref().and_then(|s| s.discord.clone()),
+                        twitter_type: socials_opt.as_ref().and_then(|s| {
+                            s.twitter.as_ref().map(|url| {
+                                use crate::filters::get_twitter_type;
+                                match get_twitter_type(url) {
+                                    crate::filters::TwitterType::Account => "account".to_string(),
+                                    crate::filters::TwitterType::Community => "community".to_string(),
+                                    crate::filters::TwitterType::Status => "status".to_string(),
+                                    crate::filters::TwitterType::Unknown => "unknown".to_string(),
+                                }
+                            })
+                        }),
                         creator_token_count: creator_count,
                         detection_method: if dev_buy_lamports > 0 {
                             "instruction".to_string()
@@ -4190,6 +4215,8 @@ pub async fn execute_manual_buy(
             twitter: None,
             website: None,
             telegram: None,
+            discord: None,
+            twitter_type: None,
             creator_token_count: 0,
             detection_method: "manual".to_string(),
             mc_at_detection_sol: None,
