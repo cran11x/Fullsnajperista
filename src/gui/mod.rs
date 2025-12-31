@@ -78,6 +78,17 @@ impl GuiApp {
             .or_else(|_| crate::wallet::try_load_wallet_address())
             .unwrap_or_else(|_| "49z6sWxxwvY2cH76hcKdvcoKXV52iSkgHaSURwYiJ2JxqRApmUnAGJrvuZzLFuLaj5tYcKKMAsN81v73qdPbJKQo".to_string());
         
+        // ✅ Refresh SOL price immediately on UI startup (don't use default)
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new();
+            if let Ok(rt) = rt {
+                rt.block_on(async {
+                    crate::utils::refresh_sol_price_if_needed().await;
+                    eprintln!("✅ SOL price refreshed on UI startup");
+                });
+            }
+        });
+        
         Self {
             metrics,
             config,

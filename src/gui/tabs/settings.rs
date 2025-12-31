@@ -735,54 +735,60 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
-            // Enhanced Take Profit MC
+            // Enhanced Take Profit MC (USD input, converted to SOL)
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Take Profit MC (USD):")
                     .size(13.0)
                     .strong()
                     .color(egui::Color32::from_rgb(220, 230, 245)));
                 ui.add_space(8.0);
-                let take_profit_str = state.get_or_init("take_profit_mc", config_clone.take_profit_mc_sol.to_string());
+                use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price};
+                let take_profit_usd = sol_to_usd(config_clone.take_profit_mc_sol);
+                let take_profit_str = state.get_or_init("take_profit_mc_usd", take_profit_usd.to_string());
                 if ui.add(egui::TextEdit::singleline(take_profit_str)
                         .desired_width(150.0))
                         .changed() {
-                    if let Ok(val) = take_profit_str.parse::<f64>() {
-                        if val > 0.0 {
-                            config_clone.take_profit_mc_sol = val;
+                    if let Ok(val_usd) = take_profit_str.parse::<f64>() {
+                        if val_usd > 0.0 {
+                            // Convert USD to SOL
+                            config_clone.take_profit_mc_sol = usd_to_sol(val_usd);
                             apply_config_live(&config, &control_tx, &config_clone);
                             state.last_update_time = Some(std::time::Instant::now());
                         }
                     }
                 }
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("(Sell when MC reaches this value)")
+                ui.label(egui::RichText::new(format!("(≈ {:.2} SOL at ${:.2}/SOL)", config_clone.take_profit_mc_sol, get_cached_sol_price()))
                     .size(11.0)
                     .color(egui::Color32::from_rgb(160, 170, 185)));
             });
             
             ui.add_space(8.0);
             
-            // 🆕 Breakeven Stop Loss Threshold
+            // 🆕 Breakeven Stop Loss Threshold (USD input, converted to SOL)
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("🛡️  Breakeven MC Threshold (USD):")
                     .size(13.0)
                     .strong()
                     .color(egui::Color32::from_rgb(255, 200, 100)));
                 ui.add_space(8.0);
-                let breakeven_str = state.get_or_init("breakeven_mc_threshold", config_clone.breakeven_mc_threshold_sol.to_string());
+                use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price};
+                let breakeven_usd = sol_to_usd(config_clone.breakeven_mc_threshold_sol);
+                let breakeven_str = state.get_or_init("breakeven_mc_threshold_usd", breakeven_usd.to_string());
                 if ui.add(egui::TextEdit::singleline(breakeven_str)
                         .desired_width(150.0))
                         .changed() {
-                    if let Ok(val) = breakeven_str.parse::<f64>() {
-                        if val > 0.0 {
-                            config_clone.breakeven_mc_threshold_sol = val;
+                    if let Ok(val_usd) = breakeven_str.parse::<f64>() {
+                        if val_usd > 0.0 {
+                            // Convert USD to SOL
+                            config_clone.breakeven_mc_threshold_sol = usd_to_sol(val_usd);
                             apply_config_live(&config, &control_tx, &config_clone);
                             state.last_update_time = Some(std::time::Instant::now());
                         }
                     }
                 }
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("(Move stop loss to entry when MC reaches this)")
+                ui.label(egui::RichText::new(format!("(≈ {:.2} SOL at ${:.2}/SOL)", config_clone.breakeven_mc_threshold_sol, get_cached_sol_price()))
                     .size(11.0)
                     .color(egui::Color32::from_rgb(160, 170, 185)));
             });

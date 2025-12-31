@@ -284,6 +284,16 @@ pub fn sol_to_usd(sol: f64) -> f64 {
     sol * get_cached_sol_price()
 }
 
+/// Convert USD to SOL
+pub fn usd_to_sol(usd: f64) -> f64 {
+    let sol_price = get_cached_sol_price();
+    if sol_price > 0.0 {
+        usd / sol_price
+    } else {
+        0.0
+    }
+}
+
 /// Format SOL amount with USD equivalent
 pub fn format_sol_with_usd(sol: f64) -> String {
     format!("{:.4} SOL (${:.2})", sol, sol_to_usd(sol))
