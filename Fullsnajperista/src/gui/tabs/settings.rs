@@ -1406,6 +1406,302 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     
     ui.add_space(12.0);
     
+    // Enhanced Advanced Filters Section
+    ui.group(|ui| {
+        ui.set_min_height(400.0);
+        ui.heading(egui::RichText::new("🔍 Advanced Filters")
+            .size(19.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 70, 70))); // Svijetla crvena
+        ui.add_space(16.0);
+        
+        ui.label(egui::RichText::new("Enable specific filters to refine token selection")
+            .size(12.0)
+            .color(egui::Color32::from_rgb(170, 180, 195)));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("ℹ️  These filters work independently from basic social filters above. You don't need to enable 'Require Twitter' to use 'Has Twitter' filter.")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(150, 200, 255)));
+        ui.add_space(10.0);
+        
+        // Basic Filters
+        ui.collapsing(egui::RichText::new("📋 Basic Filters")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)), |ui| {
+            ui.add_space(8.0);
+            egui::Grid::new("basic_filters_grid")
+                .num_columns(3)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                if ui.checkbox(&mut config_clone.enable_has_twitter, "Has Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_has_telegram, "Has Telegram").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_has_website, "Has Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_social_count_1_plus, "Social Count 1+").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_social_count_2_plus, "Social Count 2+").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_social_count_3, "Social Count = 3").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_website_com, "Website .com").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_website_org, "Website .org").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_website_xyz, "Website .xyz").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_uppercase, "Uppercase Symbol").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_lowercase, "Lowercase Symbol").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_symbol_3_4, "Symbol 3-4 chars").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_symbol_3_6, "Symbol 3-6 chars").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_symbol_3_7, "Symbol 3-7 chars").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_name_short, "Name ≤20 chars").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_name_medium, "Name 11-20 chars").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+            });
+        });
+        
+        ui.add_space(8.0);
+        
+        // Twitter Type Filters
+        ui.collapsing(egui::RichText::new("🐦 Twitter Type Filters")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)), |ui| {
+            ui.add_space(8.0);
+            egui::Grid::new("twitter_filters_grid")
+                .num_columns(3)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                if ui.checkbox(&mut config_clone.enable_twitter_account, "Twitter Account").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_community, "Twitter Community").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_status, "Twitter Status").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_twitter_no_status, "Twitter No Status").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_account_or_community, "Account or Community").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_username_length_short, "Username ≤15").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_twitter_username_length_medium, "Username 15-25").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_has_twitter_with_username, "Has Twitter Username").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+            });
+        });
+        
+        ui.add_space(8.0);
+        
+        // Brand Matching Filters
+        ui.collapsing(egui::RichText::new("🎯 Brand Matching Filters")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)), |ui| {
+            ui.add_space(8.0);
+            egui::Grid::new("brand_filters_grid")
+                .num_columns(3)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                if ui.checkbox(&mut config_clone.enable_has_brand_match, "Has Brand Match").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_brand_score_2_plus, "Brand Score ≥2").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_brand_score_3_plus, "Brand Score ≥3").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_brand_score_4_plus, "Brand Score ≥4").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_perfect_brand_match, "Perfect Brand Match").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_matches_website, "Twitter = Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_name_matches_website, "Name = Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_symbol_matches_website, "Symbol = Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_name_matches_twitter, "Name = Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_symbol_matches_twitter, "Symbol = Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+            });
+        });
+        
+        ui.add_space(8.0);
+        
+        // Combined Brand Matching Filters
+        ui.collapsing(egui::RichText::new("🔗 Combined Brand Matching Filters")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)), |ui| {
+            ui.add_space(8.0);
+            egui::Grid::new("combined_filters_grid")
+                .num_columns(2)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                if ui.checkbox(&mut config_clone.enable_name_matches_both, "Name = Website AND Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_symbol_matches_both, "Symbol = Website AND Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_twitter_and_name_match_website, "Twitter AND Name = Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_and_symbol_match_website, "Twitter AND Symbol = Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_name_and_symbol_match_twitter, "Name AND Symbol = Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_brand_match_and_twitter, "Brand Match AND Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_brand_match_and_website, "Brand Match AND Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_brand_match_and_twitter_and_website, "Brand Match AND Twitter AND Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_perfect_brand_and_twitter, "Perfect Brand AND Twitter").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_perfect_brand_and_website, "Perfect Brand AND Website").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_perfect_brand_and_twitter_community, "Perfect Brand AND Twitter Community").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_brand_score_3_plus_and_com, "Brand Score ≥3 AND .com").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_brand_score_4_plus_and_com, "Brand Score ≥4 AND .com").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                if ui.checkbox(&mut config_clone.enable_twitter_match_website_and_com, "Twitter = Website AND .com").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+                if ui.checkbox(&mut config_clone.enable_name_match_website_and_com, "Name = Website AND .com").changed() {
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+                ui.end_row();
+            });
+        });
+    });
+    
+    ui.add_space(12.0);
+    
     // Enhanced Submission mode
     ui.group(|ui| {
         ui.set_min_height(100.0);
