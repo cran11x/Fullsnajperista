@@ -1,0 +1,39 @@
+{
+  "session_start": "2025-12-30T09:19:42.335742Z",
+  "last_update": "2025-12-30T09:19:42.335786Z",
+  "total_snapshots": 1,
+  "tokens": {
+    "test_mint_123456789": {
+      "mint": "test_mint_123456789",
+      "bonding_curve": "test_bonding_curve",
+      "entry_mc_sol": 36.5,
+      "entry_price_sol": 0.00005,
+      "entry_timestamp": "2025-12-30T09:19:42.335762Z",
+      "our_buy_sol": 0.1,
+      "token_amount": 2000000,
+      "snapshots": [
+        {
+          "timestamp": "2025-12-30T09:19:42.335782Z",
+          "mc_sol": 37.2,
+          "price_sol": 0.000051,
+          "pnl_percent": 2.0,
+          "pnl_sol": 0.002,
+          "current_value_sol": 0.102,
+          "virtual_token_reserves": null,
+          "virtual_sol_reserves": null,
+          "real_token_reserves": null,
+          "real_sol_reserves": null
+        }
+      ],
+      "peak_mc_sol": 37.2,
+      "peak_pnl_percent": 2.0,
+      "lowest_mc_sol": 36.5,
+      "is_active": true,
+      "sell_timestamp": null,
+      "final_pnl_percent": null
+    }
+  }
+}_pnl_percent": null
+    }
+  }
+}
