@@ -102,3 +102,6 @@ source/
 vscode-remote-wsl/
 sniper_session_*.json
 
+# Old project structure
+Fullsnajperista/
+
