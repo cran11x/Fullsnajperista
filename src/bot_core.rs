@@ -1638,6 +1638,62 @@ async fn process_and_buy(
     }
     
     // ========================================================================
+    // SECTION 2.5: ADVANCED FILTERS CHECK
+    // ========================================================================
+    // Check advanced filters using should_process_token function
+    // This ensures all advanced filters (enable_*) are properly checked
+    match crate::filters::should_process_token(config, &accounts, socials_opt.as_ref(), metadata_opt.as_ref()) {
+        Ok(true) => {
+            // Token passed all filters, continue
+        }
+        Ok(false) => {
+            // Token failed advanced filters
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+            }
+            let reason = "SKIP: Failed advanced filters".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+        Err(e) => {
+            // Error checking filters - be safe and reject
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+                m.record_error(ErrorType::Validation);
+            }
+            let reason = format!("SKIP: Filter check error - {}", e);
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+    }
+    
+    // ========================================================================
     // SECTION 3: ACCOUNT VERIFICATION
     // ========================================================================
     
