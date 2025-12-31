@@ -728,10 +728,17 @@ impl GuiApp {
         let bot_handle = std::thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
-                Err(_) => return,
+                Err(e) => {
+                    eprintln!("[BOT] Failed to create tokio runtime: {}", e);
+                    let _ = event_tx.send(TokenEvent::Error {
+                        message: format!("Failed to create bot runtime: {}", e),
+                        timestamp: Utc::now(),
+                    });
+                    return;
+                }
             };
             rt.block_on(async move {
-                let _ = bot_core::run_bot(
+                match bot_core::run_bot(
                     config_clone,
                     wallet,
                     metrics_clone,
@@ -740,10 +747,21 @@ impl GuiApp {
                     health_monitor,
                     das_rate_limiter,
                     socials_rate_limiter,
-                    event_tx,
+                    event_tx.clone(),
                     control_rx_bot,
                     wallet_balance_clone,
-                ).await;
+                ).await {
+                    Ok(_) => {
+                        eprintln!("[BOT] Bot thread finished successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("[BOT] Bot thread finished with error: {}", e);
+                        let _ = event_tx.send(TokenEvent::Error {
+                            message: format!("Bot error: {}", e),
+                            timestamp: Utc::now(),
+                        });
+                    }
+                }
             });
         });
         

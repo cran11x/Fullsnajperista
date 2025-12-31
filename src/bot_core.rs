@@ -85,7 +85,9 @@ pub async fn run_bot(
     
     // Load initial config
     let initial_config = {
-        let cfg = config.read().unwrap();
+        let cfg = config.read().map_err(|e| {
+            anyhow::anyhow!("Failed to read config: {}", e)
+        })?;
         (*cfg).clone()
     };
     
@@ -237,9 +239,13 @@ pub async fn run_bot(
                         reconnect_count = 0;
                         // Continue loop to reconnect immediately (skip increment below)
                         // Get current config and connect immediately
-                        let current_config = {
-                            let cfg = config.read().unwrap();
-                            (*cfg).clone()
+                        let current_config = match config.read() {
+                            Ok(cfg) => (*cfg).clone(),
+                            Err(e) => {
+                                eprintln!("[BOT] Failed to read config during reconnect: {}", e);
+                                // Use initial config as fallback
+                                initial_config.clone()
+                            }
                         };
                         
                         // Connect immediately without delay
@@ -307,9 +313,13 @@ pub async fn run_bot(
         }
         
         // Get current config
-        let current_config = {
-            let cfg = config.read().unwrap();
-            (*cfg).clone()
+        let current_config = match config.read() {
+            Ok(cfg) => (*cfg).clone(),
+            Err(e) => {
+                eprintln!("[BOT] Failed to read config in main loop: {}", e);
+                // Use initial config as fallback
+                initial_config.clone()
+            }
         };
         
         reconnect_count += 1;
