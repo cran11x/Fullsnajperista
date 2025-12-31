@@ -62,6 +62,18 @@ fn format_addr(addr: &str) -> String {
 // Static counter to track how many times run_bot is called
 static RUN_BOT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// Helper function to check if error is due to Helius quota/rate limiting
+fn is_helius_quota_error(error: &anyhow::Error) -> bool {
+    let error_str = error.to_string().to_lowercase();
+    error_str.contains("quota") || 
+    error_str.contains("rate limit") ||
+    error_str.contains("429") ||
+    error_str.contains("too many requests") ||
+    error_str.contains("usage limit") ||
+    error_str.contains("exceeded") ||
+    error_str.contains("helius") && (error_str.contains("limit") || error_str.contains("quota"))
+}
+
 // Helper function to check if verbose debug logging is enabled
 // Set DEBUG_VERBOSE=1 environment variable to enable verbose debug output
 pub async fn run_bot(
@@ -95,9 +107,24 @@ pub async fn run_bot(
     let rpc = initial_config.create_rpc_client();
     
     // Update wallet balance
-    if let Ok(balance) = rpc.get_balance(&wallet.pubkey()).await {
-        if let Ok(mut bal) = wallet_balance.write() {
-            *bal = balance as f64 / 1e9;
+    match rpc.get_balance(&wallet.pubkey()).await {
+        Ok(balance) => {
+            if let Ok(mut bal) = wallet_balance.write() {
+                *bal = balance as f64 / 1e9;
+            }
+        }
+        Err(e) => {
+            let error = anyhow::anyhow!("Failed to get wallet balance: {}", e);
+            if is_helius_quota_error(&error) {
+                let _ = event_tx.send(TokenEvent::Error {
+                    message: "⚠️ Helius RPC quota/usage limit reached. Please check your Helius account usage or upgrade your plan.".to_string(),
+                    timestamp: Utc::now(),
+                });
+                eprintln!("[BOT] Helius quota error: {}", error);
+            } else {
+                eprintln!("[BOT] Failed to get wallet balance: {}", error);
+            }
+            // Don't return error here - continue with bot startup
         }
     }
     
@@ -115,8 +142,18 @@ pub async fn run_bot(
     
     // Pre-load global account
     if let Err(e) = crate::buy::preload_global(&rpc, &initial_config.global_account).await {
-        eprintln!("[ERR] Failed to preload global account: {}", e);
-        return Err(e);
+        let error = anyhow::anyhow!("Failed to preload global account: {}", e);
+        if is_helius_quota_error(&error) {
+            let _ = event_tx.send(TokenEvent::Error {
+                message: "⚠️ Helius RPC quota/usage limit reached. Please check your Helius account usage or upgrade your plan.".to_string(),
+                timestamp: Utc::now(),
+            });
+            eprintln!("[ERR] Helius quota error during global account preload: {}", error);
+            // Don't return error - continue with bot startup, it will retry later
+        } else {
+            eprintln!("[ERR] Failed to preload global account: {}", e);
+            return Err(error);
+        }
     }
     
     // Create token logger
