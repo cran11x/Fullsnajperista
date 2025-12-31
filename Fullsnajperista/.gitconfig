@@ -1,5 +1,0 @@
-[credential]
-	helper = manager
-[credential "https://github.com"]
-	helper = manager
-	usehttppath = true

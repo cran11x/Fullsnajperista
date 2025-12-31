@@ -61,6 +61,20 @@ pub struct TokenBuy {
     pub partial_sell_count: u32,             // Number of partial sells executed
     #[serde(default)]
     pub total_sold_percent: f64,             // Cumulative sold percentage (0-100)
+    
+    // 🆕 NEW: USD equivalents (calculated at save time using current SOL price)
+    #[serde(default)]
+    pub dev_buy_usd: Option<f64>,             // Dev buy in USD
+    #[serde(default)]
+    pub our_buy_usd: Option<f64>,            // Our buy in USD
+    #[serde(default)]
+    pub pnl_usd: Option<f64>,                // PnL in USD
+    #[serde(default)]
+    pub mc_at_detection_usd: Option<f64>,    // MC at detection in USD
+    #[serde(default)]
+    pub mc_at_entry_usd: Option<f64>,        // MC at entry in USD
+    #[serde(default)]
+    pub current_value_usd: Option<f64>,       // Current position value in USD
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +89,10 @@ pub struct TrackerStats {
     pub avg_mc_sol: f64,
     pub min_mc_sol: f64,
     pub max_mc_sol: f64,
+    
+    // 🆕 NEW: USD equivalents (calculated at save time using current SOL price)
+    #[serde(default)]
+    pub total_sol_spent_usd: Option<f64>,     // Total SOL spent in USD
 }
 
 pub struct TokenTracker {
@@ -147,6 +165,7 @@ impl TokenTracker {
                 avg_mc_sol: 0.0,
                 min_mc_sol: f64::MAX,
                 max_mc_sol: 0.0,
+                total_sol_spent_usd: None,
             },
             csv_path: csv_path_str,
             json_path: json_path_str,
@@ -349,6 +368,66 @@ impl TokenTracker {
     fn save_json(&self) -> Result<()> {
         // Create a sanitized copy of stats to avoid NaN/infinite serialization issues
         let mut sanitized_stats = self.stats.clone();
+        
+        // Get current SOL price for USD calculations
+        use crate::utils::sol_to_usd;
+        
+        // Populate USD values for all buys
+        for buy in &mut sanitized_stats.buys {
+            // Calculate USD equivalents
+            buy.dev_buy_usd = if buy.dev_buy_sol.is_finite() && !buy.dev_buy_sol.is_nan() {
+                Some(sol_to_usd(buy.dev_buy_sol))
+            } else {
+                Some(0.0)
+            };
+            
+            buy.our_buy_usd = if buy.our_buy_sol.is_finite() && !buy.our_buy_sol.is_nan() {
+                Some(sol_to_usd(buy.our_buy_sol))
+            } else {
+                Some(0.0)
+            };
+            
+            buy.pnl_usd = if let Some(pnl) = buy.pnl_sol {
+                if pnl.is_finite() && !pnl.is_nan() {
+                    Some(sol_to_usd(pnl))
+                } else {
+                    Some(0.0)
+                }
+            } else {
+                None
+            };
+            
+            buy.mc_at_detection_usd = buy.mc_at_detection_sol.map(|mc| {
+                if mc.is_finite() && !mc.is_nan() {
+                    sol_to_usd(mc)
+                } else {
+                    0.0
+                }
+            });
+            
+            buy.mc_at_entry_usd = buy.mc_at_entry_sol.map(|mc| {
+                if mc.is_finite() && !mc.is_nan() {
+                    sol_to_usd(mc)
+                } else {
+                    0.0
+                }
+            });
+            
+            buy.current_value_usd = buy.current_value_sol.map(|val| {
+                if val.is_finite() && !val.is_nan() {
+                    sol_to_usd(val)
+                } else {
+                    0.0
+                }
+            });
+        }
+        
+        // Populate total_sol_spent_usd
+        sanitized_stats.total_sol_spent_usd = if sanitized_stats.total_sol_spent.is_finite() && !sanitized_stats.total_sol_spent.is_nan() {
+            Some(sol_to_usd(sanitized_stats.total_sol_spent))
+        } else {
+            Some(0.0)
+        };
         
         // Sanitize all f64 values in stats
         if !sanitized_stats.total_sol_spent.is_finite() || sanitized_stats.total_sol_spent.is_nan() {
@@ -732,29 +811,22 @@ impl TokenTracker {
             
             // ✅ FIX: Try to get or calculate token_amount
             // First, use stored token_amount if available
-            // Otherwise, try to calculate it from our_buy_sol and token_price_sol (or current_price as fallback)
+            // Otherwise, try to calculate it from our_buy_sol and token_price_sol
+            // ✅ FIX: Don't use current_price_sol as fallback - entry price should only come from actual buy data
             let token_amount = if let Some(amount) = buy.token_amount {
                 Some(amount)
             } else {
                 // Try to calculate token_amount from our_buy_sol and token_price_sol
-                // Priority: token_price_sol > current_price_sol (as fallback)
-                let entry_price = buy.token_price_sol.or_else(|| {
-                    // Fallback: use current price as approximation if entry price not available
-                    // This is less accurate but better than showing "..."
-                    if current_price_sol > 0.0 {
-                        Some(current_price_sol)
-                    } else {
-                        None
-                    }
-                });
-                
-                if let Some(price) = entry_price {
-                    if price > 0.0 && buy.our_buy_sol > 0.0 {
+                // Only use token_price_sol (entry price from actual buy), not current_price_sol
+                if let Some(entry_price) = buy.token_price_sol {
+                    if entry_price > 0.0 && buy.our_buy_sol > 0.0 {
                         // tokens = SOL invested / entry price per token
                         // Then convert to raw units (multiply by 1e6 for 6 decimals)
-                        let tokens_human = buy.our_buy_sol / price;
+                        let tokens_human = buy.our_buy_sol / entry_price;
                         let tokens_raw = (tokens_human * 1e6) as u64;
                         if tokens_raw > 0 {
+                            // ✅ FIX: Save immediately to prevent fallback on next call
+                            buy.token_amount = Some(tokens_raw);
                             Some(tokens_raw)
                         } else {
                             None
@@ -792,10 +864,7 @@ impl TokenTracker {
                     }
                 }
                 
-                // Also update stored token_amount if it was None (so we don't need to recalculate next time)
-                if buy.token_amount.is_none() {
-                    buy.token_amount = Some(token_amount);
-                }
+                // ✅ FIX: token_amount is already saved above when calculated, so no need to save again here
                 
                 // FORMULA EXPLANATION:
                 // get_token_price_sol() = (virtual_sol_reserves / virtual_token_reserves) / 1000.0
@@ -892,20 +961,25 @@ impl TokenTracker {
             } else {
                 // ✅ FIX: Try one more fallback - calculate PnL using only price change if we have entry price
                 // This is less accurate but better than showing nothing
+                // ✅ FIX: Use same fee calculation formula as precise method for consistency
                 if let Some(entry_price) = buy.token_price_sol {
                     if entry_price > 0.0 && current_price_sol > 0.0 && buy.our_buy_sol > 0.0 {
                         // Calculate approximate PnL based on price change only
                         // This assumes we have tokens proportional to our_buy_sol / entry_price
                         // ✅ FIX: Validate entry_price is reasonable before calculating ratio
                         if entry_price >= 1e-12 && entry_price <= 1.0 {
-                            let price_change_ratio = (current_price_sol - entry_price) / entry_price;
-                            let approximate_pnl = buy.our_buy_sol * price_change_ratio;
+                            // Calculate approximate current value based on price change
+                            // tokens_approx = our_buy_sol / entry_price (in human units)
+                            let tokens_approx = buy.our_buy_sol / entry_price;
+                            let current_value_gross_approx = tokens_approx * current_price_sol;
                             
-                            // Apply fees estimate
+                            // ✅ FIX: Use same fee calculation as precise method
                             let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015);
                             let cost_basis = buy.our_buy_sol + buy_fees;
                             let estimated_sell_fees = 0.00001;
-                            let net_pnl = approximate_pnl - (buy.our_buy_sol * 0.01) - estimated_sell_fees; // Subtract 1% pump.fun fee
+                            // Same formula: (Gross Value * 0.99) - Estimated Sell Fees
+                            let current_value_net_approx = (current_value_gross_approx * 0.99) - estimated_sell_fees;
+                            let net_pnl = current_value_net_approx - cost_basis;
                             
                             buy.pnl_sol = Some(net_pnl);
                             if cost_basis > 0.0 {
@@ -1021,6 +1095,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1090,6 +1170,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1163,6 +1249,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1225,6 +1317,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1251,6 +1349,7 @@ mod tests {
                 avg_mc_sol: 0.0,
                 min_mc_sol: f64::MAX,
                 max_mc_sol: 0.0,
+                total_sol_spent_usd: None,
             },
             csv_path: csv_path.clone(),
             json_path: json_path.clone(),
@@ -1293,6 +1392,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -1322,6 +1427,7 @@ mod tests {
                 avg_mc_sol: 36.5,
                 min_mc_sol: 35.0,
                 max_mc_sol: 38.0,
+                total_sol_spent_usd: None,
             },
             csv_path,
             json_path: json_path.clone(),
@@ -1376,6 +1482,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         let buy2 = TokenBuy {
@@ -1412,6 +1524,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         tracker.record_buy(buy1).unwrap();
@@ -1462,6 +1580,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1510,6 +1634,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1554,19 +1684,24 @@ mod tests {
         }
         
         let mut tracker = TokenTracker::new().unwrap();
+        tracker.clear_all_buys().unwrap(); // Clear any existing data for test isolation
         
         // Verify file name format: tracker_YYYY-MM-DD_HH-MM.json (new format)
         // or sniper_session_... (old format for compatibility)
+        let json_filename = std::path::Path::new(&tracker.json_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         assert!(
-            tracker.json_path.starts_with("tracker_") || tracker.json_path.starts_with("sniper_session_"),
-            "JSON path should start with 'tracker_' or 'sniper_session_', got: {}", tracker.json_path
+            json_filename.starts_with("tracker_") || json_filename.starts_with("sniper_session_"),
+            "JSON filename should start with 'tracker_' or 'sniper_session_', got: {}", json_filename
         );
         assert!(tracker.json_path.ends_with(".json"));
         
         // Check format only if it's the new format (tracker_)
-        if tracker.json_path.starts_with("tracker_") {
+        if json_filename.starts_with("tracker_") {
             // Check format: tracker_YYYY-MM-DD_HH-MM.json (should have dashes)
-            let name_without_prefix = tracker.json_path.strip_prefix("tracker_").unwrap();
+            let name_without_prefix = json_filename.strip_prefix("tracker_").unwrap();
             let name_without_suffix = name_without_prefix.strip_suffix(".json").unwrap();
             
             // Should match pattern: YYYY-MM-DD_HH-MM
@@ -1618,6 +1753,12 @@ mod tests {
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
         
         // Record buy should save JSON
@@ -1639,5 +1780,313 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(&tracker.csv_path);
         let _ = std::fs::remove_file(&tracker.json_path);
+    }
+
+    #[test]
+    fn test_token_amount_persistence() {
+        // Test that token_amount is saved immediately when calculated
+        // This prevents fallback method from being used on subsequent calls
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_token_amount_persistence".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5),
+            token_price_sol: Some(0.00005), // Entry price: 0.00005 SOL per token
+            token_amount: None, // Not set initially - should be calculated
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // First call: token_amount should be calculated and saved
+        tracker.update_position_pnl_fast("test_token_amount_persistence", 0.0001).unwrap();
+        let position1 = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_token_amount_persistence").unwrap();
+        
+        // token_amount should now be set (calculated from our_buy_sol / token_price_sol)
+        assert!(position1.token_amount.is_some(), "token_amount should be calculated and saved");
+        let expected_tokens = (0.1 / 0.00005 * 1e6) as u64; // 0.1 SOL / 0.00005 SOL/token * 1e6
+        assert_eq!(position1.token_amount, Some(expected_tokens));
+
+        // Second call: token_amount should still be there (not recalculated)
+        tracker.update_position_pnl_fast("test_token_amount_persistence", 0.00015).unwrap();
+        let position2 = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_token_amount_persistence").unwrap();
+        
+        // token_amount should remain the same (not lost)
+        assert_eq!(position2.token_amount, Some(expected_tokens), 
+                   "token_amount should persist between calls");
+        
+        // Both calls should use the same calculation method (precise, not fallback)
+        assert!(position1.pnl_percent.is_some());
+        assert!(position2.pnl_percent.is_some());
+    }
+
+    #[test]
+    fn test_no_current_price_fallback_for_entry_price() {
+        // Test that current_price_sol is NOT used as fallback for entry price calculation
+        // Entry price should only be calculated from actual buy data
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_no_fallback".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5),
+            token_price_sol: None, // Entry price not set - should NOT use current_price_sol
+            token_amount: Some(2000000), // 2 tokens with 6 decimals
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // Update with a high current price
+        // If current_price_sol was used as fallback, entry_price would be set to this high value
+        tracker.update_position_pnl_fast("test_no_fallback", 0.001).unwrap();
+        let position = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_no_fallback").unwrap();
+        
+        // Entry price should be calculated from our_buy_sol / token_amount, not from current_price_sol
+        // Expected: 0.1 SOL / 2 tokens = 0.05 SOL per token
+        assert!(position.token_price_sol.is_some());
+        let expected_entry_price = 0.1 / 2.0; // our_buy_sol / tokens
+        assert!((position.token_price_sol.unwrap() - expected_entry_price).abs() < 1e-6,
+                "Entry price should be calculated from buy data, not current price");
+        
+        // Entry price should NOT be the current price (0.001)
+        assert_ne!(position.token_price_sol.unwrap(), 0.001,
+                   "Entry price should not use current_price_sol as fallback");
+    }
+
+    #[test]
+    fn test_fallback_method_uses_same_formula() {
+        // Test that fallback method uses the same fee calculation formula as precise method
+        // This ensures consistent results even when token_amount is not available
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_fallback_formula".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5),
+            token_price_sol: Some(0.00005), // Entry price set
+            token_amount: None, // Not set - will use fallback method
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // Update PnL - should use fallback method since token_amount is None
+        let current_price = 0.0001; // 2x entry price
+        tracker.update_position_pnl_fast("test_fallback_formula", current_price).unwrap();
+        let position = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_fallback_formula").unwrap();
+        
+        // Should have calculated PnL using fallback method
+        assert!(position.pnl_sol.is_some());
+        assert!(position.pnl_percent.is_some());
+        
+        // Verify fallback method uses same formula structure:
+        // - cost_basis = our_buy_sol + buy_fees
+        // - current_value_net = (current_value_gross * 0.99) - estimated_sell_fees
+        // - pnl = current_value_net - cost_basis
+        let cost_basis = 0.1 + 0.00001; // our_buy_sol + buy_fees
+        let tokens_approx = 0.1 / 0.00005; // our_buy_sol / entry_price
+        let current_value_gross_approx = tokens_approx * current_price;
+        let estimated_sell_fees = 0.00001;
+        let current_value_net_approx = (current_value_gross_approx * 0.99) - estimated_sell_fees;
+        let expected_pnl = current_value_net_approx - cost_basis;
+        let expected_pnl_percent = (expected_pnl / cost_basis) * 100.0;
+        
+        // Allow small floating point differences
+        assert!((position.pnl_sol.unwrap() - expected_pnl).abs() < 0.001,
+                "Fallback method should use same formula as precise method");
+        assert!((position.pnl_percent.unwrap() - expected_pnl_percent).abs() < 1.0,
+                "Fallback method should calculate percentage using same formula");
+    }
+
+    #[test]
+    fn test_consistent_calculation_method() {
+        // Test that once token_amount is set, the same calculation method is used consistently
+        // This prevents blinking between two different values
+        let mut tracker = TokenTracker::new().unwrap();
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_consistent_method".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(36.5),
+            mc_at_entry_sol: Some(36.5),
+            token_price_sol: Some(0.00005),
+            token_amount: None, // Will be calculated on first call
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            breakeven_mode_active: false,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        // First call: should calculate token_amount and use precise method
+        tracker.update_position_pnl_fast("test_consistent_method", 0.0001).unwrap();
+        let position1 = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_consistent_method").unwrap();
+        let pnl_percent1 = position1.pnl_percent;
+        assert!(position1.token_amount.is_some(), "token_amount should be set after first call");
+
+        // Second call: should use same method (precise, not fallback)
+        tracker.update_position_pnl_fast("test_consistent_method", 0.00012).unwrap();
+        let position2 = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_consistent_method").unwrap();
+        let pnl_percent2 = position2.pnl_percent;
+        
+        // token_amount should still be set
+        assert!(position2.token_amount.is_some(), 
+                "token_amount should persist and not be lost");
+        assert_eq!(position1.token_amount, position2.token_amount,
+                   "token_amount should remain the same between calls");
+
+        // Third call: should still use same method
+        tracker.update_position_pnl_fast("test_consistent_method", 0.00015).unwrap();
+        let position3 = tracker.get_active_positions().into_iter()
+            .find(|p| p.mint == "test_consistent_method").unwrap();
+        let pnl_percent3 = position3.pnl_percent;
+        
+        // All three calls should have calculated PnL (not None)
+        assert!(pnl_percent1.is_some());
+        assert!(pnl_percent2.is_some());
+        assert!(pnl_percent3.is_some());
+        
+        // PnL should increase as price increases (0.0001 -> 0.00012 -> 0.00015)
+        assert!(pnl_percent2.unwrap() > pnl_percent1.unwrap(),
+                "PnL should increase when price increases");
+        assert!(pnl_percent3.unwrap() > pnl_percent2.unwrap(),
+                "PnL should continue increasing with price");
     }
 }

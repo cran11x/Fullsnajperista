@@ -27,7 +27,10 @@ pub struct Config {
     pub require_socials: bool,
     pub require_twitter: bool,
     pub require_website: bool,
+    pub require_telegram: bool,
+    pub require_discord: bool,
     pub min_socials_count: usize,
+    pub enable_min_socials_count: bool,
     pub min_dev_buy_sol: f64,
     pub max_dev_buy_sol: f64,
     pub min_dev_tokens: usize,
@@ -59,6 +62,59 @@ pub struct Config {
     pub min_ticker_length: usize,
     pub max_ticker_length: usize,
     pub sell_strategy_config: Option<SellStrategyConfig>,
+    // Advanced filters - Basic
+    pub enable_has_twitter: bool,
+    pub enable_has_telegram: bool,
+    pub enable_has_website: bool,
+    pub enable_social_count_1_plus: bool,
+    pub enable_social_count_2_plus: bool,
+    pub enable_social_count_3: bool,
+    pub enable_website_com: bool,
+    pub enable_website_org: bool,
+    pub enable_website_xyz: bool,
+    pub enable_uppercase: bool,
+    pub enable_lowercase: bool,
+    pub enable_symbol_3_4: bool,
+    pub enable_symbol_3_6: bool,
+    pub enable_symbol_3_7: bool,
+    pub enable_name_short: bool,
+    pub enable_name_medium: bool,
+    // Advanced filters - Twitter types
+    pub enable_twitter_account: bool,
+    pub enable_twitter_community: bool,
+    pub enable_twitter_status: bool,
+    pub enable_twitter_no_status: bool,
+    pub enable_twitter_account_or_community: bool,
+    pub enable_twitter_username_length_short: bool,
+    pub enable_twitter_username_length_medium: bool,
+    pub enable_has_twitter_with_username: bool,
+    // Advanced filters - Brand matching
+    pub enable_has_brand_match: bool,
+    pub enable_brand_score_2_plus: bool,
+    pub enable_brand_score_3_plus: bool,
+    pub enable_brand_score_4_plus: bool,
+    pub enable_perfect_brand_match: bool,
+    pub enable_twitter_matches_website: bool,
+    pub enable_name_matches_website: bool,
+    pub enable_symbol_matches_website: bool,
+    pub enable_name_matches_twitter: bool,
+    pub enable_symbol_matches_twitter: bool,
+    // Advanced filters - Combined brand matching
+    pub enable_name_matches_both: bool,
+    pub enable_symbol_matches_both: bool,
+    pub enable_twitter_and_name_match_website: bool,
+    pub enable_twitter_and_symbol_match_website: bool,
+    pub enable_name_and_symbol_match_twitter: bool,
+    pub enable_brand_match_and_twitter: bool,
+    pub enable_brand_match_and_website: bool,
+    pub enable_brand_match_and_twitter_and_website: bool,
+    pub enable_perfect_brand_and_twitter: bool,
+    pub enable_perfect_brand_and_website: bool,
+    pub enable_perfect_brand_and_twitter_community: bool,
+    pub enable_brand_score_3_plus_and_com: bool,
+    pub enable_brand_score_4_plus_and_com: bool,
+    pub enable_twitter_match_website_and_com: bool,
+    pub enable_name_match_website_and_com: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +214,21 @@ impl Config {
             .unwrap_or(false);
 
         let require_website = std::env::var("REQUIRE_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let require_telegram = std::env::var("REQUIRE_TELEGRAM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let require_discord = std::env::var("REQUIRE_DISCORD")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let enable_min_socials_count = std::env::var("ENABLE_MIN_SOCIALS_COUNT")
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
             .unwrap_or(false);
@@ -401,6 +472,207 @@ impl Config {
             .parse::<usize>()
             .unwrap_or(7);
 
+        // Advanced filters - Basic
+        let enable_has_twitter = std::env::var("ENABLE_HAS_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_has_telegram = std::env::var("ENABLE_HAS_TELEGRAM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_has_website = std::env::var("ENABLE_HAS_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_social_count_1_plus = std::env::var("ENABLE_SOCIAL_COUNT_1_PLUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_social_count_2_plus = std::env::var("ENABLE_SOCIAL_COUNT_2_PLUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_social_count_3 = std::env::var("ENABLE_SOCIAL_COUNT_3")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_website_com = std::env::var("ENABLE_WEBSITE_COM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_website_org = std::env::var("ENABLE_WEBSITE_ORG")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_website_xyz = std::env::var("ENABLE_WEBSITE_XYZ")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_uppercase = std::env::var("ENABLE_UPPERCASE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_lowercase = std::env::var("ENABLE_LOWERCASE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_3_4 = std::env::var("ENABLE_SYMBOL_3_4")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_3_6 = std::env::var("ENABLE_SYMBOL_3_6")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_3_7 = std::env::var("ENABLE_SYMBOL_3_7")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_short = std::env::var("ENABLE_NAME_SHORT")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_medium = std::env::var("ENABLE_NAME_MEDIUM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        // Advanced filters - Twitter types
+        let enable_twitter_account = std::env::var("ENABLE_TWITTER_ACCOUNT")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_community = std::env::var("ENABLE_TWITTER_COMMUNITY")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_status = std::env::var("ENABLE_TWITTER_STATUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_no_status = std::env::var("ENABLE_TWITTER_NO_STATUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_account_or_community = std::env::var("ENABLE_TWITTER_ACCOUNT_OR_COMMUNITY")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_username_length_short = std::env::var("ENABLE_TWITTER_USERNAME_LENGTH_SHORT")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_username_length_medium = std::env::var("ENABLE_TWITTER_USERNAME_LENGTH_MEDIUM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_has_twitter_with_username = std::env::var("ENABLE_HAS_TWITTER_WITH_USERNAME")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        // Advanced filters - Brand matching
+        let enable_has_brand_match = std::env::var("ENABLE_HAS_BRAND_MATCH")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_score_2_plus = std::env::var("ENABLE_BRAND_SCORE_2_PLUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_score_3_plus = std::env::var("ENABLE_BRAND_SCORE_3_PLUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_score_4_plus = std::env::var("ENABLE_BRAND_SCORE_4_PLUS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_perfect_brand_match = std::env::var("ENABLE_PERFECT_BRAND_MATCH")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_matches_website = std::env::var("ENABLE_TWITTER_MATCHES_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_matches_website = std::env::var("ENABLE_NAME_MATCHES_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_matches_website = std::env::var("ENABLE_SYMBOL_MATCHES_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_matches_twitter = std::env::var("ENABLE_NAME_MATCHES_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_matches_twitter = std::env::var("ENABLE_SYMBOL_MATCHES_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        // Advanced filters - Combined brand matching
+        let enable_name_matches_both = std::env::var("ENABLE_NAME_MATCHES_BOTH")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_symbol_matches_both = std::env::var("ENABLE_SYMBOL_MATCHES_BOTH")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_and_name_match_website = std::env::var("ENABLE_TWITTER_AND_NAME_MATCH_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_and_symbol_match_website = std::env::var("ENABLE_TWITTER_AND_SYMBOL_MATCH_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_and_symbol_match_twitter = std::env::var("ENABLE_NAME_AND_SYMBOL_MATCH_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_match_and_twitter = std::env::var("ENABLE_BRAND_MATCH_AND_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_match_and_website = std::env::var("ENABLE_BRAND_MATCH_AND_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_match_and_twitter_and_website = std::env::var("ENABLE_BRAND_MATCH_AND_TWITTER_AND_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_perfect_brand_and_twitter = std::env::var("ENABLE_PERFECT_BRAND_AND_TWITTER")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_perfect_brand_and_website = std::env::var("ENABLE_PERFECT_BRAND_AND_WEBSITE")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_perfect_brand_and_twitter_community = std::env::var("ENABLE_PERFECT_BRAND_AND_TWITTER_COMMUNITY")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_score_3_plus_and_com = std::env::var("ENABLE_BRAND_SCORE_3_PLUS_AND_COM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_brand_score_4_plus_and_com = std::env::var("ENABLE_BRAND_SCORE_4_PLUS_AND_COM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_twitter_match_website_and_com = std::env::var("ENABLE_TWITTER_MATCH_WEBSITE_AND_COM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let enable_name_match_website_and_com = std::env::var("ENABLE_NAME_MATCH_WEBSITE_AND_COM")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -448,7 +720,10 @@ impl Config {
             require_socials,
             require_twitter,
             require_website,
+            require_telegram,
+            require_discord,
             min_socials_count,
+            enable_min_socials_count,
             min_dev_buy_sol,
             max_dev_buy_sol,
             min_dev_tokens,
@@ -480,6 +755,59 @@ impl Config {
             min_ticker_length,
             max_ticker_length,
             sell_strategy_config,
+            // Advanced filters - Basic
+            enable_has_twitter,
+            enable_has_telegram,
+            enable_has_website,
+            enable_social_count_1_plus,
+            enable_social_count_2_plus,
+            enable_social_count_3,
+            enable_website_com,
+            enable_website_org,
+            enable_website_xyz,
+            enable_uppercase,
+            enable_lowercase,
+            enable_symbol_3_4,
+            enable_symbol_3_6,
+            enable_symbol_3_7,
+            enable_name_short,
+            enable_name_medium,
+            // Advanced filters - Twitter types
+            enable_twitter_account,
+            enable_twitter_community,
+            enable_twitter_status,
+            enable_twitter_no_status,
+            enable_twitter_account_or_community,
+            enable_twitter_username_length_short,
+            enable_twitter_username_length_medium,
+            enable_has_twitter_with_username,
+            // Advanced filters - Brand matching
+            enable_has_brand_match,
+            enable_brand_score_2_plus,
+            enable_brand_score_3_plus,
+            enable_brand_score_4_plus,
+            enable_perfect_brand_match,
+            enable_twitter_matches_website,
+            enable_name_matches_website,
+            enable_symbol_matches_website,
+            enable_name_matches_twitter,
+            enable_symbol_matches_twitter,
+            // Advanced filters - Combined brand matching
+            enable_name_matches_both,
+            enable_symbol_matches_both,
+            enable_twitter_and_name_match_website,
+            enable_twitter_and_symbol_match_website,
+            enable_name_and_symbol_match_twitter,
+            enable_brand_match_and_twitter,
+            enable_brand_match_and_website,
+            enable_brand_match_and_twitter_and_website,
+            enable_perfect_brand_and_twitter,
+            enable_perfect_brand_and_website,
+            enable_perfect_brand_and_twitter_community,
+            enable_brand_score_3_plus_and_com,
+            enable_brand_score_4_plus_and_com,
+            enable_twitter_match_website_and_com,
+            enable_name_match_website_and_com,
         };
 
         config.validate()?;
@@ -617,7 +945,10 @@ impl Default for Config {
             require_socials: false,
             require_twitter: false,
             require_website: false,
+            require_telegram: false,
+            require_discord: false,
             min_socials_count: 0,
+            enable_min_socials_count: false,
             min_dev_buy_sol: 0.73, // ~100 USD at 137 SOL/USD
             max_dev_buy_sol: 7.3, // ~1000 USD at 137 SOL/USD
             min_dev_tokens: 0,
@@ -649,6 +980,59 @@ impl Default for Config {
             min_ticker_length: 3,
             max_ticker_length: 7,
             sell_strategy_config: Some(SellStrategyConfig::default()),
+            // Advanced filters - Basic
+            enable_has_twitter: false,
+            enable_has_telegram: false,
+            enable_has_website: false,
+            enable_social_count_1_plus: false,
+            enable_social_count_2_plus: false,
+            enable_social_count_3: false,
+            enable_website_com: false,
+            enable_website_org: false,
+            enable_website_xyz: false,
+            enable_uppercase: false,
+            enable_lowercase: false,
+            enable_symbol_3_4: false,
+            enable_symbol_3_6: false,
+            enable_symbol_3_7: false,
+            enable_name_short: false,
+            enable_name_medium: false,
+            // Advanced filters - Twitter types
+            enable_twitter_account: false,
+            enable_twitter_community: false,
+            enable_twitter_status: false,
+            enable_twitter_no_status: false,
+            enable_twitter_account_or_community: false,
+            enable_twitter_username_length_short: false,
+            enable_twitter_username_length_medium: false,
+            enable_has_twitter_with_username: false,
+            // Advanced filters - Brand matching
+            enable_has_brand_match: false,
+            enable_brand_score_2_plus: false,
+            enable_brand_score_3_plus: false,
+            enable_brand_score_4_plus: false,
+            enable_perfect_brand_match: false,
+            enable_twitter_matches_website: false,
+            enable_name_matches_website: false,
+            enable_symbol_matches_website: false,
+            enable_name_matches_twitter: false,
+            enable_symbol_matches_twitter: false,
+            // Advanced filters - Combined brand matching
+            enable_name_matches_both: false,
+            enable_symbol_matches_both: false,
+            enable_twitter_and_name_match_website: false,
+            enable_twitter_and_symbol_match_website: false,
+            enable_name_and_symbol_match_twitter: false,
+            enable_brand_match_and_twitter: false,
+            enable_brand_match_and_website: false,
+            enable_brand_match_and_twitter_and_website: false,
+            enable_perfect_brand_and_twitter: false,
+            enable_perfect_brand_and_website: false,
+            enable_perfect_brand_and_twitter_community: false,
+            enable_brand_score_3_plus_and_com: false,
+            enable_brand_score_4_plus_and_com: false,
+            enable_twitter_match_website_and_com: false,
+            enable_name_match_website_and_com: false,
         }
     }
 }

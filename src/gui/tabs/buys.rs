@@ -204,14 +204,21 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>) {
                                     
                                     // Dev Buy
                                     ui.allocate_ui_with_layout(egui::vec2(dev_buy_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        let dev_str = if buy.dev_buy_sol.is_finite() { format!("{:.3}", buy.dev_buy_sol) } else { "0.000".to_string() };
+                                        use crate::utils::format_sol_with_usd_3dec;
+                                        let dev_str = if buy.dev_buy_sol.is_finite() { 
+                                            format_sol_with_usd_3dec(buy.dev_buy_sol)
+                                        } else { 
+                                            format_sol_with_usd_3dec(0.0)
+                                        };
                                         ui.label(egui::RichText::new(dev_str).size(font_size).strong().color(egui::Color32::from_rgb(255, 220, 0)));
                                     });
                                     ui.add_space(spacing);
                                     
-                                    // Socials
+                                    // Socials - check actual fields, not just has_socials flag
                                     ui.allocate_ui_with_layout(egui::vec2(socials_width, row_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                        let (txt, col) = if buy.has_socials {
+                                        // Check actual social fields to ensure accuracy even if has_socials flag is wrong
+                                        let has_any = buy.twitter.is_some() || buy.website.is_some() || buy.telegram.is_some();
+                                        let (txt, col) = if has_any {
                                             let cnt = [buy.twitter.as_ref(), buy.website.as_ref(), buy.telegram.as_ref()].iter().filter(|s| s.is_some()).count();
                                             (format!("✓{}", cnt), egui::Color32::from_rgb(100, 255, 160))
                                         } else {

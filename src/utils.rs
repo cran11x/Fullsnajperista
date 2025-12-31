@@ -228,6 +228,11 @@ static SOL_PRICE_CACHE: Lazy<RwLock<(f64, Instant)>> = Lazy::new(|| {
     RwLock::new((150.0, Instant::now()))
 });
 
+/// Track last warning time to avoid spam
+static LAST_WARNING_TIME: Lazy<RwLock<Option<Instant>>> = Lazy::new(|| {
+    RwLock::new(None)
+});
+
 /// Get cached SOL price in USD
 pub fn get_cached_sol_price() -> f64 {
     SOL_PRICE_CACHE.read().unwrap().0
@@ -249,8 +254,27 @@ pub async fn refresh_sol_price_if_needed() {
             let mut cache = SOL_PRICE_CACHE.write().unwrap();
             *cache = (price, Instant::now());
             eprintln!("💱 SOL price updated: ${:.2} -> ${:.2}", old_price, price);
+            // Reset warning time on successful update
+            let mut last_warning = LAST_WARNING_TIME.write().unwrap();
+            *last_warning = None;
         } else {
-            eprintln!("⚠️  Failed to refresh SOL price, using cached value (${:.2})", old_price);
+            // ✅ FIX: Rate limit warnings - only show once every 5 minutes to avoid spam
+            let should_warn = {
+                let last_warning = LAST_WARNING_TIME.read().unwrap();
+                match *last_warning {
+                    None => true,
+                    Some(last_time) => {
+                        let elapsed = last_time.elapsed().as_secs();
+                        elapsed >= 300 // 5 minutes
+                    }
+                }
+            };
+            
+            if should_warn {
+                eprintln!("⚠️  Failed to refresh SOL price, using cached value (${:.2})", old_price);
+                let mut last_warning = LAST_WARNING_TIME.write().unwrap();
+                *last_warning = Some(Instant::now());
+            }
         }
     }
 }
@@ -263,6 +287,17 @@ pub fn sol_to_usd(sol: f64) -> f64 {
 /// Format SOL amount with USD equivalent
 pub fn format_sol_with_usd(sol: f64) -> String {
     format!("{:.4} SOL (${:.2})", sol, sol_to_usd(sol))
+}
+
+/// Format SOL amount with USD equivalent (3 decimal places for SOL)
+pub fn format_sol_with_usd_3dec(sol: f64) -> String {
+    format!("{:.3} SOL (${:.2})", sol, sol_to_usd(sol))
+}
+
+/// Format PnL with USD equivalent (includes sign)
+pub fn format_pnl_with_usd(pnl: f64) -> String {
+    let sign = if pnl >= 0.0 { "+" } else { "" };
+    format!("{}{:.4} SOL (${:.2})", sign, pnl, sol_to_usd(pnl))
 }
 
 /// Format market cap in SOL with USD equivalent

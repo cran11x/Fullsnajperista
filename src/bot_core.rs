@@ -1168,7 +1168,9 @@ async fn process_and_buy(
     let require_socials = config.require_socials;
     let require_twitter = config.require_twitter;
     let require_website = config.require_website;
-    let min_socials = config.min_socials_count;
+    let require_telegram = config.require_telegram;
+    let require_discord = config.require_discord;
+    let min_socials = if config.enable_min_socials_count { config.min_socials_count } else { 0 };
     let require_uppercase = config.require_uppercase_token;
     let max_name_len = config.max_name_length;
     let min_ticker_len = config.min_ticker_length;
@@ -1198,7 +1200,7 @@ async fn process_and_buy(
     });
     
     // Check if we need metadata (for socials or metadata filters)
-    let need_metadata = require_socials || require_twitter || require_website || min_socials > 0 
+    let need_metadata = require_socials || require_twitter || require_website || require_telegram || require_discord || min_socials > 0 
         || require_uppercase || max_name_len < usize::MAX || min_ticker_len > 0;
     
     let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Socials, TokenMetadata)>> + Send>> = Box::pin(async move {
@@ -1388,7 +1390,59 @@ async fn process_and_buy(
             }
             return Err(anyhow!(reason));
         }
-        if socials.count() < min_socials {
+        if require_telegram && !socials.has_telegram() {
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+            }
+            let reason = "SKIP: No Telegram".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = Some(SocialsInfo {
+                    twitter: socials.twitter.clone(),
+                    telegram: socials.telegram.clone(),
+                    website: socials.website.clone(),
+                    count: socials.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+        if require_discord && !socials.has_discord() {
+            let filter_time = filter_start.elapsed().as_millis() as u64;
+            if let Ok(mut m) = metrics.write() {
+                m.record_filter(FilterReason::Socials, filter_time);
+            }
+            let reason = "SKIP: No Discord".to_string();
+            // Log filtered token
+            if let Ok(logger_guard) = logger.lock() {
+                let socials_info = Some(SocialsInfo {
+                    twitter: socials.twitter.clone(),
+                    telegram: socials.telegram.clone(),
+                    website: socials.website.clone(),
+                    count: socials.count(),
+                });
+                let _ = logger_guard.log_filtered(
+                    mint.to_string(),
+                    reason.clone(),
+                    Some(init_signature.clone()),
+                    Some(dev_buy_sol),
+                    Some(accounts.creator.to_string()),
+                    Some(creator_count),
+                    socials_info,
+                );
+            }
+            return Err(anyhow!(reason));
+        }
+        if min_socials > 0 && socials.count() < min_socials {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
@@ -1415,8 +1469,8 @@ async fn process_and_buy(
             return Err(anyhow!(reason));
         }
         Some(socials)
-    } else {
-        if require_socials || require_twitter || require_website {
+        } else {
+            if require_socials || require_twitter || require_website || require_telegram || require_discord {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
@@ -2041,10 +2095,17 @@ async fn process_and_buy(
                             dev_buy_sol,
                             our_buy_sol: config.buy_amount_sol,
                             timestamp: Utc::now(),
-                            has_socials: socials_opt.as_ref().map(|s| s.has_any()).unwrap_or(false),
                             twitter: socials_opt.as_ref().and_then(|s| s.twitter.clone()),
                             website: socials_opt.as_ref().and_then(|s| s.website.clone()),
                             telegram: socials_opt.as_ref().and_then(|s| s.telegram.clone()),
+                            has_socials: {
+                                // Set has_socials based on actual fields, not just socials_opt
+                                // This ensures has_socials is correct even if socials fetch failed but fields are set
+                                let twitter = socials_opt.as_ref().and_then(|s| s.twitter.clone());
+                                let website = socials_opt.as_ref().and_then(|s| s.website.clone());
+                                let telegram = socials_opt.as_ref().and_then(|s| s.telegram.clone());
+                                twitter.is_some() || website.is_some() || telegram.is_some()
+                            },
                             creator_token_count: creator_count,
                             detection_method: if dev_buy_lamports > 0 {
                                 "instruction".to_string()
@@ -2061,16 +2122,22 @@ async fn process_and_buy(
                             sell_signature: None,
                             current_price_sol: None,
                             current_value_sol: None,
-            pnl_sol: None,
-            pnl_percent: None,
-            last_pnl_update: None,
-            buy_fees_sol: Some(0.0),
-            peak_mc_sol: None,
-            peak_pnl_percent: None,
-            breakeven_mode_active: false,
-            executed_sell_rules: Vec::new(),
-            partial_sell_count: 0,
-            total_sold_percent: 0.0,
+                            pnl_sol: None,
+                            pnl_percent: None,
+                            last_pnl_update: None,
+                            buy_fees_sol: None,
+                            peak_mc_sol: None,
+                            peak_pnl_percent: None,
+                            breakeven_mode_active: false,
+                            executed_sell_rules: Vec::new(),
+                            partial_sell_count: 0,
+                            total_sold_percent: 0.0,
+                            dev_buy_usd: None,
+                            our_buy_usd: None,
+                            pnl_usd: None,
+                            mc_at_detection_usd: None,
+                            mc_at_entry_usd: None,
+                            current_value_usd: None,
         };
                         
                         let _ = tracker.record_buy(buy.clone());
@@ -2563,6 +2630,12 @@ async fn process_and_buy(
                         executed_sell_rules: Vec::new(),
                         partial_sell_count: 0,
                         total_sold_percent: 0.0,
+                        dev_buy_usd: None,
+                        our_buy_usd: None,
+                        pnl_usd: None,
+                        mc_at_detection_usd: None,
+                        mc_at_entry_usd: None,
+                        current_value_usd: None,
                     };
                     
                     if let Err(e) = tracker.record_buy(buy.clone()) {
@@ -4158,6 +4231,12 @@ pub async fn execute_manual_buy(
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
         };
         
         // Try to record buy (non-blocking)

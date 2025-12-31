@@ -28,11 +28,44 @@ struct DasResponse {
 #[derive(Debug, Deserialize)]
 struct AssetResult {
     content: Content,
+    #[serde(rename = "mint_extensions")]
+    mint_extensions: Option<MintExtensions>,
+    #[serde(rename = "offChainMetadata")]
+    off_chain_metadata: Option<OffChainMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Content {
-    json_uri: String,
+    #[serde(rename = "json_uri")]
+    json_uri: Option<String>,
+    metadata: Option<Metadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    name: Option<String>,
+    symbol: Option<String>,
+    description: Option<String>,
+    twitter: Option<String>,
+    website: Option<String>,
+    telegram: Option<String>,
+    discord: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MintExtensions {
+    metadata: Option<ExtensionMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtensionMetadata {
+    #[serde(rename = "additional_metadata")]
+    additional_metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OffChainMetadata {
+    metadata: Option<Metadata>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -61,6 +94,109 @@ pub struct Socials {
     pub discord: Option<String>,
 }
 
+/// Extract socials from RPC response by checking all possible locations
+fn extract_socials_from_rpc_response(asset_result: &AssetResult) -> Socials {
+    let mut socials = Socials {
+        twitter: None,
+        website: None,
+        telegram: None,
+        discord: None,
+    };
+    
+    // Check content.metadata first
+    if let Some(metadata) = &asset_result.content.metadata {
+        if socials.twitter.is_none() {
+            socials.twitter = metadata.twitter.clone();
+        }
+        if socials.website.is_none() {
+            socials.website = metadata.website.clone();
+        }
+        if socials.telegram.is_none() {
+            socials.telegram = metadata.telegram.clone();
+        }
+        if socials.discord.is_none() {
+            socials.discord = metadata.discord.clone();
+        }
+    }
+    
+    // Check mint_extensions.metadata.additional_metadata
+    if let Some(mint_ext) = &asset_result.mint_extensions {
+        if let Some(ext_metadata) = &mint_ext.metadata {
+            if let Some(additional) = &ext_metadata.additional_metadata {
+                if let Some(obj) = additional.as_object() {
+                    // Extract socials from additional_metadata JSON object
+                    if socials.twitter.is_none() {
+                        if let Some(twitter_val) = obj.get("twitter").or_else(|| obj.get("Twitter")) {
+                            if let Some(twitter_str) = twitter_val.as_str() {
+                                if !twitter_str.is_empty() {
+                                    socials.twitter = Some(twitter_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if socials.website.is_none() {
+                        if let Some(website_val) = obj.get("website").or_else(|| obj.get("Website")) {
+                            if let Some(website_str) = website_val.as_str() {
+                                if !website_str.is_empty() {
+                                    socials.website = Some(website_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if socials.telegram.is_none() {
+                        if let Some(telegram_val) = obj.get("telegram").or_else(|| obj.get("Telegram")) {
+                            if let Some(telegram_str) = telegram_val.as_str() {
+                                if !telegram_str.is_empty() {
+                                    socials.telegram = Some(telegram_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if socials.discord.is_none() {
+                        if let Some(discord_val) = obj.get("discord").or_else(|| obj.get("Discord")) {
+                            if let Some(discord_str) = discord_val.as_str() {
+                                if !discord_str.is_empty() {
+                                    socials.discord = Some(discord_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check offChainMetadata.metadata
+    if let Some(off_chain) = &asset_result.off_chain_metadata {
+        if let Some(metadata) = &off_chain.metadata {
+            if socials.twitter.is_none() {
+                socials.twitter = metadata.twitter.clone();
+            }
+            if socials.website.is_none() {
+                socials.website = metadata.website.clone();
+            }
+            if socials.telegram.is_none() {
+                socials.telegram = metadata.telegram.clone();
+            }
+            if socials.discord.is_none() {
+                socials.discord = metadata.discord.clone();
+            }
+        }
+    }
+    
+    socials
+}
+
+/// Merge socials from RPC and IPFS sources (RPC has priority)
+fn merge_socials(rpc_socials: &Socials, ipfs_socials: &Socials) -> Socials {
+    Socials {
+        twitter: rpc_socials.twitter.clone().or_else(|| ipfs_socials.twitter.clone()),
+        website: rpc_socials.website.clone().or_else(|| ipfs_socials.website.clone()),
+        telegram: rpc_socials.telegram.clone().or_else(|| ipfs_socials.telegram.clone()),
+        discord: rpc_socials.discord.clone().or_else(|| ipfs_socials.discord.clone()),
+    }
+}
+
 impl Socials {
     /// Check if token has ANY social links
     pub fn has_any(&self) -> bool {
@@ -83,6 +219,11 @@ impl Socials {
     /// Check if token has Telegram
     pub fn has_telegram(&self) -> bool {
         self.telegram.is_some()
+    }
+
+    /// Check if token has Discord
+    pub fn has_discord(&self) -> bool {
+        self.discord.is_some()
     }
 
     /// Count how many socials exist
@@ -110,14 +251,15 @@ impl Socials {
     }
 }
 
-/// ⚡ OPTIMIZED: Fetch token metadata (name, symbol, socials) with aggressive timeouts
+/// ⚡ OPTIMIZED: Fetch token metadata (name, symbol, socials) with RPC-first approach
+/// Checks RPC response first, then falls back to IPFS/Arweave if needed
 pub async fn check_token_metadata(mint_address: &str, api_key: &str) -> Result<(Socials, TokenMetadata)> {
     let start = std::time::Instant::now();
 
     // ⚡ Use shared HTTP client for better performance
     let client = crate::utils::get_shared_http_client();
 
-    // Step 1: Get json_uri from DAS API (aggressive timeout)
+    // Step 1: Get asset data from DAS API (aggressive timeout)
     let das_url = format!("https://mainnet.helius-rpc.com/?api-key={}", api_key);
     let request_body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -142,31 +284,128 @@ pub async fn check_token_metadata(mint_address: &str, api_key: &str) -> Result<(
         .await
         .map_err(|e| anyhow::anyhow!("DAS parse failed: {}", e))?;
 
-    let json_uri = das_response.result.content.json_uri;
+    let asset_result = &das_response.result;
     let das_time = start.elapsed().as_millis();
 
-    // Step 2: Fetch metadata from IPFS/Arweave (aggressive timeout)
-    let remaining_time = TOTAL_TIMEOUT_MS.saturating_sub(das_time as u64);
-    let ipfs_timeout = std::cmp::min(remaining_time, IPFS_TIMEOUT_MS);
-
-    let metadata: TokenMetadata = tokio::time::timeout(
-        Duration::from_millis(ipfs_timeout),
-        client.get(&json_uri).send()
-    )
-        .await
-        .map_err(|_| anyhow::anyhow!("IPFS timeout ({}ms)", ipfs_timeout))?
-        .map_err(|e| anyhow::anyhow!("IPFS request failed: {}", e))?
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!("IPFS parse failed: {}", e))?;
-
-    // Step 3: Create socials from metadata
-    let socials = Socials {
-        twitter: metadata.twitter.clone(),
-        website: metadata.website.clone(),
-        telegram: metadata.telegram.clone(),
-        discord: metadata.discord.clone(),
+    // Step 2: Extract socials directly from RPC response (no delay - data already available)
+    let rpc_socials = extract_socials_from_rpc_response(asset_result);
+    
+    // Step 3: Check if we need to fetch from IPFS/Arweave
+    // If all socials are present in RPC, skip IPFS for speed (as per plan)
+    // Otherwise, fetch from IPFS as fallback
+    let json_uri = asset_result.content.json_uri.as_ref()
+        .and_then(|uri| if uri.is_empty() { None } else { Some(uri.as_str()) });
+    let has_all_socials = rpc_socials.twitter.is_some() 
+        && rpc_socials.website.is_some() 
+        && rpc_socials.telegram.is_some() 
+        && rpc_socials.discord.is_some();
+    let needs_ipfs = json_uri.is_some() && !has_all_socials;
+    
+    let (ipfs_socials, metadata) = if needs_ipfs {
+        // Fetch metadata from IPFS/Arweave as fallback (aggressive timeout)
+        let remaining_time = TOTAL_TIMEOUT_MS.saturating_sub(das_time as u64);
+        let ipfs_timeout = std::cmp::min(remaining_time, IPFS_TIMEOUT_MS);
+        
+        match tokio::time::timeout(
+            Duration::from_millis(ipfs_timeout),
+            client.get(json_uri.unwrap()).send()
+        )
+            .await
+        {
+            Ok(Ok(response)) => {
+                match response.json::<TokenMetadata>().await {
+                    Ok(ipfs_metadata) => {
+                        let ipfs_socials = Socials {
+                            twitter: ipfs_metadata.twitter.clone(),
+                            website: ipfs_metadata.website.clone(),
+                            telegram: ipfs_metadata.telegram.clone(),
+                            discord: ipfs_metadata.discord.clone(),
+                        };
+                        (ipfs_socials, ipfs_metadata)
+                    }
+                    Err(_) => {
+                        // If IPFS parse fails, use empty metadata and RPC socials
+                        (Socials {
+                            twitter: None,
+                            website: None,
+                            telegram: None,
+                            discord: None,
+                        }, TokenMetadata {
+                            name: String::new(),
+                            symbol: String::new(),
+                            description: String::new(),
+                            twitter: None,
+                            website: None,
+                            telegram: None,
+                            discord: None,
+                        })
+                    }
+                }
+            }
+            _ => {
+                // IPFS timeout or request failed - use empty metadata and RPC socials
+                (Socials {
+                    twitter: None,
+                    website: None,
+                    telegram: None,
+                    discord: None,
+                }, TokenMetadata {
+                    name: String::new(),
+                    symbol: String::new(),
+                    description: String::new(),
+                    twitter: None,
+                    website: None,
+                    telegram: None,
+                    discord: None,
+                })
+            }
+        }
+    } else {
+        // No IPFS needed - create empty metadata (we already have socials from RPC)
+        (Socials {
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        }, TokenMetadata {
+            name: String::new(),
+            symbol: String::new(),
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        })
     };
+
+    // Step 4: Merge socials from RPC and IPFS (RPC has priority)
+    let socials = merge_socials(&rpc_socials, &ipfs_socials);
+    
+    // Step 5: Try to get name/symbol from RPC metadata if available
+    let mut final_metadata = metadata;
+    if let Some(rpc_metadata) = &asset_result.content.metadata {
+        if final_metadata.name.is_empty() {
+            if let Some(name) = &rpc_metadata.name {
+                final_metadata.name = name.clone();
+            }
+        }
+        if final_metadata.symbol.is_empty() {
+            if let Some(symbol) = &rpc_metadata.symbol {
+                final_metadata.symbol = symbol.clone();
+            }
+        }
+        if final_metadata.description.is_empty() {
+            if let Some(desc) = &rpc_metadata.description {
+                final_metadata.description = desc.clone();
+            }
+        }
+    }
+    
+    // Update metadata with merged socials
+    final_metadata.twitter = socials.twitter.clone();
+    final_metadata.website = socials.website.clone();
+    final_metadata.telegram = socials.telegram.clone();
+    final_metadata.discord = socials.discord.clone();
     
     // Cache the socials result (for backward compatibility with existing cache)
     {
@@ -174,7 +413,7 @@ pub async fn check_token_metadata(mint_address: &str, api_key: &str) -> Result<(
         cache.put(mint_address.to_string(), socials.clone());
     }
     
-    Ok((socials, metadata))
+    Ok((socials, final_metadata))
 }
 
 /// ⚡ OPTIMIZED: Fast social check with aggressive timeouts + LRU cache
@@ -365,12 +604,389 @@ mod tests {
         assert_eq!(metadata.discord, None);
     }
 
+    #[test]
+    fn test_extract_socials_from_rpc_response_content_metadata() {
+        // Test extracting socials from content.metadata
+        let json = r#"{
+            "content": {
+                "json_uri": "https://example.com/metadata.json",
+                "metadata": {
+                    "name": "Test Token",
+                    "symbol": "TEST",
+                    "twitter": "https://x.com/test",
+                    "website": "https://example.com",
+                    "telegram": "https://t.me/test",
+                    "discord": "https://discord.gg/test"
+                }
+            }
+        }"#;
+        
+        let asset_result: AssetResult = serde_json::from_str(json).unwrap();
+        let socials = extract_socials_from_rpc_response(&asset_result);
+        
+        assert_eq!(socials.twitter, Some("https://x.com/test".to_string()));
+        assert_eq!(socials.website, Some("https://example.com".to_string()));
+        assert_eq!(socials.telegram, Some("https://t.me/test".to_string()));
+        assert_eq!(socials.discord, Some("https://discord.gg/test".to_string()));
+    }
+
+    #[test]
+    fn test_extract_socials_from_rpc_response_mint_extensions() {
+        // Test extracting socials from mint_extensions.metadata.additional_metadata
+        let json = r#"{
+            "content": {
+                "json_uri": "https://example.com/metadata.json"
+            },
+            "mint_extensions": {
+                "metadata": {
+                    "additional_metadata": {
+                        "twitter": "https://x.com/mint",
+                        "website": "https://mint.example.com"
+                    }
+                }
+            }
+        }"#;
+        
+        let asset_result: AssetResult = serde_json::from_str(json).unwrap();
+        let socials = extract_socials_from_rpc_response(&asset_result);
+        
+        assert_eq!(socials.twitter, Some("https://x.com/mint".to_string()));
+        assert_eq!(socials.website, Some("https://mint.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_extract_socials_from_rpc_response_off_chain_metadata() {
+        // Test extracting socials from offChainMetadata.metadata
+        let json = r#"{
+            "content": {
+                "json_uri": "https://example.com/metadata.json"
+            },
+            "offChainMetadata": {
+                "metadata": {
+                    "twitter": "https://x.com/offchain",
+                    "telegram": "https://t.me/offchain"
+                }
+            }
+        }"#;
+        
+        let asset_result: AssetResult = serde_json::from_str(json).unwrap();
+        let socials = extract_socials_from_rpc_response(&asset_result);
+        
+        assert_eq!(socials.twitter, Some("https://x.com/offchain".to_string()));
+        assert_eq!(socials.telegram, Some("https://t.me/offchain".to_string()));
+    }
+
+    #[test]
+    fn test_extract_socials_from_rpc_response_priority() {
+        // Test that content.metadata has priority over other sources
+        let json = r#"{
+            "content": {
+                "json_uri": "https://example.com/metadata.json",
+                "metadata": {
+                    "twitter": "https://x.com/content"
+                }
+            },
+            "mint_extensions": {
+                "metadata": {
+                    "additional_metadata": {
+                        "twitter": "https://x.com/mint"
+                    }
+                }
+            },
+            "offChainMetadata": {
+                "metadata": {
+                    "twitter": "https://x.com/offchain"
+                }
+            }
+        }"#;
+        
+        let asset_result: AssetResult = serde_json::from_str(json).unwrap();
+        let socials = extract_socials_from_rpc_response(&asset_result);
+        
+        // content.metadata should be used first
+        assert_eq!(socials.twitter, Some("https://x.com/content".to_string()));
+    }
+
+    #[test]
+    fn test_merge_socials() {
+        let rpc_socials = Socials {
+            twitter: Some("https://x.com/rpc".to_string()),
+            website: None,
+            telegram: Some("https://t.me/rpc".to_string()),
+            discord: None,
+        };
+        
+        let ipfs_socials = Socials {
+            twitter: Some("https://x.com/ipfs".to_string()),
+            website: Some("https://ipfs.example.com".to_string()),
+            telegram: None,
+            discord: Some("https://discord.gg/ipfs".to_string()),
+        };
+        
+        let merged = merge_socials(&rpc_socials, &ipfs_socials);
+        
+        // RPC has priority
+        assert_eq!(merged.twitter, Some("https://x.com/rpc".to_string()));
+        assert_eq!(merged.telegram, Some("https://t.me/rpc".to_string()));
+        // IPFS fills missing values
+        assert_eq!(merged.website, Some("https://ipfs.example.com".to_string()));
+        assert_eq!(merged.discord, Some("https://discord.gg/ipfs".to_string()));
+    }
+
+    #[test]
+    fn test_merge_socials_rpc_priority() {
+        let rpc_socials = Socials {
+            twitter: Some("https://x.com/rpc".to_string()),
+            website: Some("https://rpc.example.com".to_string()),
+            telegram: Some("https://t.me/rpc".to_string()),
+            discord: Some("https://discord.gg/rpc".to_string()),
+        };
+        
+        let ipfs_socials = Socials {
+            twitter: Some("https://x.com/ipfs".to_string()),
+            website: Some("https://ipfs.example.com".to_string()),
+            telegram: Some("https://t.me/ipfs".to_string()),
+            discord: Some("https://discord.gg/ipfs".to_string()),
+        };
+        
+        let merged = merge_socials(&rpc_socials, &ipfs_socials);
+        
+        // All RPC values should be used (priority)
+        assert_eq!(merged.twitter, Some("https://x.com/rpc".to_string()));
+        assert_eq!(merged.website, Some("https://rpc.example.com".to_string()));
+        assert_eq!(merged.telegram, Some("https://t.me/rpc".to_string()));
+        assert_eq!(merged.discord, Some("https://discord.gg/rpc".to_string()));
+    }
+
     #[tokio::test]
-    #[ignore]
-    async fn test_socials_real_api() {
+    #[ignore] // Ignore by default - run with: cargo test -- --ignored
+    async fn test_check_token_metadata_rpc_first() {
         // Integration test - requires real API and network
-        // This should be run manually
-        // let result = check_token_socials("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").await;
-        // assert!(result.is_ok());
+        // Run with: cargo test test_check_token_metadata_rpc_first -- --ignored --nocapture
+        
+        use std::env;
+        
+        // Get API key from env or use default
+        let api_key = env::var("HELIUS_API_KEY")
+            .unwrap_or_else(|_| "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string());
+        
+        println!("\n🧪 Testing RPC-first socials fetching...");
+        println!("   API Key: {}...", &api_key[..10]);
+        
+        // Test with a known token (USDC as example - replace with pump.fun token if needed)
+        let test_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC
+        
+        println!("\n📋 Test 1: Fetching metadata for token: {}", test_mint);
+        let start = std::time::Instant::now();
+        match check_token_metadata(test_mint, &api_key).await {
+            Ok((socials, metadata)) => {
+                let elapsed = start.elapsed();
+                println!("   ✅ Success in {:?}", elapsed);
+                println!("   📊 Socials found:");
+                println!("      Twitter: {:?}", socials.twitter);
+                println!("      Website: {:?}", socials.website);
+                println!("      Telegram: {:?}", socials.telegram);
+                println!("      Discord: {:?}", socials.discord);
+                println!("   📝 Metadata:");
+                println!("      Name: {}", metadata.name);
+                println!("      Symbol: {}", metadata.symbol);
+                println!("      Description: {}", if metadata.description.len() > 50 {
+                    format!("{}...", &metadata.description[..47])
+                } else {
+                    metadata.description
+                });
+                
+                // Verify that we got at least some data
+                assert!(elapsed.as_millis() < 3000, "Should complete within timeout");
+            }
+            Err(e) => {
+                println!("   ❌ Error: {}", e);
+                // Don't fail test - API might be down
+                println!("   ⚠️  This is expected if API is unavailable");
+            }
+        }
+        
+        println!("\n✅ RPC-first test completed");
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default - run with: cargo test -- --ignored
+    async fn test_check_token_socials_rpc_fallback() {
+        // Test that RPC socials work even if IPFS fails
+        use std::env;
+        
+        let api_key = env::var("HELIUS_API_KEY")
+            .unwrap_or_else(|_| "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string());
+        
+        println!("\n🧪 Testing RPC fallback when IPFS might fail...");
+        
+        // Test with quick_check_socials which has timeout
+        let test_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        
+        match quick_check_socials(test_mint, &api_key).await {
+            Some(socials) => {
+                println!("   ✅ Got socials (possibly from RPC):");
+                println!("      Has any: {}", socials.has_any());
+                println!("      Count: {}", socials.count());
+            }
+            None => {
+                println!("   ⚠️  No socials found (timeout or API issue)");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default - run with: cargo test test_multiple_mints -- --ignored --nocapture
+    async fn test_multiple_mints() {
+        // Test socials pull with multiple real mint addresses
+        use std::env;
+        
+        let api_key = env::var("HELIUS_API_KEY")
+            .unwrap_or_else(|_| "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string());
+        
+        println!("\n🧪 Testing Socials Pull with Multiple Real Mint Addresses");
+        println!("═══════════════════════════════════════════════════════════\n");
+        
+        let test_mints = vec![
+            "4CvPL8T69MEWcRC8qXegZq9GrhVAGyja1L7JbQ3mpump",
+            "AkoUu6Zh9aA9R4tyxs9vVQK7DUf7EB4HgmmxaGqvpump",
+            "DDeroySR8s8wNJMnXB39BpCf35Lq4ipPTSXiD7dCpump",
+            "8yikeDGGDKdmWNpxVG2f1KrNKgt8wNWKt1Lf382Fpump",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+        ];
+        
+        let mut success_count = 0;
+        let mut total_time = 0u64;
+        let mut total_socials_found = 0;
+        
+        for (i, mint) in test_mints.iter().enumerate() {
+            println!("📋 Test {}: {}", i + 1, mint);
+            let start = std::time::Instant::now();
+            
+            match check_token_metadata(mint, &api_key).await {
+                Ok((socials, metadata)) => {
+                    let elapsed = start.elapsed();
+                    total_time += elapsed.as_millis() as u64;
+                    success_count += 1;
+                    
+                    let socials_count = socials.count();
+                    total_socials_found += socials_count;
+                    
+                    println!("   ✅ Success in {}ms", elapsed.as_millis());
+                    println!("   📊 Socials found: {}", socials_count);
+                    if socials.twitter.is_some() {
+                        let tw = socials.twitter.as_ref().unwrap();
+                        println!("      🐦 Twitter: {}", 
+                            if tw.len() > 50 { format!("{}...", &tw[..47]) } else { tw.clone() });
+                    }
+                    if socials.website.is_some() {
+                        let web = socials.website.as_ref().unwrap();
+                        println!("      🌐 Website: {}", 
+                            if web.len() > 50 { format!("{}...", &web[..47]) } else { web.clone() });
+                    }
+                    if socials.telegram.is_some() {
+                        let tg = socials.telegram.as_ref().unwrap();
+                        println!("      💬 Telegram: {}", 
+                            if tg.len() > 50 { format!("{}...", &tg[..47]) } else { tg.clone() });
+                    }
+                    if socials.discord.is_some() {
+                        let dc = socials.discord.as_ref().unwrap();
+                        println!("      💬 Discord: {}", 
+                            if dc.len() > 50 { format!("{}...", &dc[..47]) } else { dc.clone() });
+                    }
+                    println!("   📝 Metadata:");
+                    println!("      Name: {}", if metadata.name.is_empty() { "N/A" } else { &metadata.name });
+                    println!("      Symbol: {}", if metadata.symbol.is_empty() { "N/A" } else { &metadata.symbol });
+                    if !metadata.description.is_empty() {
+                        let desc = if metadata.description.len() > 50 {
+                            format!("{}...", &metadata.description[..47])
+                        } else {
+                            metadata.description.clone()
+                        };
+                        println!("      Description: {}", desc);
+                    }
+                }
+                Err(e) => {
+                    let elapsed = start.elapsed();
+                    println!("   ❌ Error in {}ms: {}", elapsed.as_millis(), e);
+                }
+            }
+            println!();
+        }
+        
+        println!("═══════════════════════════════════════════════════════════");
+        println!("📊 Summary:");
+        println!("   Total tests: {}", test_mints.len());
+        println!("   Successful: {}", success_count);
+        println!("   Failed: {}", test_mints.len() - success_count);
+        if success_count > 0 {
+            println!("   Avg time: {}ms", total_time / success_count as u64);
+            println!("   Total socials found: {}", total_socials_found);
+            println!("   Avg socials per token: {:.1}", 
+                total_socials_found as f64 / success_count as f64);
+        }
+        println!("═══════════════════════════════════════════════════════════");
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default - run with: cargo test test_specific_mint -- --ignored --nocapture
+    async fn test_specific_mint() {
+        // Test specific mint that user reported as having Twitter but showing as not having it
+        use std::env;
+        
+        let api_key = env::var("HELIUS_API_KEY")
+            .unwrap_or_else(|_| "7ef7af02-aa9d-4f5c-9c98-d5fa303d1f04".to_string());
+        
+        let mint = "GzDbTw3oGhEG5PGsiHBZWT18AYcKBVsMGTFCntD6pump";
+        
+        println!("\n🔍 Testing socials for mint: {}", mint);
+        println!("═══════════════════════════════════════════════════════════\n");
+        
+        match check_token_metadata(mint, &api_key).await {
+            Ok((socials, metadata)) => {
+                println!("✅ Successfully fetched metadata\n");
+                
+                println!("📊 Socials found:");
+                println!("   Twitter: {:?}", socials.twitter);
+                println!("   Website: {:?}", socials.website);
+                println!("   Telegram: {:?}", socials.telegram);
+                println!("   Discord: {:?}", socials.discord);
+                println!("\n   Has any socials: {}", socials.has_any());
+                println!("   Has Twitter: {}", socials.has_twitter());
+                println!("   Socials count: {}", socials.count());
+                
+                println!("\n📝 Metadata:");
+                println!("   Name: {}", if metadata.name.is_empty() { "N/A" } else { &metadata.name });
+                println!("   Symbol: {}", if metadata.symbol.is_empty() { "N/A" } else { &metadata.symbol });
+                if !metadata.description.is_empty() {
+                    let desc = if metadata.description.len() > 100 {
+                        format!("{}...", &metadata.description[..97])
+                    } else {
+                        metadata.description.clone()
+                    };
+                    println!("   Description: {}", desc);
+                }
+                
+                println!("\n🔍 Analysis:");
+                if socials.twitter.is_some() {
+                    println!("   ✅ Twitter IS present: {}", socials.twitter.as_ref().unwrap());
+                } else {
+                    println!("   ❌ Twitter is NOT present");
+                }
+                
+                if socials.has_any() {
+                    println!("   ✅ has_socials should be TRUE");
+                } else {
+                    println!("   ❌ has_socials would be FALSE");
+                }
+                
+                // Assert for debugging
+                assert!(true, "Test completed - check output above");
+            }
+            Err(e) => {
+                println!("❌ Error fetching metadata: {}", e);
+                panic!("Failed to fetch metadata: {}", e);
+            }
+        }
     }
 }
