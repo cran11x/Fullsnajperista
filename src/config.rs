@@ -836,21 +836,23 @@ impl Config {
             return Err(anyhow!("COMPUTE_UNITS must be > 0"));
         }
 
-        // Validate auto-sell options
-        if self.stop_loss_percent < 0.0 || self.stop_loss_percent > 100.0 {
-            return Err(anyhow!("STOP_LOSS_PERCENT must be between 0 and 100"));
-        }
+        // Validate auto-sell options only if auto-sell is enabled
+        if self.enable_auto_sell {
+            if self.stop_loss_percent < 0.0 || self.stop_loss_percent > 100.0 {
+                return Err(anyhow!("STOP_LOSS_PERCENT must be between 0 and 100"));
+            }
 
-        if self.take_profit_mc_sol <= 0.0 {
-            return Err(anyhow!("TAKE_PROFIT_MC_SOL must be > 0"));
-        }
+            if self.take_profit_mc_sol <= 0.0 {
+                return Err(anyhow!("TAKE_PROFIT_MC_SOL must be > 0"));
+            }
 
-        if self.sell_percent <= 0.0 || self.sell_percent > 100.0 {
-            return Err(anyhow!("SELL_PERCENT must be between 0 and 100"));
-        }
+            if self.sell_percent <= 0.0 || self.sell_percent > 100.0 {
+                return Err(anyhow!("SELL_PERCENT must be between 0 and 100"));
+            }
 
-        if self.monitor_interval_sec == 0 {
-            return Err(anyhow!("MONITOR_INTERVAL_SEC must be > 0"));
+            if self.monitor_interval_sec == 0 {
+                return Err(anyhow!("MONITOR_INTERVAL_SEC must be > 0"));
+            }
         }
 
         Ok(())

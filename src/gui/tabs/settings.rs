@@ -703,6 +703,21 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         
         // Enable Auto-Sell checkbox
         if ui.checkbox(&mut config_clone.enable_auto_sell, "Enable Auto-Sell").changed() {
+            // If enabling auto-sell, set default values if they are invalid
+            if config_clone.enable_auto_sell {
+                if config_clone.take_profit_mc_sol <= 0.0 {
+                    config_clone.take_profit_mc_sol = 175.0; // Default: ~24000 USD at 137 SOL/USD
+                }
+                if config_clone.sell_percent <= 0.0 || config_clone.sell_percent > 100.0 {
+                    config_clone.sell_percent = 100.0; // Default: sell 100%
+                }
+                if config_clone.monitor_interval_sec == 0 {
+                    config_clone.monitor_interval_sec = 5; // Default: 5 seconds
+                }
+                if config_clone.stop_loss_percent < 0.0 || config_clone.stop_loss_percent > 100.0 {
+                    config_clone.stop_loss_percent = 30.0; // Default: 30% stop loss
+                }
+            }
             apply_config_live(&config, &control_tx, &config_clone);
             state.last_update_time = Some(std::time::Instant::now());
         }
