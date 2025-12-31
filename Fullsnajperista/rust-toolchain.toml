@@ -1,0 +1,8 @@
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]
+profile = "default"
+
+# Ova konfiguracija osigurava da se koristi nightly verzija Rust-a
+# koja podržava edition2024 potrebnu za pxfm paket
+

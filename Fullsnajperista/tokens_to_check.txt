@@ -1,0 +1,101 @@
+═══════════════════════════════════════════════════════════════
+  TOKENS ZA MANUALNU PROVERU - MINT I CREATOR ADRESE
+═══════════════════════════════════════════════════════════════
+
+Proverite na: https://solscan.io/ ili https://solana.fm/
+Koristite creator adresu da vidite koliko pump.fun tokena je napravio.
+
+═══════════════════════════════════════════════════════════════
+
+TOKEN #1:
+  Mint:     4CvPL8T69MEWcRC8qXegZq9GrhVAGyja1L7JbQ3mpump
+  Creator:  Fnr1nANGLVQdxeK3gRe3wautSbRcQ2981hNwxfXAD7fb
+  Dev Buy:  2.2 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/Fnr1nANGLVQdxeK3gRe3wautSbRcQ2981hNwxfXAD7fb
+
+TOKEN #2:
+  Mint:     AkoUu6Zh9aA9R4tyxs9vVQK7DUf7EB4HgmmxaGqvpump
+  Creator:  5q8p6ohWVwH54hWpfjyjEu8M5WnP9goxTQf88gtDMhfq
+  Dev Buy:  1.2423 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/5q8p6ohWVwH54hWpfjyjEu8M5WnP9goxTQf88gtDMhfq
+
+TOKEN #3:
+  Mint:     DDeroySR8s8wNJMnXB39BpCf35Lq4ipPTSXiD7dCpump
+  Creator:  uV9BZrH8Q3tRqmMcTwTsRwag8PanTpwdczVutcXV6n1
+  Dev Buy:  3.08 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/uV9BZrH8Q3tRqmMcTwTsRwag8PanTpwdczVutcXV6n1
+
+TOKEN #4:
+  Mint:     8yikeDGGDKdmWNpxVG2f1KrNKgt8wNWKt1Lf382Fpump
+  Creator:  7ckRMWDHqeDD7HvRp8ykYm6Vtf2o93mkW8AquduGU9Hd
+  Dev Buy:  1.01 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/7ckRMWDHqeDD7HvRp8ykYm6Vtf2o93mkW8AquduGU9Hd
+
+TOKEN #5:
+  Mint:     Dy6fdvwHpkSuLk8sZ2R3o7kC3q7L8axmx1TjCRGkpump
+  Creator:  9wT4Pnxdmmk8PGJfKigGDhi19oisrFCbmCvkVTLVra9u
+  Dev Buy:  5.252 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/9wT4Pnxdmmk8PGJfKigGDhi19oisrFCbmCvkVTLVra9u
+
+TOKEN #6:
+  Mint:     HPEGn8St4RAaMneFF3KkBbSF2EZjBGvKiYmrRvFpump
+  Creator:  Aj3bxaC5rK7iQ8CkrvBzg8k3Smf9myFTWyUq8XRVJGWX
+  Dev Buy:  5.05 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/Aj3bxaC5rK7iQ8CkrvBzg8k3Smf9myFTWyUq8XRVJGWX
+
+TOKEN #7:
+  Mint:     GzBiGKaTN1msHmxxRtap6ZAd1km8vVEjm8gvs7pGpump
+  Creator:  2CkpUNKnKtEGBCjiW3sicbuJtx41CeJUrUAtQV4LEqcM
+  Dev Buy:  1.01 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/2CkpUNKnKtEGBCjiW3sicbuJtx41CeJUrUAtQV4LEqcM
+
+TOKEN #8:
+  Mint:     AEoLxgfef77bJBDtP5ZRFDAe3mUtsfeJyegXG4yxURk9
+  Creator:  7GhWwhaMgbKiRWxF93Bud6HnHMci6NCLTJyTxG8zFH51
+  Dev Buy:  8.1608 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/7GhWwhaMgbKiRWxF93Bud6HnHMci6NCLTJyTxG8zFH51
+
+TOKEN #9:
+  Mint:     D5WNxuCQQaeD6biE21UfdDKQTKaWQCLJxZcJna8Hpump
+  Creator:  6PhuLvDJV2hAYAk2hvtg2k4saU4hukRCJajBRCEnshvs
+  Dev Buy:  5.05 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/6PhuLvDJV2hAYAk2hvtg2k4saU4hukRCJajBRCEnshvs
+
+TOKEN #10:
+  Mint:     FowiCWCEFT2v9qjJ4RgWa6YoSrYfWNcK2gPPcj5opump
+  Creator:  F5S3ym87e4JLTcBbEMMscccYAPCtyVzeEr3yUgttDFGb
+  Dev Buy:  3.232 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/F5S3ym87e4JLTcBbEMMscccYAPCtyVzeEr3yUgttDFGb
+
+TOKEN #11:
+  Mint:     Ae5yUUjkX3tC9x7soP2ZrgxHVGmu1ngSWNmdVdjzpump
+  Creator:  uV9BZrH8Q3tRqmMcTwTsRwag8PanTpwdczVutcXV6n1
+  Dev Buy:  2.915 SOL
+  Zabeleženo: creator_token_count = 0
+  Solscan:   https://solscan.io/account/uV9BZrH8Q3tRqmMcTwTsRwag8PanTpwdczVutcXV6n1
+
+═══════════════════════════════════════════════════════════════
+  KAKO PROVERITI:
+═══════════════════════════════════════════════════════════════
+
+1. Otvorite Solscan ili SolanaFM
+2. Unesite CREATOR adresu (ne mint!)
+3. Proverite koliko pump.fun tokena je creator napravio
+4. Uporedite sa filterom (0-10 tokena)
+
+NAPOMENA: Svi tokeni imaju creator_token_count = 0 u bazi,
+          što znači da DAS API nije vratio tačan broj ili
+          je vraćao 0. Proverite manualno da vidite stvarni broj.
+
+═══════════════════════════════════════════════════════════════
+
