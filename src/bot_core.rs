@@ -74,6 +74,28 @@ fn is_helius_quota_error(error: &anyhow::Error) -> bool {
     error_str.contains("helius") && (error_str.contains("limit") || error_str.contains("quota"))
 }
 
+// Helper function to convert Socials to SocialsInfo for logging
+fn socials_to_info(socials: &Socials) -> SocialsInfo {
+    use crate::filters::get_twitter_type;
+    let twitter_type = socials.twitter.as_ref().map(|url| {
+        match get_twitter_type(url) {
+            crate::filters::TwitterType::Account => "account".to_string(),
+            crate::filters::TwitterType::Community => "community".to_string(),
+            crate::filters::TwitterType::Status => "status".to_string(),
+            crate::filters::TwitterType::Unknown => "unknown".to_string(),
+        }
+    });
+    
+    SocialsInfo {
+        twitter: socials.twitter.clone(),
+        telegram: socials.telegram.clone(),
+        website: socials.website.clone(),
+        discord: socials.discord.clone(),
+        twitter_type,
+        count: socials.count(),
+    }
+}
+
 // Helper function to check if verbose debug logging is enabled
 // Set DEBUG_VERBOSE=1 environment variable to enable verbose debug output
 pub async fn run_bot(
@@ -1027,7 +1049,7 @@ async fn listen_websocket_once(
                 Some(subscription_handle.clone()),
             ).await {
                 Ok(sig) => {
-                    if let Some(signature) = sig {
+                    if let Some((signature, socials_opt)) = sig {
                         // Get MC if available from tracker - use try_read to avoid blocking
                         let mc = {
                             match tracker.try_read() {
@@ -1068,6 +1090,7 @@ async fn listen_websocket_once(
                         
                         // Log bought token (non-blocking)
                         if let Ok(logger_guard) = logger.try_lock() {
+                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                             let _ = logger_guard.log_bought(
                                 mint.clone(),
                                 signature.clone(),
@@ -1075,6 +1098,7 @@ async fn listen_websocket_once(
                                 mc,
                                 Some(dev_buy_sol),
                                 Some(creator.clone()),
+                                socials_info,
                             );
                         }
                         
@@ -1172,7 +1196,7 @@ async fn process_and_buy(
     logger: Arc<std::sync::Mutex<TokenLogger>>,
     history_tracker: Option<Arc<std::sync::RwLock<crate::accounts::HistoryTracker>>>,
     subscription_handle: Option<Arc<Option<SubscriptionHandle>>>,
-) -> Result<Option<String>> {
+) -> Result<Option<(String, Option<Socials>)>> {
     let mint = accounts.mint;
     let dev_buy_lamports = accounts.dev_buy_sol;
     let dev_buy_sol = dev_buy_lamports as f64 / 1e9;
@@ -1367,12 +1391,7 @@ async fn process_and_buy(
             let reason = "SKIP: No socials".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1393,12 +1412,7 @@ async fn process_and_buy(
             let reason = "SKIP: No Twitter".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1419,12 +1433,7 @@ async fn process_and_buy(
             let reason = "SKIP: No Website".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1445,12 +1454,7 @@ async fn process_and_buy(
             let reason = "SKIP: No Telegram".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1471,12 +1475,7 @@ async fn process_and_buy(
             let reason = "SKIP: No Discord".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1497,12 +1496,7 @@ async fn process_and_buy(
             let reason = format!("SKIP: Need {} socials", min_socials);
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = Some(SocialsInfo {
-                    twitter: socials.twitter.clone(),
-                    telegram: socials.telegram.clone(),
-                    website: socials.website.clone(),
-                    count: socials.count(),
-                });
+                let socials_info = Some(socials_to_info(&socials));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1555,12 +1549,7 @@ async fn process_and_buy(
                 let reason = format!("SKIP: Token not uppercase (name: '{}', symbol: '{}')", metadata.name, metadata.symbol);
                 // Log filtered token
                 if let Ok(logger_guard) = logger.lock() {
-                    let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                        twitter: s.twitter.clone(),
-                        telegram: s.telegram.clone(),
-                        website: s.website.clone(),
-                        count: s.count(),
-                    });
+                    let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                     let _ = logger_guard.log_filtered(
                         mint.to_string(),
                         reason.clone(),
@@ -1584,12 +1573,7 @@ async fn process_and_buy(
             let reason = format!("SKIP: Name too long ({} > {}): '{}'", metadata.name.len(), config.max_name_length, metadata.name);
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                    twitter: s.twitter.clone(),
-                    telegram: s.telegram.clone(),
-                    website: s.website.clone(),
-                    count: s.count(),
-                });
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1614,12 +1598,7 @@ async fn process_and_buy(
                 symbol_len, config.min_ticker_length, config.max_ticker_length, metadata.symbol);
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                    twitter: s.twitter.clone(),
-                    telegram: s.telegram.clone(),
-                    website: s.website.clone(),
-                    count: s.count(),
-                });
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1643,12 +1622,7 @@ async fn process_and_buy(
             let reason = "SKIP: Could not verify token metadata (uppercase required)".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                    twitter: s.twitter.clone(),
-                    telegram: s.telegram.clone(),
-                    website: s.website.clone(),
-                    count: s.count(),
-                });
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1685,12 +1659,7 @@ async fn process_and_buy(
                             let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
                             // Log filtered token
                             if let Ok(logger_guard) = logger.lock() {
-                                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                                    twitter: s.twitter.clone(),
-                                    telegram: s.telegram.clone(),
-                                    website: s.website.clone(),
-                                    count: s.count(),
-                                });
+                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                                 let _ = logger_guard.log_filtered(
                                     mint.to_string(),
                                     reason.clone(),
@@ -1714,12 +1683,7 @@ async fn process_and_buy(
                         let reason = "SKIP: Bonding curve account not ready for trading".to_string();
                         // Log filtered token
                         if let Ok(logger_guard) = logger.lock() {
-                            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                                twitter: s.twitter.clone(),
-                                telegram: s.telegram.clone(),
-                                website: s.website.clone(),
-                                count: s.count(),
-                            });
+                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                             let _ = logger_guard.log_filtered(
                                 mint.to_string(),
                                 reason.clone(),
@@ -1749,12 +1713,7 @@ async fn process_and_buy(
                             let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
                             // Log filtered token
                             if let Ok(logger_guard) = logger.lock() {
-                                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                                    twitter: s.twitter.clone(),
-                                    telegram: s.telegram.clone(),
-                                    website: s.website.clone(),
-                                    count: s.count(),
-                                });
+                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                                 let _ = logger_guard.log_filtered(
                                     mint.to_string(),
                                     reason.clone(),
@@ -1781,12 +1740,7 @@ async fn process_and_buy(
                     let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
                     // Log filtered token
                     if let Ok(logger_guard) = logger.lock() {
-                        let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                            twitter: s.twitter.clone(),
-                            telegram: s.telegram.clone(),
-                            website: s.website.clone(),
-                            count: s.count(),
-                        });
+                        let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                         let _ = logger_guard.log_filtered(
                             mint.to_string(),
                             reason.clone(),
@@ -1807,12 +1761,7 @@ async fn process_and_buy(
         let reason = "SKIP: Bonding curve account not ready".to_string();
         // Log filtered token
         if let Ok(logger_guard) = logger.lock() {
-            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                twitter: s.twitter.clone(),
-                telegram: s.telegram.clone(),
-                website: s.website.clone(),
-                count: s.count(),
-            });
+            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
             let _ = logger_guard.log_filtered(
                 mint.to_string(),
                 reason.clone(),
@@ -1960,12 +1909,7 @@ async fn process_and_buy(
             let reason = "SKIP: Associated Bonding Curve account not initialized - token may not be ready".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                    twitter: s.twitter.clone(),
-                    telegram: s.telegram.clone(),
-                    website: s.website.clone(),
-                    count: s.count(),
-                });
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -1983,12 +1927,7 @@ async fn process_and_buy(
             let reason = "SKIP: Associated Bonding Curve has wrong owner - token may not be ready".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
-                let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                    twitter: s.twitter.clone(),
-                    telegram: s.telegram.clone(),
-                    website: s.website.clone(),
-                    count: s.count(),
-                });
+                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
                 let _ = logger_guard.log_filtered(
                     mint.to_string(),
                     reason.clone(),
@@ -2005,12 +1944,7 @@ async fn process_and_buy(
         let reason = "SKIP: Associated Bonding Curve account does not exist - token not ready".to_string();
         // Log filtered token
         if let Ok(logger_guard) = logger.lock() {
-            let socials_info = socials_opt.as_ref().map(|s| SocialsInfo {
-                twitter: s.twitter.clone(),
-                telegram: s.telegram.clone(),
-                website: s.website.clone(),
-                count: s.count(),
-            });
+            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
             let _ = logger_guard.log_filtered(
                 mint.to_string(),
                 reason.clone(),
@@ -2245,7 +2179,7 @@ async fn process_and_buy(
             timestamp: Utc::now(),
         });
         
-        return Ok(Some(mock_signature));
+        return Ok(Some((mock_signature, socials_opt.clone())));
     }
     
     // Only validate if NOT in mock buy mode
@@ -2842,7 +2776,7 @@ async fn process_and_buy(
         }
         
         let final_signature = actual_signature.as_ref().map(|s| s.clone()).unwrap_or_else(|| init_signature.clone());
-        Ok(Some(final_signature))
+        Ok(Some((final_signature, socials_opt.clone())))
     } else {
         
         match submission_result {

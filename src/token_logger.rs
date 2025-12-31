@@ -35,6 +35,8 @@ pub struct SocialsInfo {
     pub twitter: Option<String>,
     pub telegram: Option<String>,
     pub website: Option<String>,
+    pub discord: Option<String>,
+    pub twitter_type: Option<String>, // "account", "community", "status", or None
     pub count: usize,
 }
 
@@ -137,6 +139,7 @@ impl TokenLogger {
         market_cap_usd: Option<f64>,
         dev_buy_sol: Option<f64>,
         creator: Option<String>,
+        socials: Option<SocialsInfo>,
     ) -> Result<()> {
         let entry = TokenLogEntry {
             timestamp: Utc::now(),
@@ -147,7 +150,7 @@ impl TokenLogger {
             dev_buy_sol,
             creator,
             creator_token_count: None,
-            socials: None,
+            socials,
             buy_signature: Some(buy_signature),
             market_cap_usd,
         };
