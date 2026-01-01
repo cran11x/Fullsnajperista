@@ -24,7 +24,7 @@ pub struct AccountSubscriptionManager {
     subscriptions: Arc<RwLock<HashMap<String, u64>>>, // bonding_curve -> subscription_id
     subscription_to_bonding_curve: Arc<RwLock<HashMap<u64, String>>>, // subscription_id -> bonding_curve
     tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
-    config: Arc<std::sync::RwLock<Config>>,
+    _config: Arc<std::sync::RwLock<Config>>,
     next_request_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -49,7 +49,7 @@ impl AccountSubscriptionManager {
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             subscription_to_bonding_curve: Arc::new(RwLock::new(HashMap::new())),
             tracker,
-            config,
+            _config: config,
             next_request_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }

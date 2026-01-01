@@ -104,7 +104,7 @@ impl BondingCurveAccount {
     /// Display bonding curve state
     pub fn display(&self) {
         use crate::utils::{get_cached_sol_price, sol_to_usd};
-        let sol_price = get_cached_sol_price();
+        let _sol_price = get_cached_sol_price();
         println!("      📊 Bonding Curve State:");
         println!("         Virtual: {} SOL / {} tokens",
                  self.virtual_sol_reserves as f64 / 1e9,

@@ -6,6 +6,7 @@ use crate::metrics::SharedMetrics;
 use crate::config::Config;
 use super::events::BotControl;
 
+#[allow(dead_code)]
 pub fn render_control_panel(
     ui: &mut egui::Ui,
     bot_running: &Arc<AtomicBool>,
@@ -59,7 +60,7 @@ pub fn render_control_panel(
 }
 
 
-pub fn render_metric_card(ui: &mut egui::Ui, label: &str, value: &str, color: egui::Color32) {
+pub fn render_metric_card(ui: &mut egui::Ui, label: &str, value: &str, _color: egui::Color32) {
     let response = ui.group(|ui| {
         ui.set_min_width(200.0);
         ui.set_min_height(110.0);
@@ -108,7 +109,7 @@ pub fn render_metric_card(ui: &mut egui::Ui, label: &str, value: &str, color: eg
     );
 }
 
-pub fn render_progress_bar(ui: &mut egui::Ui, label: &str, progress: f32, color: egui::Color32) {
+pub fn render_progress_bar(ui: &mut egui::Ui, label: &str, progress: f32, _color: egui::Color32) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(label)

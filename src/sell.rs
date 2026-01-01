@@ -126,7 +126,7 @@ pub async fn build_sell_instruction(
 
     // Debug: Log sell instruction details
     
-    let account_labels = vec![
+    let _account_labels = vec![
         (0, "Global"),
         (1, "Fee Recipient"),
         (2, "Mint"),

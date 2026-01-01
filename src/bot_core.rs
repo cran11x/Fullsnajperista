@@ -3332,7 +3332,6 @@ async fn monitor_positions(
             // Get config values including Helius API key and dead coin settings
             let (stop_loss_percent, take_profit_mc_sol, _monitor_interval, helius_api_key, _sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
                 let cfg = config.read().unwrap();
-                use crate::utils::get_cached_sol_price;
                 (cfg.stop_loss_percent, cfg.take_profit_mc_sol, cfg.monitor_interval_sec, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
             };
             
@@ -5143,7 +5142,7 @@ async fn monitor_pnl_ultra_fast(
                 let current_price = curve.get_token_price_sol();
                 let current_mc_sol = curve.calculate_mc_sol();
                 use crate::utils::sol_to_usd;
-                let current_mc = sol_to_usd(current_mc_sol);
+                let _current_mc = sol_to_usd(current_mc_sol);
                 
                 
                 // Variables to capture position data for history recording

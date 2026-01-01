@@ -5,7 +5,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,7 +544,7 @@ impl TokenTracker {
 
         // MC statistics
         if self.stats.max_mc_sol > 0.0 {
-            use crate::utils::{get_cached_sol_price, sol_to_usd};
+            use crate::utils::sol_to_usd;
             println!("║                                                      ║");
             println!("║ 📊 MARKET CAP STATISTICS:                           ║");
             println!("║   Average MC:      {:>10.2} SOL (${:.0})           ║", self.stats.avg_mc_sol, sol_to_usd(self.stats.avg_mc_sol));
@@ -1036,9 +1035,9 @@ impl TokenTracker {
 
     /// Get all active positions with bonding curves (for batch PnL update)
     pub fn get_active_positions_for_pnl(&self) -> Vec<(String, String)> {
-        let all_buys = self.stats.buys.len();
-        let sold_count = self.stats.buys.iter().filter(|b| b.sold).count();
-        let without_bc = self.stats.buys.iter().filter(|b| !b.sold && b.bonding_curve.is_none()).count();
+        let _all_buys = self.stats.buys.len();
+        let _sold_count = self.stats.buys.iter().filter(|b| b.sold).count();
+        let _without_bc = self.stats.buys.iter().filter(|b| !b.sold && b.bonding_curve.is_none()).count();
         
         let positions = self.stats.buys.iter()
             .filter(|buy| !buy.sold && buy.bonding_curve.is_some())

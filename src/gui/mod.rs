@@ -31,7 +31,7 @@ pub struct GuiApp {
     control_tx_bot: Option<tokio::sync::mpsc::UnboundedSender<BotControl>>,
     bot_running: Arc<AtomicBool>,
     wallet_balance: Arc<RwLock<f64>>,
-    wallet_address: String,
+    _wallet_address: String,
     wallet_private_key: Arc<RwLock<Option<String>>>, // UI-entered private key
     
     // UI state
@@ -100,7 +100,7 @@ impl GuiApp {
             control_tx_bot: None,
             bot_running,
             wallet_balance,
-            wallet_address,
+            _wallet_address: wallet_address,
             wallet_private_key,
             selected_tab: 0,
             auto_scroll_feed: true,
@@ -124,7 +124,7 @@ impl GuiApp {
             if let Ok(handle_guard) = self.bot_handle.try_read() {
                 if let Some(ref handle) = *handle_guard {
                     if handle.is_finished() {
-                        let timestamp = Utc::now().format("%H:%M:%S%.3f");
+                        let _timestamp = Utc::now().format("%H:%M:%S%.3f");
                         
                         // Bot thread finished on its own - update state
                         self.bot_running.store(false, Ordering::SeqCst);
@@ -142,7 +142,7 @@ impl GuiApp {
         
         // Process any pending control messages (non-blocking)
         while let Ok(control) = self.control_rx.try_recv() {
-            let timestamp = Utc::now().format("%H:%M:%S%.3f");
+            let _timestamp = Utc::now().format("%H:%M:%S%.3f");
             // ✅ CRITICAL: Use SeqCst ordering for consistency
             let bot_running_state = self.bot_running.load(Ordering::SeqCst);
             
@@ -797,7 +797,7 @@ impl GuiApp {
         // This ensures bot thread receives the signal while it's still marked as running
         // IMPORTANT: Take ownership of control_tx_bot to prevent it from being dropped
         // while we're trying to send the signal
-        let stop_signal_sent = {
+        let _stop_signal_sent = {
             let has_control_tx = self.control_tx_bot.is_some();
             
             if !has_control_tx {
