@@ -8,19 +8,20 @@ use crate::socials::{Socials, TokenMetadata};
 use crate::config::Config;
 
 /// Check if token passes all filters
+/// Returns Ok(None) if passed, Ok(Some(reason)) if failed with specific reason, Err(e) on error
 pub fn should_process_token(
     config: &Config,
     accounts: &PumpBuyAccounts,
     socials: Option<&Socials>,
     metadata: Option<&TokenMetadata>,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     // Dev buy filter
     let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
     let min_sol = config.min_dev_buy_sol;
     let max_sol = config.max_dev_buy_sol;
 
     if dev_buy_sol < min_sol || dev_buy_sol > max_sol {
-        return Ok(false);
+        return Ok(Some(format!("Dev buy SOL ({:.4}) outside range [{:.4}, {:.4}]", dev_buy_sol, min_sol, max_sol)));
     }
 
     // Social filters (BASIC - require_* filters)
@@ -28,34 +29,48 @@ pub fn should_process_token(
     // Advanced filters work independently and don't require basic filters to be enabled
     if let Some(socials) = socials {
         if config.require_socials && !socials.has_any() {
-            return Ok(false);
+            return Ok(Some("Missing required socials".to_string()));
         }
 
         if config.require_twitter && !socials.has_twitter() {
-            return Ok(false);
+            return Ok(Some("Missing required Twitter".to_string()));
         }
 
         if config.require_website && !socials.has_website() {
-            return Ok(false);
+            return Ok(Some("Missing required website".to_string()));
         }
 
         if config.require_telegram && !socials.has_telegram() {
-            return Ok(false);
+            return Ok(Some("Missing required Telegram".to_string()));
         }
 
         if config.require_discord && !socials.has_discord() {
-            return Ok(false);
+            return Ok(Some("Missing required Discord".to_string()));
         }
 
         if config.enable_min_socials_count && socials.count() < config.min_socials_count {
-            return Ok(false);
+            return Ok(Some(format!("Social count ({}) below minimum ({})", socials.count(), config.min_socials_count)));
         }
     } else {
         // Only reject if BASIC filters (require_*) are enabled and socials are not available
         // Advanced filters (enable_*) will be checked later and handle None socials gracefully
-        if config.require_socials || config.require_twitter || config.require_website || config.require_telegram || config.require_discord || (config.enable_min_socials_count && config.min_socials_count > 0) {
-            // Basic social filters required but socials not available
-            return Ok(false);
+        if config.require_socials {
+            return Ok(Some("Missing required socials (socials not available)".to_string()));
+        }
+        if config.require_twitter {
+            return Ok(Some("Missing required Twitter (socials not available)".to_string()));
+        }
+        if config.require_website {
+            return Ok(Some("Missing required website (socials not available)".to_string()));
+        }
+        if config.require_telegram {
+            return Ok(Some("Missing required Telegram (socials not available)".to_string()));
+        }
+        if config.require_discord {
+            return Ok(Some("Missing required Discord (socials not available)".to_string()));
+        }
+        if config.enable_min_socials_count && config.min_socials_count > 0 {
+            return Ok(Some(format!("Social count below minimum ({}) (socials not available)", config.min_socials_count)));
         }
     }
 
@@ -66,19 +81,19 @@ pub fn should_process_token(
             let name_ok = metadata.name.is_empty() || metadata.name == metadata.name.to_uppercase();
             let symbol_ok = metadata.symbol.is_empty() || metadata.symbol == metadata.symbol.to_uppercase();
             if !name_ok || !symbol_ok {
-                return Ok(false);
+                return Ok(Some("Token name or symbol not uppercase".to_string()));
             }
         }
 
         // Name length filter: name must be <= max_name_length
         if metadata.name.len() > config.max_name_length {
-            return Ok(false);
+            return Ok(Some(format!("Name length ({}) exceeds maximum ({})", metadata.name.len(), config.max_name_length)));
         }
 
         // Ticker length filter: symbol must be between min_ticker_length and max_ticker_length (inclusive)
         let symbol_len = metadata.symbol.len();
         if symbol_len < config.min_ticker_length || symbol_len > config.max_ticker_length {
-            return Ok(false);
+            return Ok(Some(format!("Symbol length ({}) outside range [{}, {}]", symbol_len, config.min_ticker_length, config.max_ticker_length)));
         }
     } else {
         // If metadata is required for any filter, reject when metadata is not available
@@ -87,7 +102,7 @@ pub fn should_process_token(
             // We'll be lenient here - only reject if uppercase is required
             // For length filters, we can't check without metadata, so we skip them
             if config.require_uppercase_token {
-                return Ok(false);
+                return Ok(Some("Missing required uppercase token (metadata not available)".to_string()));
             }
         }
     }
@@ -96,166 +111,166 @@ pub fn should_process_token(
     // ADVANCED FILTERS - BASIC
     // ============================================================================
     if config.enable_has_twitter && !check_has_twitter(socials) {
-        return Ok(false);
+        return Ok(Some("Missing Twitter (enable_has_twitter)".to_string()));
     }
     if config.enable_has_telegram && !check_has_telegram(socials) {
-        return Ok(false);
+        return Ok(Some("Missing Telegram (enable_has_telegram)".to_string()));
     }
     if config.enable_has_website && !check_has_website(socials) {
-        return Ok(false);
+        return Ok(Some("Missing website (enable_has_website)".to_string()));
     }
     if config.enable_social_count_1_plus && !check_social_count_1_plus(socials) {
-        return Ok(false);
+        return Ok(Some("Social count less than 1 (enable_social_count_1_plus)".to_string()));
     }
     if config.enable_social_count_2_plus && !check_social_count_2_plus(socials) {
-        return Ok(false);
+        return Ok(Some("Social count less than 2 (enable_social_count_2_plus)".to_string()));
     }
     if config.enable_social_count_3 && !check_social_count_3(socials) {
-        return Ok(false);
+        return Ok(Some("Social count not equal to 3 (enable_social_count_3)".to_string()));
     }
     if config.enable_website_com && !check_website_com(socials) {
-        return Ok(false);
+        return Ok(Some("Website is not .com (enable_website_com)".to_string()));
     }
     if config.enable_website_org && !check_website_org(socials) {
-        return Ok(false);
+        return Ok(Some("Website is not .org (enable_website_org)".to_string()));
     }
     if config.enable_website_xyz && !check_website_xyz(socials) {
-        return Ok(false);
+        return Ok(Some("Website is not .xyz (enable_website_xyz)".to_string()));
     }
     if config.enable_uppercase && !check_uppercase_symbol(metadata) {
-        return Ok(false);
+        return Ok(Some("Symbol is not uppercase (enable_uppercase)".to_string()));
     }
     if config.enable_lowercase && !check_lowercase_symbol(metadata) {
-        return Ok(false);
+        return Ok(Some("Symbol is not lowercase (enable_lowercase)".to_string()));
     }
     if config.enable_symbol_3_4 && !check_symbol_3_4(metadata) {
-        return Ok(false);
+        return Ok(Some("Symbol length not 3-4 (enable_symbol_3_4)".to_string()));
     }
     if config.enable_symbol_3_6 && !check_symbol_3_6(metadata) {
-        return Ok(false);
+        return Ok(Some("Symbol length not 3-6 (enable_symbol_3_6)".to_string()));
     }
     if config.enable_symbol_3_7 && !check_symbol_3_7(metadata) {
-        return Ok(false);
+        return Ok(Some("Symbol length not 3-7 (enable_symbol_3_7)".to_string()));
     }
     if config.enable_name_short && !check_name_short(metadata) {
-        return Ok(false);
+        return Ok(Some("Name length greater than 20 (enable_name_short)".to_string()));
     }
     if config.enable_name_medium && !check_name_medium(metadata) {
-        return Ok(false);
+        return Ok(Some("Name length not 11-20 (enable_name_medium)".to_string()));
     }
 
     // ============================================================================
     // ADVANCED FILTERS - TWITTER TYPES
     // ============================================================================
     if config.enable_twitter_account && !check_twitter_account(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter is not account type (enable_twitter_account)".to_string()));
     }
     if config.enable_twitter_community && !check_twitter_community(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter is not community type (enable_twitter_community)".to_string()));
     }
     if config.enable_twitter_status && !check_twitter_status(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter is not status type (enable_twitter_status)".to_string()));
     }
     if config.enable_twitter_no_status && !check_twitter_no_status(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter is status type (enable_twitter_no_status)".to_string()));
     }
     if config.enable_twitter_account_or_community && !check_twitter_account_or_community(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter is not account or community type (enable_twitter_account_or_community)".to_string()));
     }
     if config.enable_twitter_username_length_short && !check_twitter_username_length_short(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter username length greater than 15 (enable_twitter_username_length_short)".to_string()));
     }
     if config.enable_twitter_username_length_medium && !check_twitter_username_length_medium(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter username length not 15-25 (enable_twitter_username_length_medium)".to_string()));
     }
     if config.enable_has_twitter_with_username && !check_has_twitter_with_username(socials) {
-        return Ok(false);
+        return Ok(Some("Missing Twitter with username (enable_has_twitter_with_username)".to_string()));
     }
 
     // ============================================================================
     // ADVANCED FILTERS - BRAND MATCHING
     // ============================================================================
     if config.enable_has_brand_match && !check_has_brand_match(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("No brand match (enable_has_brand_match)".to_string()));
     }
     if config.enable_brand_score_2_plus && !check_brand_score_2_plus(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Brand score less than 2 (enable_brand_score_2_plus)".to_string()));
     }
     if config.enable_brand_score_3_plus && !check_brand_score_3_plus(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Brand score less than 3 (enable_brand_score_3_plus)".to_string()));
     }
     if config.enable_brand_score_4_plus && !check_brand_score_4_plus(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Brand score less than 4 (enable_brand_score_4_plus)".to_string()));
     }
     if config.enable_perfect_brand_match && !check_perfect_brand_match(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Not perfect brand match (enable_perfect_brand_match)".to_string()));
     }
     if config.enable_twitter_matches_website && !check_twitter_matches_website(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter does not match website (enable_twitter_matches_website)".to_string()));
     }
     if config.enable_name_matches_website && !check_name_matches_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Name does not match website (enable_name_matches_website)".to_string()));
     }
     if config.enable_symbol_matches_website && !check_symbol_matches_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Symbol does not match website (enable_symbol_matches_website)".to_string()));
     }
     if config.enable_name_matches_twitter && !check_name_matches_twitter(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Name does not match Twitter (enable_name_matches_twitter)".to_string()));
     }
     if config.enable_symbol_matches_twitter && !check_symbol_matches_twitter(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Symbol does not match Twitter (enable_symbol_matches_twitter)".to_string()));
     }
 
     // ============================================================================
     // ADVANCED FILTERS - COMBINED BRAND MATCHING
     // ============================================================================
     if config.enable_name_matches_both && !check_name_matches_both(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Name does not match both website and Twitter (enable_name_matches_both)".to_string()));
     }
     if config.enable_symbol_matches_both && !check_symbol_matches_both(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Symbol does not match both website and Twitter (enable_symbol_matches_both)".to_string()));
     }
     if config.enable_twitter_and_name_match_website && !check_twitter_and_name_match_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Twitter and name do not match website (enable_twitter_and_name_match_website)".to_string()));
     }
     if config.enable_twitter_and_symbol_match_website && !check_twitter_and_symbol_match_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Twitter and symbol do not match website (enable_twitter_and_symbol_match_website)".to_string()));
     }
     if config.enable_name_and_symbol_match_twitter && !check_name_and_symbol_match_twitter(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Name and symbol do not match Twitter (enable_name_and_symbol_match_twitter)".to_string()));
     }
     if config.enable_brand_match_and_twitter && !check_brand_match_and_twitter(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("No brand match or missing Twitter (enable_brand_match_and_twitter)".to_string()));
     }
     if config.enable_brand_match_and_website && !check_brand_match_and_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("No brand match or missing website (enable_brand_match_and_website)".to_string()));
     }
     if config.enable_brand_match_and_twitter_and_website && !check_brand_match_and_twitter_and_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("No brand match or missing Twitter or website (enable_brand_match_and_twitter_and_website)".to_string()));
     }
     if config.enable_perfect_brand_and_twitter && !check_perfect_brand_and_twitter(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Not perfect brand match or missing Twitter (enable_perfect_brand_and_twitter)".to_string()));
     }
     if config.enable_perfect_brand_and_website && !check_perfect_brand_and_website(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Not perfect brand match or missing website (enable_perfect_brand_and_website)".to_string()));
     }
     if config.enable_perfect_brand_and_twitter_community && !check_perfect_brand_and_twitter_community(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Not perfect brand match or Twitter is not community (enable_perfect_brand_and_twitter_community)".to_string()));
     }
     if config.enable_brand_score_3_plus_and_com && !check_brand_score_3_plus_and_com(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Brand score less than 3 or website is not .com (enable_brand_score_3_plus_and_com)".to_string()));
     }
     if config.enable_brand_score_4_plus_and_com && !check_brand_score_4_plus_and_com(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Brand score less than 4 or website is not .com (enable_brand_score_4_plus_and_com)".to_string()));
     }
     if config.enable_twitter_match_website_and_com && !check_twitter_match_website_and_com(socials) {
-        return Ok(false);
+        return Ok(Some("Twitter does not match website or website is not .com (enable_twitter_match_website_and_com)".to_string()));
     }
     if config.enable_name_match_website_and_com && !check_name_match_website_and_com(metadata, socials) {
-        return Ok(false);
+        return Ok(Some("Name does not match website or website is not .com (enable_name_match_website_and_com)".to_string()));
     }
 
-    Ok(true)
+    Ok(None)
 }
 
 /// Check creator token count filter
@@ -966,15 +981,15 @@ mod tests {
         // Valid dev buy: 0.8 SOL = 0.8 * 162 = 129.6 USD (outside 500-1200 range)
         // Need to use value in range: 500/162 = 3.09 SOL to 1200/162 = 7.41 SOL
         let accounts = create_test_accounts(5.0); // 5 SOL = 810 USD (within range)
-        assert!(should_process_token(&config, &accounts, None, None).unwrap());
+        assert!(should_process_token(&config, &accounts, None, None).unwrap().is_none());
 
         // Too low
         let accounts_low = create_test_accounts(0.001);
-        assert!(!should_process_token(&config, &accounts_low, None, None).unwrap());
+        assert!(should_process_token(&config, &accounts_low, None, None).unwrap().is_some());
 
         // Too high
         let accounts_high = create_test_accounts(10.0);
-        assert!(!should_process_token(&config, &accounts_high, None, None).unwrap());
+        assert!(should_process_token(&config, &accounts_high, None, None).unwrap().is_some());
     }
 
     #[test]
@@ -985,7 +1000,7 @@ mod tests {
         let accounts = create_test_accounts(5.0); // Valid dev buy amount
         
         // No socials - should fail
-        assert!(!should_process_token(&config, &accounts, None, None).unwrap());
+        assert!(should_process_token(&config, &accounts, None, None).unwrap().is_some());
 
         // With socials - should pass
         let socials = Socials {
@@ -994,7 +1009,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials), None).unwrap().is_none());
     }
 
     #[test]
@@ -1011,7 +1026,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_no_twitter), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_no_twitter), None).unwrap().is_some());
 
         // With twitter - should pass
         let socials_with_twitter = Socials {
@@ -1020,7 +1035,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_with_twitter), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_with_twitter), None).unwrap().is_none());
     }
 
     #[test]
@@ -1037,7 +1052,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_no_website), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_no_website), None).unwrap().is_some());
 
         // With website - should pass
         let socials_with_website = Socials {
@@ -1046,7 +1061,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_with_website), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_with_website), None).unwrap().is_none());
 
         // With both twitter and website - should pass
         let socials_both = Socials {
@@ -1055,7 +1070,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_both), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_both), None).unwrap().is_none());
     }
 
     #[test]
@@ -1073,7 +1088,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_one), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_one), None).unwrap().is_some());
 
         // 2+ socials - should pass
         let socials_two = Socials {
@@ -1082,7 +1097,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_two), None).unwrap());
+        assert!(should_process_token(&config, &accounts, Some(&socials_two), None).unwrap().is_none());
     }
 
     #[test]
@@ -1173,7 +1188,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_upper)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_upper)).unwrap().is_none());
         
         // Lowercase name - should fail
         let metadata_lower_name = TokenMetadata {
@@ -1185,7 +1200,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap().is_some());
         
         // Lowercase symbol - should fail
         let metadata_lower_symbol = TokenMetadata {
@@ -1197,7 +1212,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower_symbol)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower_symbol)).unwrap().is_some());
         
         // Empty name and symbol - should pass (empty is allowed)
         // Need to set min_ticker_length to 0 to allow empty symbols
@@ -1211,11 +1226,11 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap().is_none());
         
         // Filter disabled - should pass regardless
         config.require_uppercase_token = false;
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower_name)).unwrap().is_none());
     }
 
     #[test]
@@ -1237,7 +1252,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_exact)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_exact)).unwrap().is_none());
         
         // Name below max - should pass
         let metadata_short = TokenMetadata {
@@ -1249,7 +1264,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap().is_none());
         
         // Name above max - should fail
         let metadata_long = TokenMetadata {
@@ -1261,7 +1276,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap().is_some());
         
         // Empty name - should pass
         let metadata_empty = TokenMetadata {
@@ -1273,7 +1288,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap().is_none());
     }
 
     #[test]
@@ -1296,7 +1311,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_min)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_min)).unwrap().is_none());
         
         // Ticker at max length - should pass
         let metadata_max = TokenMetadata {
@@ -1308,7 +1323,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_max)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_max)).unwrap().is_none());
         
         // Ticker in range - should pass
         let metadata_mid = TokenMetadata {
@@ -1320,7 +1335,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_mid)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_mid)).unwrap().is_none());
         
         // Ticker below min - should fail
         let metadata_short = TokenMetadata {
@@ -1332,7 +1347,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap().is_some());
         
         // Ticker above max - should fail
         let metadata_long = TokenMetadata {
@@ -1344,7 +1359,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_long)).unwrap().is_some());
         
         // Empty ticker - should fail (below min)
         let metadata_empty = TokenMetadata {
@@ -1356,7 +1371,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_empty)).unwrap().is_some());
     }
 
     #[test]
@@ -1381,7 +1396,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap().is_none());
         
         // Fails uppercase check
         let metadata_lower = TokenMetadata {
@@ -1393,7 +1408,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_lower)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_lower)).unwrap().is_some());
         
         // Fails name length
         let metadata_long_name = TokenMetadata {
@@ -1405,7 +1420,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_long_name)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_long_name)).unwrap().is_some());
         
         // Fails ticker length
         let metadata_short_ticker = TokenMetadata {
@@ -1417,7 +1432,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_short_ticker)).unwrap());
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_short_ticker)).unwrap().is_some());
     }
 
     #[test]
@@ -1447,7 +1462,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_valid)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_valid)).unwrap().is_none(),
             "Token with ticker length 4 and Twitter Community should pass");
 
         // Test 2: Invalid - ticker too short (2 chars)
@@ -1460,7 +1475,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_short)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_short)).unwrap().is_some(),
             "Token with ticker length 2 should fail");
 
         // Test 3: Invalid - ticker too long (8 chars)
@@ -1473,7 +1488,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_long)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_long)).unwrap().is_some(),
             "Token with ticker length 8 should fail");
 
         // Test 4: Invalid - Twitter Account (not Community)
@@ -1483,7 +1498,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_account), Some(&metadata_valid)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_account), Some(&metadata_valid)).unwrap().is_some(),
             "Token with Twitter Account (not Community) should fail");
 
         // Test 5: Invalid - Twitter Status (not Community)
@@ -1493,11 +1508,11 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(!should_process_token(&config, &accounts, Some(&socials_status), Some(&metadata_valid)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_status), Some(&metadata_valid)).unwrap().is_some(),
             "Token with Twitter Status (not Community) should fail");
 
         // Test 6: Invalid - No socials at all
-        assert!(!should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap(),
+        assert!(should_process_token(&config, &accounts, None, Some(&metadata_valid)).unwrap().is_some(),
             "Token with no socials should fail when Twitter Community filter is enabled");
 
         // Test 7: Valid - ticker length exactly 3 (minimum)
@@ -1510,7 +1525,7 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_min)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_min)).unwrap().is_none(),
             "Token with ticker length 3 (minimum) should pass");
 
         // Test 8: Valid - ticker length exactly 7 (maximum)
@@ -1523,8 +1538,56 @@ mod tests {
             telegram: None,
             discord: None,
         };
-        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_max)).unwrap(),
+        assert!(should_process_token(&config, &accounts, Some(&socials_community), Some(&metadata_max)).unwrap().is_none(),
             "Token with ticker length 7 (maximum) should pass");
+    }
+
+    #[test]
+    fn test_detailed_failure_reasons() {
+        use crate::socials::TokenMetadata;
+        
+        let mut config = create_test_config();
+        let accounts = create_test_accounts(5.0);
+        
+        // Test dev buy filter reason
+        let accounts_low = create_test_accounts(0.001);
+        let result = should_process_token(&config, &accounts_low, None, None).unwrap();
+        assert!(result.is_some(), "Should fail with reason");
+        let reason = result.unwrap();
+        assert!(reason.contains("Dev buy SOL"), "Should mention dev buy SOL");
+        
+        // Test missing Twitter reason
+        config.enable_has_twitter = true;
+        let result = should_process_token(&config, &accounts, None, None).unwrap();
+        assert!(result.is_some(), "Should fail with reason");
+        let reason = result.unwrap();
+        assert!(reason.contains("Missing Twitter"), "Should mention missing Twitter");
+        assert!(reason.contains("enable_has_twitter"), "Should mention filter name");
+        
+        // Test symbol length reason - note: basic ticker length filter runs before advanced filters
+        config.enable_has_twitter = false;
+        config.min_ticker_length = 3;
+        config.max_ticker_length = 7;
+        config.enable_symbol_3_4 = true;
+        let metadata_short = TokenMetadata {
+            name: "Test".to_string(),
+            symbol: "AB".to_string(), // Too short for min_ticker_length (3)
+            description: String::new(),
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        let result = should_process_token(&config, &accounts, None, Some(&metadata_short)).unwrap();
+        assert!(result.is_some(), "Should fail with reason");
+        let reason = result.unwrap();
+        // Basic ticker length filter runs first, so it will fail on that before advanced filter
+        assert!(reason.contains("Symbol length"), "Should mention symbol length");
+        
+        // Test passed case
+        config.enable_symbol_3_4 = false;
+        let result = should_process_token(&config, &accounts, None, None).unwrap();
+        assert!(result.is_none(), "Should pass when no filters are enabled");
     }
 }
 

@@ -1242,9 +1242,6 @@ async fn process_and_buy(
     let require_telegram = config.require_telegram;
     let require_discord = config.require_discord;
     let min_socials = if config.enable_min_socials_count { config.min_socials_count } else { 0 };
-    let require_uppercase = config.require_uppercase_token;
-    let max_name_len = config.max_name_length;
-    let min_ticker_len = config.min_ticker_length;
     let mint_str = mint.to_string();
     
     let api_key = config.helius_api_key.clone();
@@ -1270,9 +1267,9 @@ async fn process_and_buy(
         }
     });
     
-    // Check if we need metadata (for socials or metadata filters)
-    let need_metadata = require_socials || require_twitter || require_website || require_telegram || require_discord || min_socials > 0 
-        || require_uppercase || max_name_len < usize::MAX || min_ticker_len > 0;
+    // Always fetch metadata/socials for tokens that passed dev_buy filter
+    // This ensures socials data is available for logging even if filters don't require it
+    let need_metadata = true;
     
     let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Socials, TokenMetadata)>> + Send>> = Box::pin(async move {
         if need_metadata {
@@ -1643,16 +1640,16 @@ async fn process_and_buy(
     // Check advanced filters using should_process_token function
     // This ensures all advanced filters (enable_*) are properly checked
     match crate::filters::should_process_token(config, &accounts, socials_opt.as_ref(), metadata_opt.as_ref()) {
-        Ok(true) => {
+        Ok(None) => {
             // Token passed all filters, continue
         }
-        Ok(false) => {
-            // Token failed advanced filters
+        Ok(Some(filter_reason)) => {
+            // Token failed advanced filters with specific reason
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
             }
-            let reason = "SKIP: Failed advanced filters".to_string();
+            let reason = format!("SKIP: Failed advanced filters - {}", filter_reason);
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
                 let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
