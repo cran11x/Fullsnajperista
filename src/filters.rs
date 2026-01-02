@@ -1589,5 +1589,83 @@ mod tests {
         let result = should_process_token(&config, &accounts, None, None).unwrap();
         assert!(result.is_none(), "Should pass when no filters are enabled");
     }
+
+    #[test]
+    fn test_twitter_community_filter_with_socials() {
+        // Test that Twitter Community filter works correctly when socials are fetched
+        let mut config = create_test_config();
+        let accounts = create_test_accounts(5.0);
+        
+        // Enable Twitter Community filter
+        config.enable_twitter_community = true;
+        
+        // Test with Twitter Community URL
+        let socials_community = Socials {
+            twitter: Some("https://x.com/i/communities/1234567890".to_string()),
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        
+        // Should pass - has Twitter Community
+        let result = should_process_token(&config, &accounts, Some(&socials_community), None).unwrap();
+        assert!(result.is_none(), "Should pass with Twitter Community");
+        
+        // Test with Twitter Account URL (not community)
+        let socials_account = Socials {
+            twitter: Some("https://x.com/testaccount".to_string()),
+            website: None,
+            telegram: None,
+            discord: None,
+        };
+        
+        // Should fail - has Twitter but not Community
+        let result = should_process_token(&config, &accounts, Some(&socials_account), None).unwrap();
+        assert!(result.is_some(), "Should fail when Twitter is not Community");
+        let reason = result.unwrap();
+        assert!(reason.contains("Twitter is not community type"), "Should mention Twitter Community");
+        assert!(reason.contains("enable_twitter_community"), "Should mention filter name");
+        
+        // Test with no Twitter
+        let socials_no_twitter = Socials {
+            twitter: None,
+            website: Some("https://example.com".to_string()),
+            telegram: None,
+            discord: None,
+        };
+        
+        // Should fail - no Twitter
+        let result = should_process_token(&config, &accounts, Some(&socials_no_twitter), None).unwrap();
+        assert!(result.is_some(), "Should fail when no Twitter");
+        let reason = result.unwrap();
+        assert!(reason.contains("Twitter is not community type"), "Should mention Twitter Community");
+        
+        // Test with None socials (fetch failed)
+        // Should fail - socials not available
+        let result = should_process_token(&config, &accounts, None, None).unwrap();
+        assert!(result.is_some(), "Should fail when socials are None");
+        let reason = result.unwrap();
+        assert!(reason.contains("Twitter is not community type"), "Should mention Twitter Community");
+    }
+
+    #[test]
+    fn test_socials_fetch_failure_handling() {
+        // Test that filters properly handle socials fetch failure
+        let mut config = create_test_config();
+        let accounts = create_test_accounts(5.0);
+        
+        // Enable filters that require socials
+        config.enable_twitter_community = true;
+        config.enable_has_twitter = true;
+        config.enable_brand_match_and_twitter = true;
+        
+        // When socials are None (fetch failed), all these filters should fail gracefully
+        let result = should_process_token(&config, &accounts, None, None).unwrap();
+        assert!(result.is_some(), "Should fail when socials are None and filters require them");
+        let reason = result.unwrap();
+        // Should fail on the first filter that requires socials
+        assert!(reason.contains("Twitter") || reason.contains("socials"), 
+                "Should mention Twitter or socials in failure reason");
+    }
 }
 

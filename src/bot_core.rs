@@ -33,7 +33,7 @@ use crate::websocket::{is_initialize_bonding_curve, extract_signature};
 use crate::buy::build_buy_instruction;
 use crate::jito::send_jito_bundle;
 use crate::helius::send_helius_transaction;
-use crate::socials::{check_token_metadata, Socials, TokenMetadata};
+use crate::socials::{Socials, TokenMetadata};
 use crate::das_check::check_creator_token_count_das;
 use crate::filters::check_creator_token_count;
 use crate::accounts::{TokenBuy, TokenTracker, SeenTokens, fetch_bonding_curve_mc, BondingCurveAccount};
@@ -494,12 +494,14 @@ async fn listen_websocket_once(
         monitor.check_websocket(true);
     }
     
-    eprintln!("[WS] Connected to {}", &config.wss_url);
+    eprintln!("[WS] ✅ Connected to {}", &config.wss_url);
     
     let _ = event_tx.send(TokenEvent::Info {
         message: "WebSocket connected successfully".to_string(),
         timestamp: Utc::now(),
     });
+    
+    eprintln!("[WS] 📡 WebSocket connected - ready to receive messages");
     
     let (mut write, mut read) = ws_stream.split();
     
@@ -516,6 +518,8 @@ async fn listen_websocket_once(
         message: "Subscription sent, listening for new tokens...".to_string(),
         timestamp: Utc::now(),
     });
+    
+    eprintln!("[WS] 📨 Subscription sent - waiting for pump.fun token initializations...");
     
     let mut message_count = 0;
     let mut last_health_check = Instant::now();
@@ -833,6 +837,7 @@ async fn listen_websocket_once(
             }
             
             // Found a potential token!
+            eprintln!("[WS] 🔍 Potential token detected! Processing...");
             let _ = event_tx.send(TokenEvent::Info {
                 message: "Potential token detected, processing...".to_string(),
                 timestamp: Utc::now(),
@@ -917,6 +922,7 @@ async fn listen_websocket_once(
             }
             
             // Send detection event
+            eprintln!("[TOKEN] ✅ {} detected - sending Detected event to UI", format_addr(&mint));
             let _ = event_tx.send(TokenEvent::Detected {
                 mint: mint.clone(),
                 timestamp: Utc::now(),
@@ -1267,21 +1273,36 @@ async fn process_and_buy(
         }
     });
     
-    // Always fetch metadata/socials for tokens that passed dev_buy filter
-    // This ensures socials data is available for logging even if filters don't require it
-    let need_metadata = true;
-    
-    let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Option<(Socials, TokenMetadata)>> + Send>> = Box::pin(async move {
-        if need_metadata {
-            if let Err(_e) = socials_rate_limiter_clone.check() {
-                let mut m = metrics_clone_socials.write().unwrap();
-                m.record_error(ErrorType::Network);
-                None
-            } else {
-                check_token_metadata(&mint_str_socials, &api_key_socials).await.ok()
-            }
+    // ✅ CRITICAL: Always fetch metadata/socials for tokens that passed dev_buy filter
+    // This ensures socials data is available for filters (especially Twitter Community)
+    // We use blocking fetch with retries to ensure we get the data before applying filters
+    let config_socials = config.clone();
+    let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Socials, TokenMetadata), anyhow::Error>> + Send>> = Box::pin(async move {
+        if let Err(_e) = socials_rate_limiter_clone.check() {
+            let mut m = metrics_clone_socials.write().unwrap();
+            m.record_error(ErrorType::Network);
+            Err(anyhow::anyhow!("Socials rate limit exceeded"))
         } else {
-            None
+            // Use configurable retries and timeouts from config
+            match crate::socials::check_token_metadata_with_config(
+                &mint_str_socials,
+                &api_key_socials,
+                config_socials.socials_das_timeout_ms,
+                config_socials.socials_ipfs_timeout_ms,
+                config_socials.socials_total_timeout_ms,
+                config_socials.socials_max_retries,
+                config_socials.socials_retry_delay_ms,
+            ).await {
+                Ok(result) => {
+                    // Record successful fetch
+                    Ok(result)
+                }
+                Err(e) => {
+                    let mut _m = metrics_clone_socials.write().unwrap();
+                    _m.record_error(ErrorType::Network);
+                    Err(e)
+                }
+            }
         }
     });
     
@@ -1294,18 +1315,62 @@ async fn process_and_buy(
     let (das_result, mc_result, metadata_result): (
         Result<u32, anyhow::Error>,
         Result<(BondingCurveAccount, f64), anyhow::Error>,
-        Option<(Socials, TokenMetadata)>
+        Result<(Socials, TokenMetadata), anyhow::Error>
     ) = tokio::join!(
         das_fut,
         mc_fut,
         metadata_fut
     );
     
-    // Extract socials and metadata from result
-    let (socials_result, metadata_opt) = if let Some((socials, metadata)) = metadata_result {
-        (Some(socials), Some(metadata))
-    } else {
-        (None, None)
+    // ✅ CRITICAL: Extract socials and metadata - if fetch failed, we need to handle it properly
+    // For filters that require socials (like Twitter Community), we should retry once or reject with clear reason
+    let (socials_result, metadata_opt) = match metadata_result {
+        Ok((socials, metadata)) => {
+            // Log successful fetch (detailed logging already done in socials.rs)
+            let socials_count = socials.count();
+            if socials_count > 0 {
+                eprintln!("✅ Socials available for {}: {} socials", mint_str, socials_count);
+            }
+            (Some(socials), Some(metadata))
+        }
+        Err(e) => {
+            // Socials fetch failed - log it and decide whether to retry or reject
+            eprintln!("⚠️  Socials fetch failed for {}: {}", mint_str, e);
+            
+            // If we have filters that require socials, we should retry once
+            let needs_socials = config.enable_twitter_community 
+                || config.enable_twitter_account 
+                || config.enable_has_twitter
+                || config.require_twitter
+                || config.require_socials;
+            
+            if needs_socials {
+                // Retry once with same config
+                eprintln!("   🔄 Retrying socials fetch (filters require socials)...");
+                match crate::socials::check_token_metadata_with_config(
+                    &mint_str,
+                    &api_key,
+                    config.socials_das_timeout_ms,
+                    config.socials_ipfs_timeout_ms,
+                    config.socials_total_timeout_ms,
+                    1, // Single retry
+                    config.socials_retry_delay_ms,
+                ).await {
+                    Ok((socials, metadata)) => {
+                        eprintln!("   ✅ Retry successful");
+                        (Some(socials), Some(metadata))
+                    }
+                    Err(retry_err) => {
+                        eprintln!("   ❌ Retry also failed: {}", retry_err);
+                        // Return None - filters will handle this
+                        (None, None)
+                    }
+                }
+            } else {
+                // No filters require socials, so we can continue without them
+                (None, None)
+            }
+        }
     };
     
     // Filter #2: Creator Token Count (using filter function from filters.rs)
@@ -1378,7 +1443,9 @@ async fn process_and_buy(
     
     let token_price_sol = curve.get_token_price_sol();
     
-    // Filter #3: Socials
+    // Filter #3: Socials and Metadata
+    // ✅ CRITICAL: If socials fetch failed and we have filters that require socials,
+    // we need to reject the token with a clear reason
     let socials_opt = if let Some(socials) = socials_result {
         if require_socials && !socials.has_any() {
             let filter_time = filter_start.elapsed().as_millis() as u64;
@@ -1507,14 +1574,38 @@ async fn process_and_buy(
             return Err(anyhow!(reason));
         }
         Some(socials)
-        } else {
-            if require_socials || require_twitter || require_website || require_telegram || require_discord {
+    } else {
+        // Socials fetch failed - check if any filters require socials
+        // This includes both basic (require_*) and advanced (enable_*) filters
+        let needs_socials = require_socials 
+            || require_twitter 
+            || require_website 
+            || require_telegram 
+            || require_discord
+            || config.enable_has_twitter
+            || config.enable_twitter_community
+            || config.enable_twitter_account
+            || config.enable_has_website
+            || config.enable_has_telegram
+            || config.enable_social_count_1_plus
+            || config.enable_social_count_2_plus
+            || config.enable_social_count_3
+            || config.enable_has_brand_match
+            || config.enable_twitter_matches_website
+            || config.enable_name_matches_twitter
+            || config.enable_symbol_matches_twitter
+            || config.enable_brand_match_and_twitter
+            || config.enable_perfect_brand_and_twitter
+            || config.enable_twitter_account_or_community
+            || config.enable_has_twitter_with_username;
+        
+        if needs_socials {
             let filter_time = filter_start.elapsed().as_millis() as u64;
             if let Ok(mut m) = metrics.write() {
                 m.record_filter(FilterReason::Socials, filter_time);
                 m.record_error(ErrorType::Network);
             }
-            let reason = "SKIP: Could not verify socials".to_string();
+            let reason = "SKIP: Socials fetch failed (required for filters)".to_string();
             // Log filtered token
             if let Ok(logger_guard) = logger.lock() {
                 let _ = logger_guard.log_filtered(
@@ -1529,6 +1620,7 @@ async fn process_and_buy(
             }
             return Err(anyhow!(reason));
         }
+        // No filters require socials, so we can continue without them
         None
     };
     

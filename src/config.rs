@@ -115,6 +115,13 @@ pub struct Config {
     pub enable_brand_score_4_plus_and_com: bool,
     pub enable_twitter_match_website_and_com: bool,
     pub enable_name_match_website_and_com: bool,
+    // Socials fetch configuration
+    pub socials_das_timeout_ms: u64,
+    pub socials_ipfs_timeout_ms: u64,
+    pub socials_total_timeout_ms: u64,
+    pub socials_max_retries: u32,
+    pub socials_retry_delay_ms: u64,
+    pub socials_max_concurrent: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,6 +680,37 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
+        // Socials fetch configuration
+        let socials_das_timeout_ms = std::env::var("SOCIALS_DAS_TIMEOUT_MS")
+            .unwrap_or_else(|_| "2000".to_string())
+            .parse::<u64>()
+            .unwrap_or(2000);
+        
+        let socials_ipfs_timeout_ms = std::env::var("SOCIALS_IPFS_TIMEOUT_MS")
+            .unwrap_or_else(|_| "5000".to_string())
+            .parse::<u64>()
+            .unwrap_or(5000);
+        
+        let socials_total_timeout_ms = std::env::var("SOCIALS_TOTAL_TIMEOUT_MS")
+            .unwrap_or_else(|_| "5000".to_string())
+            .parse::<u64>()
+            .unwrap_or(5000);
+        
+        let socials_max_retries = std::env::var("SOCIALS_MAX_RETRIES")
+            .unwrap_or_else(|_| "2".to_string())
+            .parse::<u32>()
+            .unwrap_or(2);
+        
+        let socials_retry_delay_ms = std::env::var("SOCIALS_RETRY_DELAY_MS")
+            .unwrap_or_else(|_| "200".to_string())
+            .parse::<u64>()
+            .unwrap_or(200);
+        
+        let socials_max_concurrent = std::env::var("SOCIALS_MAX_CONCURRENT")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<usize>()
+            .unwrap_or(10);
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -808,6 +846,13 @@ impl Config {
             enable_brand_score_4_plus_and_com,
             enable_twitter_match_website_and_com,
             enable_name_match_website_and_com,
+            // Socials fetch configuration
+            socials_das_timeout_ms,
+            socials_ipfs_timeout_ms,
+            socials_total_timeout_ms,
+            socials_max_retries,
+            socials_retry_delay_ms,
+            socials_max_concurrent,
         };
 
         config.validate()?;
@@ -1035,6 +1080,13 @@ impl Default for Config {
             enable_brand_score_4_plus_and_com: false,
             enable_twitter_match_website_and_com: false,
             enable_name_match_website_and_com: false,
+            // Socials fetch configuration
+            socials_das_timeout_ms: 2000,
+            socials_ipfs_timeout_ms: 5000,
+            socials_total_timeout_ms: 5000,
+            socials_max_retries: 2,
+            socials_retry_delay_ms: 200,
+            socials_max_concurrent: 10,
         }
     }
 }

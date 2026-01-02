@@ -68,6 +68,13 @@ struct SettingsState {
     max_name_length_str: Option<String>,
     min_ticker_length_str: Option<String>,
     max_ticker_length_str: Option<String>,
+    // Socials fetch configuration
+    socials_das_timeout_ms_str: Option<String>,
+    socials_ipfs_timeout_ms_str: Option<String>,
+    socials_total_timeout_ms_str: Option<String>,
+    socials_max_retries_str: Option<String>,
+    socials_retry_delay_ms_str: Option<String>,
+    socials_max_concurrent_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -248,6 +255,42 @@ impl SettingsState {
                 }
                 self.max_ticker_length_str.as_mut().unwrap()
             }
+            "socials_das_timeout_ms" => {
+                if self.socials_das_timeout_ms_str.is_none() {
+                    self.socials_das_timeout_ms_str = Some(default);
+                }
+                self.socials_das_timeout_ms_str.as_mut().unwrap()
+            }
+            "socials_ipfs_timeout_ms" => {
+                if self.socials_ipfs_timeout_ms_str.is_none() {
+                    self.socials_ipfs_timeout_ms_str = Some(default);
+                }
+                self.socials_ipfs_timeout_ms_str.as_mut().unwrap()
+            }
+            "socials_total_timeout_ms" => {
+                if self.socials_total_timeout_ms_str.is_none() {
+                    self.socials_total_timeout_ms_str = Some(default);
+                }
+                self.socials_total_timeout_ms_str.as_mut().unwrap()
+            }
+            "socials_max_retries" => {
+                if self.socials_max_retries_str.is_none() {
+                    self.socials_max_retries_str = Some(default);
+                }
+                self.socials_max_retries_str.as_mut().unwrap()
+            }
+            "socials_retry_delay_ms" => {
+                if self.socials_retry_delay_ms_str.is_none() {
+                    self.socials_retry_delay_ms_str = Some(default);
+                }
+                self.socials_retry_delay_ms_str.as_mut().unwrap()
+            }
+            "socials_max_concurrent" => {
+                if self.socials_max_concurrent_str.is_none() {
+                    self.socials_max_concurrent_str = Some(default);
+                }
+                self.socials_max_concurrent_str.as_mut().unwrap()
+            }
             _ => panic!("Unknown field id: {}", id),
         }
     }
@@ -309,6 +352,26 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         state.max_ticker_length_str = Some(config_clone.max_ticker_length.to_string());
     }
     state.require_uppercase_token = config_clone.require_uppercase_token;
+    
+    // Initialize socials fetch config if needed
+    if state.socials_das_timeout_ms_str.is_none() {
+        state.socials_das_timeout_ms_str = Some(config_clone.socials_das_timeout_ms.to_string());
+    }
+    if state.socials_ipfs_timeout_ms_str.is_none() {
+        state.socials_ipfs_timeout_ms_str = Some(config_clone.socials_ipfs_timeout_ms.to_string());
+    }
+    if state.socials_total_timeout_ms_str.is_none() {
+        state.socials_total_timeout_ms_str = Some(config_clone.socials_total_timeout_ms.to_string());
+    }
+    if state.socials_max_retries_str.is_none() {
+        state.socials_max_retries_str = Some(config_clone.socials_max_retries.to_string());
+    }
+    if state.socials_retry_delay_ms_str.is_none() {
+        state.socials_retry_delay_ms_str = Some(config_clone.socials_retry_delay_ms.to_string());
+    }
+    if state.socials_max_concurrent_str.is_none() {
+        state.socials_max_concurrent_str = Some(config_clone.socials_max_concurrent.to_string());
+    }
     
     // Enhanced Wallet Private Key Section with premium styling
     ui.group(|ui| {
@@ -1357,6 +1420,138 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         
         ui.add_space(8.0);
         ui.label(egui::RichText::new("ℹ️  You can select multiple requirements (e.g., only Website, or Twitter + Telegram)")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(160, 170, 185)));
+        
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+        
+        // Socials Fetch Configuration
+        ui.heading(egui::RichText::new("⚙️ Socials Fetch Settings")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::from_rgb(220, 230, 245)));
+        ui.label(egui::RichText::new("Configure how socials are fetched from blockchain")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(160, 170, 185)));
+        ui.add_space(8.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("DAS Timeout (ms):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let das_timeout_str = state.get_or_init("socials_das_timeout_ms", config_clone.socials_das_timeout_ms.to_string());
+            if ui.add(egui::TextEdit::singleline(das_timeout_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = das_timeout_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.socials_das_timeout_ms = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+            
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("IPFS Timeout (ms):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let ipfs_timeout_str = state.get_or_init("socials_ipfs_timeout_ms", config_clone.socials_ipfs_timeout_ms.to_string());
+            if ui.add(egui::TextEdit::singleline(ipfs_timeout_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = ipfs_timeout_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.socials_ipfs_timeout_ms = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        });
+        
+        ui.add_space(6.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Total Timeout (ms):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let total_timeout_str = state.get_or_init("socials_total_timeout_ms", config_clone.socials_total_timeout_ms.to_string());
+            if ui.add(egui::TextEdit::singleline(total_timeout_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = total_timeout_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.socials_total_timeout_ms = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+            
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("Max Retries:")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let max_retries_str = state.get_or_init("socials_max_retries", config_clone.socials_max_retries.to_string());
+            if ui.add(egui::TextEdit::singleline(max_retries_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = max_retries_str.parse::<u32>() {
+                    config_clone.socials_max_retries = val;
+                    apply_config_live(&config, &control_tx, &config_clone);
+                    state.last_update_time = Some(std::time::Instant::now());
+                }
+            }
+        });
+        
+        ui.add_space(6.0);
+        
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Retry Delay (ms):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let retry_delay_str = state.get_or_init("socials_retry_delay_ms", config_clone.socials_retry_delay_ms.to_string());
+            if ui.add(egui::TextEdit::singleline(retry_delay_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = retry_delay_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.socials_retry_delay_ms = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+            
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("Max Concurrent:")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let max_concurrent_str = state.get_or_init("socials_max_concurrent", config_clone.socials_max_concurrent.to_string());
+            if ui.add(egui::TextEdit::singleline(max_concurrent_str)
+                    .desired_width(120.0))
+                    .changed() {
+                if let Ok(val) = max_concurrent_str.parse::<usize>() {
+                    if val > 0 {
+                        config_clone.socials_max_concurrent = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        });
+        
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("ℹ️  These settings control how socials are fetched. Higher timeouts = more reliable but slower. Retries help with network issues.")
             .size(11.0)
             .color(egui::Color32::from_rgb(160, 170, 185)));
     });

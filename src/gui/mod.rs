@@ -604,7 +604,7 @@ impl GuiApp {
         let seen_tokens = Arc::new(crate::accounts::SeenTokens::new());
         let health_monitor = Arc::new(std::sync::Mutex::new(crate::health::HealthMonitor::new()));
         let das_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(10, 60));
-        let socials_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(10, 60));
+        let socials_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(20, 60));
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (control_tx_bot, control_rx_bot) = tokio::sync::mpsc::unbounded_channel();
         let wallet_balance_clone = self.wallet_balance.clone();
