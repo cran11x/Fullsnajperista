@@ -3860,6 +3860,7 @@ async fn monitor_positions(
                             position_clone.peak_pnl_percent,
                             time_since_buy,
                             &executed_rule_ids,
+                            config_clone.enable_trailing_stop,
                         ) {
                             // Extract trigger type and value for detailed logging
                             let (trigger_type, trigger_value) = match &rule.trigger {
@@ -4045,22 +4046,24 @@ async fn monitor_positions(
                     }
                     
                     // 🎯 BREAKEVEN STOP LOSS: If breakeven mode is active, use entry MC as stop loss
-                    if let Some(entry_mc_val) = entry_mc {
-                        if entry_mc_val > 0.0 {
-                            // Check if MC reaches threshold (activates breakeven mode)
-                            let breakeven_mode_active = if current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
-                                // Update peak MC in tracker (activates breakeven mode)
-                                if let Ok(mut tracker_guard) = tracker_clone.write() {
-                                    if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                        let _ = tracker_ref.update_peak_mc(
-                                            &position_clone.mint,
-                                            current_mc_sol,
-                                            config_clone.breakeven_mc_threshold_sol,
-                                        );
+                    // Only check if breakeven is enabled
+                    if config_clone.enable_breakeven {
+                        if let Some(entry_mc_val) = entry_mc {
+                            if entry_mc_val > 0.0 {
+                                // Check if MC reaches threshold (activates breakeven mode)
+                                let breakeven_mode_active = if current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
+                                    // Update peak MC in tracker (activates breakeven mode)
+                                    if let Ok(mut tracker_guard) = tracker_clone.write() {
+                                        if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                            let _ = tracker_ref.update_peak_mc(
+                                                &position_clone.mint,
+                                                current_mc_sol,
+                                                config_clone.breakeven_mc_threshold_sol,
+                                            );
+                                        }
                                     }
-                                }
-                                true // MC just reached threshold, breakeven mode is now active
-                            } else {
+                                    true // MC just reached threshold, breakeven mode is now active
+                                } else {
                                 // Check if breakeven mode was already active (from previous cycle)
                                 // Read fresh from tracker to get updated status
                                 let mut is_active = position_clone.breakeven_mode_active;
@@ -4071,13 +4074,13 @@ async fn monitor_positions(
                                         }
                                     }
                                 }
-                                is_active
-                            };
-                            
-                            // ✅ CRITICAL FIX: Check breakeven stop loss if breakeven mode is active
-                            // Once activated (MC reached threshold), breakeven mode stays active
-                            // and we check if MC drops below entry, regardless of current MC level
-                            if breakeven_mode_active {
+                                    is_active
+                                };
+                                
+                                // ✅ CRITICAL FIX: Check breakeven stop loss if breakeven mode is active
+                                // Once activated (MC reached threshold), breakeven mode stays active
+                                // and we check if MC drops below entry, regardless of current MC level
+                                if breakeven_mode_active {
                                 // Check if MC dropped below entry (breakeven stop loss)
                                 if current_mc_sol < entry_mc_val {
                                     eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from peak to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
@@ -4120,10 +4123,11 @@ async fn monitor_positions(
                                     
                                     return Some(("breakeven_stop_loss".to_string(), position_mint));
                                 }
-                                // Continue to take profit check (in breakeven mode, skip normal stop loss)
+                                    // Continue to take profit check (in breakeven mode, skip normal stop loss)
+                                }
                             }
                         }
-                    }
+                    } // End of enable_breakeven check
                     
                     // Check take profit: current_mc_sol >= take_profit_mc_sol
                     // ✅ FIX: Only check take profit if MC is valid (prevents random sells)

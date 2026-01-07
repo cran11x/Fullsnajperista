@@ -855,33 +855,46 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             
             ui.add_space(8.0);
             
-            // 🆕 Breakeven Stop Loss Threshold (USD input, converted to SOL)
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("🛡️  Breakeven MC Threshold (USD):")
-                    .size(13.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(255, 200, 100)));
-                ui.add_space(8.0);
-                use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price};
-                let breakeven_usd = sol_to_usd(config_clone.breakeven_mc_threshold_sol);
-                let breakeven_str = state.get_or_init("breakeven_mc_threshold_usd", breakeven_usd.to_string());
-                if ui.add(egui::TextEdit::singleline(breakeven_str)
-                        .desired_width(150.0))
-                        .changed() {
-                    if let Ok(val_usd) = breakeven_str.parse::<f64>() {
-                        if val_usd > 0.0 {
-                            // Convert USD to SOL
-                            config_clone.breakeven_mc_threshold_sol = usd_to_sol(val_usd);
-                            apply_config_live(&config, &control_tx, &config_clone);
-                            state.last_update_time = Some(std::time::Instant::now());
+            // Enable Breakeven checkbox
+            if ui.checkbox(&mut config_clone.enable_breakeven, egui::RichText::new("🛡️  Enable Breakeven Protection")
+                    .size(13.0)).changed() {
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+            ui.label(egui::RichText::new("(Sell at breakeven when MC drops below entry after reaching threshold)")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
+            
+            if config_clone.enable_breakeven {
+                ui.add_space(6.0);
+                // 🆕 Breakeven Stop Loss Threshold (USD input, converted to SOL)
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🛡️  Breakeven MC Threshold (USD):")
+                        .size(13.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 200, 100)));
+                    ui.add_space(8.0);
+                    use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price};
+                    let breakeven_usd = sol_to_usd(config_clone.breakeven_mc_threshold_sol);
+                    let breakeven_str = state.get_or_init("breakeven_mc_threshold_usd", breakeven_usd.to_string());
+                    if ui.add(egui::TextEdit::singleline(breakeven_str)
+                            .desired_width(150.0))
+                            .changed() {
+                        if let Ok(val_usd) = breakeven_str.parse::<f64>() {
+                            if val_usd > 0.0 {
+                                // Convert USD to SOL
+                                config_clone.breakeven_mc_threshold_sol = usd_to_sol(val_usd);
+                                apply_config_live(&config, &control_tx, &config_clone);
+                                state.last_update_time = Some(std::time::Instant::now());
+                            }
                         }
                     }
-                }
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(format!("(≈ {:.2} SOL at ${:.2}/SOL)", config_clone.breakeven_mc_threshold_sol, get_cached_sol_price()))
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(160, 170, 185)));
-            });
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(format!("(≈ {:.2} SOL at ${:.2}/SOL)", config_clone.breakeven_mc_threshold_sol, get_cached_sol_price()))
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
+                });
+            }
             
             // Enhanced Sell Percent
             ui.horizontal(|ui| {
@@ -934,6 +947,18 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             });
             
             ui.add_space(10.0);
+            
+            // Enable Trailing Stop checkbox
+            if ui.checkbox(&mut config_clone.enable_trailing_stop, egui::RichText::new("📉 Enable Trailing Stop")
+                    .size(13.0)).changed() {
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+            ui.label(egui::RichText::new("(Sell when price drops % from peak)")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
+            
+            ui.add_space(8.0);
             
             // Dead Coin Sell checkbox
             if ui.checkbox(&mut config_clone.enable_dead_coin_sell, egui::RichText::new("💀 Sell Dead Coins (No price movement)")

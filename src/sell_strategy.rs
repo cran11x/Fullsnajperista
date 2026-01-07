@@ -242,10 +242,15 @@ impl SellStrategyConfig {
         peak_pnl_percent: Option<f64>,
         time_since_buy: u64,
         executed_rule_ids: &[String],
+        enable_trailing_stop: bool, // Enable/disable trailing stop rules
     ) -> Option<&SellRule> {
         // Sort rules by priority (higher first)
         let mut sorted_rules: Vec<&SellRule> = self.rules.iter()
-            .filter(|r| r.enabled)
+            .filter(|r| {
+                r.enabled && 
+                // Skip trailing stop rules if disabled
+                (enable_trailing_stop || !matches!(r.trigger, SellTrigger::TrailingStop(_)))
+            })
             .collect();
         sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
 

@@ -54,6 +54,8 @@ pub struct Config {
     pub monitor_interval_sec: u64,
     pub enable_dead_coin_sell: bool,
     pub dead_coin_timeout_sec: u64,
+    pub enable_trailing_stop: bool,  // Enable/disable trailing stop in sell strategy
+    pub enable_breakeven: bool,      // Enable/disable breakeven MC threshold protection
     pub blacklisted_tokens: HashSet<Pubkey>,
     pub blacklisted_creators: HashSet<Pubkey>,
     pub whitelisted_tokens: Option<HashSet<Pubkey>>, // None = svi dozvoljeni
@@ -337,6 +339,16 @@ impl Config {
             .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
             .unwrap_or(false);
+
+        let enable_trailing_stop = std::env::var("ENABLE_TRAILING_STOP")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true);
+
+        let enable_breakeven = std::env::var("ENABLE_BREAKEVEN")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true);
 
         let stop_loss_percent = std::env::var("STOP_LOSS_PERCENT")
             .unwrap_or_else(|_| "30.0".to_string())
@@ -785,6 +797,8 @@ impl Config {
             monitor_interval_sec,
             enable_dead_coin_sell,
             dead_coin_timeout_sec,
+            enable_trailing_stop,
+            enable_breakeven,
             blacklisted_tokens,
             blacklisted_creators,
             whitelisted_tokens,
@@ -1015,6 +1029,8 @@ impl Default for Config {
             stop_loss_percent: 30.0,
             take_profit_mc_sol: 175.0, // ~24000 USD at 137 SOL/USD
             breakeven_mc_threshold_sol: 102.0, // ~14000 USD at 137 SOL/USD
+            enable_trailing_stop: true, // Enable trailing stop by default
+            enable_breakeven: true,      // Enable breakeven protection by default
             sell_percent: 100.0,
             monitor_interval_sec: 5,
             enable_dead_coin_sell: false,
