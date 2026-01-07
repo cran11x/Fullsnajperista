@@ -51,6 +51,22 @@ use solana_transaction_status::UiTransactionEncoding;
 use solana_client::rpc_config::RpcTransactionConfig;
 use serde_json;
 
+#[derive(Debug, Clone)]
+struct SellDetails {
+    reason: String,                    // Osnovni razlog ("stop_loss", "take_profit", "strategy_xxx", "manual_sell")
+    trigger_type: Option<String>,      // Tip triggera ("ProfitPercent", "TrailingStop", "MarketCapSol", itd.)
+    trigger_value: Option<f64>,        // Vrednost triggera (threshold, drop_percent, itd.)
+    current_pnl_percent: Option<f64>,  // Trenutni PnL %
+    peak_pnl_percent: Option<f64>,    // Peak PnL % (za TrailingStop)
+    current_mc_sol: Option<f64>,       // Trenutni MC u SOL
+    entry_mc_sol: Option<f64>,         // Entry MC u SOL
+    entry_price: Option<f64>,          // Entry price
+    current_price: Option<f64>,        // Trenutna cena
+    sell_percent: f64,                 // % pozicije koja se prodaje (100 = full sell)
+    time_since_buy_sec: Option<u64>,  // Vreme od kupnje u sekundama
+    rule_id: Option<String>,           // ID sell rule-a (ako je strategy-based)
+}
+
 fn format_addr(addr: &str) -> String {
     if addr.len() > 10 {
         format!("{}...{}", &addr[..6], &addr[addr.len()-4..])
@@ -611,6 +627,26 @@ async fn listen_websocket_once(
                                 eprintln!("   🚀 Spawning sell task for {}", position.mint);
                                 tokio::spawn(async move {
                                     eprintln!("   🔄 Sell task started for {}", position.mint);
+                                    
+                                    // Create basic sell details for manual sell
+                                    let sell_details = SellDetails {
+                                        reason: "manual_sell".to_string(),
+                                        trigger_type: None,
+                                        trigger_value: None,
+                                        current_pnl_percent: position.pnl_percent,
+                                        peak_pnl_percent: position.peak_pnl_percent,
+                                        current_mc_sol: None, // Not available in manual sell context
+                                        entry_mc_sol: position.mc_at_entry_sol,
+                                        entry_price: position.token_price_sol,
+                                        current_price: position.current_price_sol,
+                                        sell_percent: 100.0,
+                                        time_since_buy_sec: {
+                                            let now = Utc::now();
+                                            Some(now.signed_duration_since(position.timestamp).num_seconds() as u64)
+                                        },
+                                        rule_id: None,
+                                    };
+                                    
                                     match execute_sell(
                                         &config_clone,
                                         &wallet_clone,
@@ -619,6 +655,7 @@ async fn listen_websocket_once(
                                         &position,
                                         "manual_sell",
                                         &event_tx_clone,
+                                        Some(sell_details),
                                     ).await {
                                         Ok(sig) => {
                                             eprintln!("   ✅ Manual sell executed successfully!");
@@ -3665,6 +3702,25 @@ async fn monitor_positions(
                 let event_tx_clone = event_tx.clone();
                 let rpc_clone = Arc::clone(&rpc_arc);
                 
+                // Create basic sell details for stop loss
+                let sell_details = SellDetails {
+                    reason: "stop_loss".to_string(),
+                    trigger_type: Some("StopLoss".to_string()),
+                    trigger_value: Some(stop_loss_percent),
+                    current_pnl_percent: position_clone.pnl_percent,
+                    peak_pnl_percent: position_clone.peak_pnl_percent,
+                    current_mc_sol: None, // Not available in this context
+                    entry_mc_sol: position_clone.mc_at_entry_sol,
+                    entry_price: position_clone.token_price_sol,
+                    current_price: position_clone.current_price_sol,
+                    sell_percent: 100.0,
+                    time_since_buy_sec: {
+                        let now = Utc::now();
+                        Some(now.signed_duration_since(position_clone.timestamp).num_seconds() as u64)
+                    },
+                    rule_id: None,
+                };
+                
                 // Execute sell IMMEDIATELY in background (don't block monitoring)
                 tokio::spawn(async move {
                     let _ = execute_sell(
@@ -3675,6 +3731,7 @@ async fn monitor_positions(
                         &position_clone,
                         "stop_loss",
                         &event_tx_clone,
+                        Some(sell_details),
                     ).await;
                 });
             }
@@ -3773,17 +3830,77 @@ async fn monitor_positions(
                         position_clone.pnl_percent
                     };
                     
+                    // ✅ FIX: Validate data before checking rules - prevent random sells
+                    // Check if market cap is valid (must be > 0 and finite)
+                    let is_mc_valid = current_mc_sol > 0.0 && current_mc_sol.is_finite() && !current_mc_sol.is_nan();
+                    // Check if PnL is valid (must be finite if Some)
+                    let is_pnl_valid = current_pnl_percent.map_or(true, |pnl| pnl.is_finite() && !pnl.is_nan());
+                    // Check if entry price is valid
+                    let is_entry_price_valid = entry_price > 0.0 && entry_price.is_finite() && !entry_price.is_nan();
+                    
+                    // Skip sell checks if critical data is invalid (prevents random sells)
+                    // Only skip if ALL critical data is invalid - allow some to be missing if others are valid
+                    if !is_mc_valid && !is_pnl_valid && !is_entry_price_valid {
+                        eprintln!("⚠️  AUTO-SELL SKIPPED for {}: Invalid data (MC: {:.2}, PnL: {:?}, Entry: {:.8}) - skipping all checks", 
+                                 &position_clone.mint[..8], current_mc_sol, current_pnl_percent, entry_price);
+                        return None;
+                    }
+                    
                     // Check strategy rules if available
                     if let Some(strategy) = sell_strategy {
+                        // ✅ FIX: Only pass valid data to strategy rules (prevents random sells)
+                        // Pass None if data is invalid, so rules can handle it correctly
+                        let valid_pnl_percent = if is_pnl_valid { current_pnl_percent } else { None };
+                        let valid_mc_sol = if is_mc_valid { Some(current_mc_sol) } else { None };
+                        
                         if let Some(rule) = strategy.check_rules(
                             &position_clone,
-                            current_pnl_percent,
-                            Some(current_mc_sol),
+                            valid_pnl_percent,
+                            valid_mc_sol,
                             position_clone.peak_pnl_percent,
                             time_since_buy,
                             &executed_rule_ids,
                         ) {
-                            eprintln!("🎯 SELL STRATEGY RULE TRIGGERED: '{}' - Selling {:.0}% of position", rule.id, rule.sell_percent);
+                            // Extract trigger type and value for detailed logging
+                            let (trigger_type, trigger_value) = match &rule.trigger {
+                                crate::sell_strategy::SellTrigger::ProfitPercent(threshold) => {
+                                    (Some("ProfitPercent".to_string()), Some(*threshold))
+                                }
+                                crate::sell_strategy::SellTrigger::MarketCapSol(threshold) => {
+                                    (Some("MarketCapSol".to_string()), Some(*threshold))
+                                }
+                                crate::sell_strategy::SellTrigger::TrailingStop(drop_percent) => {
+                                    (Some("TrailingStop".to_string()), Some(*drop_percent))
+                                }
+                                crate::sell_strategy::SellTrigger::TimeBased(seconds) => {
+                                    (Some("TimeBased".to_string()), Some(*seconds as f64))
+                                }
+                                crate::sell_strategy::SellTrigger::StopLoss(threshold) => {
+                                    (Some("StopLoss".to_string()), Some(*threshold))
+                                }
+                                crate::sell_strategy::SellTrigger::Breakeven => {
+                                    (Some("Breakeven".to_string()), None)
+                                }
+                                crate::sell_strategy::SellTrigger::DeadCoin(_) => {
+                                    (Some("DeadCoin".to_string()), None)
+                                }
+                            };
+                            
+                            // Create detailed sell information
+                            let sell_details = SellDetails {
+                                reason: format!("strategy_{}", rule.id),
+                                trigger_type,
+                                trigger_value,
+                                current_pnl_percent: valid_pnl_percent,
+                                peak_pnl_percent: position_clone.peak_pnl_percent,
+                                current_mc_sol: valid_mc_sol,
+                                entry_mc_sol: position_clone.mc_at_entry_sol,
+                                entry_price: if is_entry_price_valid { Some(entry_price) } else { None },
+                                current_price: Some(current_price),
+                                sell_percent: rule.sell_percent,
+                                time_since_buy_sec: Some(time_since_buy),
+                                rule_id: Some(rule.id.clone()),
+                            };
                             
                             // Execute sell with rule's sell_percent
                             let _ = execute_sell_with_percent(
@@ -3795,6 +3912,7 @@ async fn monitor_positions(
                                 &format!("strategy_{}", rule.id),
                                 rule.sell_percent,
                                 &event_tx_clone,
+                                Some(sell_details),
                             ).await;
                             
                             // Mark rule as executed in tracker
@@ -3881,6 +3999,36 @@ async fn monitor_positions(
                     
                     // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
                     if should_sell_stop_loss {
+                        // Calculate PnL for logging
+                        let pnl_percent = if entry_price > 0.0 {
+                            Some(((current_price - entry_price) / entry_price) * 100.0)
+                        } else if let Some(entry_mc_val) = entry_mc {
+                            // Fallback: approximate PnL from MC change
+                            if entry_mc_val > 0.0 {
+                                Some(((current_mc_sol - entry_mc_val) / entry_mc_val) * 100.0)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        
+                        // Create detailed sell information
+                        let sell_details = SellDetails {
+                            reason: "stop_loss".to_string(),
+                            trigger_type: Some("StopLoss".to_string()),
+                            trigger_value: Some(stop_loss_percent),
+                            current_pnl_percent: pnl_percent,
+                            peak_pnl_percent: position_clone.peak_pnl_percent,
+                            current_mc_sol: Some(current_mc_sol),
+                            entry_mc_sol: entry_mc,
+                            entry_price: if entry_price > 0.0 { Some(entry_price) } else { None },
+                            current_price: Some(current_price),
+                            sell_percent: 100.0,
+                            time_since_buy_sec: Some(time_since_buy),
+                            rule_id: None,
+                        };
+                        
                         // Execute sell IMMEDIATELY (no delays, no other checks)
                         let _ = execute_sell(
                             &config_clone,
@@ -3890,6 +4038,7 @@ async fn monitor_positions(
                             &position_clone,
                             "stop_loss",
                             &event_tx_clone,
+                            Some(sell_details),
                         ).await;
                         
                         return Some(("stop_loss".to_string(), position_mint));
@@ -3934,6 +4083,29 @@ async fn monitor_positions(
                                     eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from peak to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
                                              current_mc_sol, entry_mc_val);
                                     
+                                    // Calculate PnL for logging
+                                    let pnl_percent = if entry_price > 0.0 {
+                                        Some(((current_price - entry_price) / entry_price) * 100.0)
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    // Create detailed sell information
+                                    let sell_details = SellDetails {
+                                        reason: "breakeven_stop_loss".to_string(),
+                                        trigger_type: Some("Breakeven".to_string()),
+                                        trigger_value: None,
+                                        current_pnl_percent: pnl_percent,
+                                        peak_pnl_percent: position_clone.peak_pnl_percent,
+                                        current_mc_sol: Some(current_mc_sol),
+                                        entry_mc_sol: Some(entry_mc_val),
+                                        entry_price: if entry_price > 0.0 { Some(entry_price) } else { None },
+                                        current_price: Some(current_price),
+                                        sell_percent: 100.0,
+                                        time_since_buy_sec: Some(time_since_buy),
+                                        rule_id: None,
+                                    };
+                                    
                                     // Execute sell at breakeven
                                     let _ = execute_sell(
                                         &config_clone,
@@ -3943,6 +4115,7 @@ async fn monitor_positions(
                                         &position_clone,
                                         "breakeven_stop_loss",
                                         &event_tx_clone,
+                                        Some(sell_details),
                                     ).await;
                                     
                                     return Some(("breakeven_stop_loss".to_string(), position_mint));
@@ -3953,7 +4126,12 @@ async fn monitor_positions(
                     }
                     
                     // Check take profit: current_mc_sol >= take_profit_mc_sol
-                    let should_sell_take_profit = current_mc_sol >= take_profit_mc_sol;
+                    // ✅ FIX: Only check take profit if MC is valid (prevents random sells)
+                    let should_sell_take_profit = if is_mc_valid {
+                        current_mc_sol >= take_profit_mc_sol
+                    } else {
+                        false // Skip if MC is invalid
+                    };
                     
                     // Check dead coin: no price movement for X seconds
                     let should_sell_dead_coin = if enable_dead_coin_sell {
@@ -3971,6 +4149,46 @@ async fn monitor_positions(
                             "dead_coin"
                         };
                         
+                        // Calculate PnL for logging
+                        let pnl_percent = if entry_price > 0.0 {
+                            Some(((current_price - entry_price) / entry_price) * 100.0)
+                        } else {
+                            None
+                        };
+                        
+                        // Create detailed sell information
+                        let sell_details = if should_sell_take_profit {
+                            SellDetails {
+                                reason: "take_profit".to_string(),
+                                trigger_type: Some("MarketCapSol".to_string()),
+                                trigger_value: Some(take_profit_mc_sol),
+                                current_pnl_percent: pnl_percent,
+                                peak_pnl_percent: position_clone.peak_pnl_percent,
+                                current_mc_sol: Some(current_mc_sol),
+                                entry_mc_sol: entry_mc,
+                                entry_price: if entry_price > 0.0 { Some(entry_price) } else { None },
+                                current_price: Some(current_price),
+                                sell_percent: 100.0,
+                                time_since_buy_sec: Some(time_since_buy),
+                                rule_id: None,
+                            }
+                        } else {
+                            SellDetails {
+                                reason: "dead_coin".to_string(),
+                                trigger_type: Some("DeadCoin".to_string()),
+                                trigger_value: None,
+                                current_pnl_percent: pnl_percent,
+                                peak_pnl_percent: position_clone.peak_pnl_percent,
+                                current_mc_sol: Some(current_mc_sol),
+                                entry_mc_sol: entry_mc,
+                                entry_price: if entry_price > 0.0 { Some(entry_price) } else { None },
+                                current_price: Some(current_price),
+                                sell_percent: 100.0,
+                                time_since_buy_sec: Some(time_since_buy),
+                                rule_id: None,
+                            }
+                        };
+                        
                         // Execute sell (non-blocking for take profit/dead coin)
                         let _ = execute_sell(
                             &config_clone,
@@ -3980,6 +4198,7 @@ async fn monitor_positions(
                             &position_clone,
                             reason,
                             &event_tx_clone,
+                            Some(sell_details),
                         ).await;
                         
                         return Some((reason.to_string(), position_mint));
@@ -4065,6 +4284,25 @@ async fn monitor_positions(
                                 (*cfg).clone()
                             };
 
+                            // Create detailed sell information for dead coin
+                            let sell_details = SellDetails {
+                                reason: "dead_coin".to_string(),
+                                trigger_type: Some("DeadCoin".to_string()),
+                                trigger_value: Some(dead_coin_timeout_sec as f64),
+                                current_pnl_percent: position.pnl_percent,
+                                peak_pnl_percent: position.peak_pnl_percent,
+                                current_mc_sol: Some(current_mc / crate::utils::get_cached_sol_price()), // Convert USD to SOL
+                                entry_mc_sol: position.mc_at_entry_sol,
+                                entry_price: position.token_price_sol,
+                                current_price: position.current_price_sol,
+                                sell_percent: 100.0,
+                                time_since_buy_sec: {
+                                    let now = Utc::now();
+                                    Some(now.signed_duration_since(position.timestamp).num_seconds() as u64)
+                                },
+                                rule_id: None,
+                            };
+                            
                             // Execute sell for dead coin
                             let _ = execute_sell(
                                 &config_clone,
@@ -4074,6 +4312,7 @@ async fn monitor_positions(
                                 &position,
                                 "dead_coin",
                                 &event_tx,
+                                Some(sell_details),
                             ).await;
                         } else {
                             // Update history if MC changed significantly
@@ -4577,6 +4816,61 @@ async fn extract_creator_vault_from_buy_tx(
     }
 }
 
+/// Format and log detailed sell information
+fn log_sell_details(mint: &str, details: &SellDetails) {
+    eprintln!("╔════════════════════════════════════════════════════════════════╗");
+    eprintln!("║                    🎯 SELL EXECUTED                            ║");
+    eprintln!("╠════════════════════════════════════════════════════════════════╣");
+    let mint_display = if mint.len() > 8 {
+        format!("{}...{}", &mint[..4], &mint[mint.len()-4..])
+    } else {
+        mint.to_string()
+    };
+    eprintln!("║ Token:        {}", mint_display);
+    eprintln!("║ Reason:       {}", details.reason);
+    if let Some(rule_id) = &details.rule_id {
+        eprintln!("║ Rule ID:      {}", rule_id);
+    }
+    if let Some(trigger_type) = &details.trigger_type {
+        eprintln!("║ Trigger:      {}", trigger_type);
+        if let Some(trigger_val) = details.trigger_value {
+            eprintln!("║ Threshold:    {:.2}", trigger_val);
+        }
+    }
+    eprintln!("║ Sell Amount:  {:.0}% of position", details.sell_percent);
+    eprintln!("╠════════════════════════════════════════════════════════════════╣");
+    eprintln!("║ 📊 POSITION DATA                                                ║");
+    if let Some(pnl) = details.current_pnl_percent {
+        let pnl_emoji = if pnl >= 0.0 { "📈" } else { "📉" };
+        eprintln!("║ {} Current PnL:    {:.2}%", pnl_emoji, pnl);
+    }
+    if let Some(peak) = details.peak_pnl_percent {
+        eprintln!("║ 🏆 Peak PnL:       {:.2}%", peak);
+        if let Some(current) = details.current_pnl_percent {
+            if peak > current {
+                let drop = peak - current;
+                eprintln!("║ 📉 Drop from peak: {:.2}%", drop);
+            }
+        }
+    }
+    if let Some(mc) = details.current_mc_sol {
+        eprintln!("║ 💰 Current MC:     {:.2} SOL", mc);
+    }
+    if let Some(entry_mc) = details.entry_mc_sol {
+        eprintln!("║ 📍 Entry MC:       {:.2} SOL", entry_mc);
+    }
+    if let Some(entry_price) = details.entry_price {
+        eprintln!("║ 💵 Entry Price:    {:.8} SOL", entry_price);
+    }
+    if let Some(current_price) = details.current_price {
+        eprintln!("║ 💵 Current Price:  {:.8} SOL", current_price);
+    }
+    if let Some(time) = details.time_since_buy_sec {
+        eprintln!("║ ⏱️  Time since buy: {}s", time);
+    }
+    eprintln!("╚════════════════════════════════════════════════════════════════╝");
+}
+
 /// Execute sell transaction for a position
 async fn execute_sell(
     config: &Config,
@@ -4586,9 +4880,15 @@ async fn execute_sell(
     position: &TokenBuy,
     reason: &str, // "stop_loss" or "take_profit"
     event_tx: &mpsc::UnboundedSender<TokenEvent>,
+    details: Option<SellDetails>, // Optional detailed sell information for logging
 ) -> Result<String> {
-    // ⚡ ULTRA FAST SELL - Minimal logging, maximum speed
-    eprintln!("🚨 ULTRA FAST SELL: {}", position.mint);
+    // Log detailed sell information if provided
+    if let Some(ref sell_details) = details {
+        log_sell_details(&position.mint, sell_details);
+    } else {
+        // ⚡ ULTRA FAST SELL - Minimal logging, maximum speed
+        eprintln!("🚨 ULTRA FAST SELL: {}", position.mint);
+    }
     let mint = Pubkey::from_str(&position.mint)?;
     
     // 🔥 IMPROVED: Validate bonding curve exists before proceeding
@@ -4842,11 +5142,67 @@ async fn execute_sell(
 
     let signature = tx_sig.to_string();
 
-    // ⚡ ULTRA FAST: Mark as sold IMMEDIATELY (no verification wait)
-    if let Ok(mut tracker_opt) = tracker.write() {
-        if let Some(tracker) = tracker_opt.as_mut() {
-            let _ = tracker.mark_as_sold(&position.mint, signature.clone());
+    // ✅ FIX: Wait for transaction confirmation before marking as sold
+    // This prevents marking as sold if transaction fails on blockchain
+    // Note: Jito transactions return "Jito: ..." format, skip confirmation for them
+    let confirmed = if signature.starts_with("Jito:") {
+        // Jito transactions have different confirmation mechanism, skip for now
+        eprintln!("⚠️  Jito transaction - skipping confirmation (may need manual verification)");
+        true // Assume success for Jito (user should verify manually)
+    } else {
+        let signature_pubkey = match solana_sdk::signature::Signature::from_str(&signature) {
+            Ok(sig) => sig,
+            Err(_) => {
+                eprintln!("⚠️  Invalid transaction signature format: {}", signature);
+                return Err(anyhow!("Invalid transaction signature"));
+            }
+        };
+        
+        // Wait for transaction to be confirmed (max 5 seconds)
+        let mut confirmed = false;
+        for attempt in 0..10 {
+            match rpc.confirm_transaction_with_commitment(&signature_pubkey, CommitmentConfig::confirmed()).await {
+                Ok(response) => {
+                    if response.value {
+                        confirmed = true;
+                        let sig_display = if signature.len() > 16 {
+                            format!("{}...{}", &signature[..8], &signature[signature.len()-8..])
+                        } else {
+                            signature.clone()
+                        };
+                        eprintln!("╔════════════════════════════════════════════════════════════════╗");
+                        eprintln!("║              ✅ TRANSACTION CONFIRMED                           ║");
+                        eprintln!("║ Signature: {}", sig_display);
+                        eprintln!("╚════════════════════════════════════════════════════════════════╝");
+                        break;
+                    } else {
+                        // Transaction not yet confirmed, wait a bit
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+                Err(e) => {
+                    if attempt < 9 {
+                        // Retry on error (might be network issue)
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    } else {
+                        eprintln!("⚠️  Failed to confirm transaction after 10 attempts: {}", e);
+                    }
+                }
+            }
         }
+        confirmed
+    };
+    
+    // Only mark as sold if transaction is confirmed
+    if confirmed {
+        if let Ok(mut tracker_opt) = tracker.write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                let _ = tracker.mark_as_sold(&position.mint, signature.clone());
+            }
+        }
+    } else {
+        eprintln!("❌ Transaction NOT confirmed - position NOT marked as sold (may retry)");
+        return Err(anyhow!("Transaction not confirmed on blockchain - position not marked as sold"));
     }
 
     // ⚡ ULTRA FAST: Send event immediately (non-blocking)
@@ -4872,9 +5228,15 @@ async fn execute_sell_with_percent(
     reason: &str,
     sell_percent: f64,  // Custom sell percent (0-100)
     event_tx: &mpsc::UnboundedSender<TokenEvent>,
+    details: Option<SellDetails>, // Optional detailed sell information for logging
 ) -> Result<String> {
-    // Same as execute_sell, but use custom sell_percent
-    eprintln!("🎯 PARTIAL SELL EXECUTION: {} - Selling {:.0}% of position", position.mint, sell_percent);
+    // Log detailed sell information if provided
+    if let Some(ref sell_details) = details {
+        log_sell_details(&position.mint, sell_details);
+    } else {
+        // Same as execute_sell, but use custom sell_percent
+        eprintln!("🎯 PARTIAL SELL EXECUTION: {} - Selling {:.0}% of position", position.mint, sell_percent);
+    }
     let mint = Pubkey::from_str(&position.mint)?;
     
     let bonding_curve_str = position.bonding_curve.as_ref()
@@ -5055,6 +5417,63 @@ async fn execute_sell_with_percent(
     };
 
     let signature = tx_sig.to_string();
+
+    // ✅ FIX: Wait for transaction confirmation before marking as sold
+    // This prevents marking as sold if transaction fails on blockchain
+    // Note: Jito transactions return "Jito: ..." format, skip confirmation for them
+    let confirmed = if signature.starts_with("Jito:") {
+        // Jito transactions have different confirmation mechanism, skip for now
+        eprintln!("⚠️  Jito transaction - skipping confirmation (may need manual verification)");
+        true // Assume success for Jito (user should verify manually)
+    } else {
+        let signature_pubkey = match solana_sdk::signature::Signature::from_str(&signature) {
+            Ok(sig) => sig,
+            Err(_) => {
+                eprintln!("⚠️  Invalid transaction signature format: {}", signature);
+                return Err(anyhow!("Invalid transaction signature"));
+            }
+        };
+        
+        // Wait for transaction to be confirmed (max 5 seconds)
+        let mut confirmed = false;
+        for attempt in 0..10 {
+            match rpc.confirm_transaction_with_commitment(&signature_pubkey, CommitmentConfig::confirmed()).await {
+                Ok(response) => {
+                    if response.value {
+                        confirmed = true;
+                        let sig_display = if signature.len() > 16 {
+                            format!("{}...{}", &signature[..8], &signature[signature.len()-8..])
+                        } else {
+                            signature.clone()
+                        };
+                        eprintln!("╔════════════════════════════════════════════════════════════════╗");
+                        eprintln!("║              ✅ TRANSACTION CONFIRMED                           ║");
+                        eprintln!("║ Signature: {}", sig_display);
+                        eprintln!("╚════════════════════════════════════════════════════════════════╝");
+                        break;
+                    } else {
+                        // Transaction not yet confirmed, wait a bit
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+                Err(e) => {
+                    if attempt < 9 {
+                        // Retry on error (might be network issue)
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    } else {
+                        eprintln!("⚠️  Failed to confirm transaction after 10 attempts: {}", e);
+                    }
+                }
+            }
+        }
+        confirmed
+    };
+    
+    // Only update tracker if transaction is confirmed
+    if !confirmed {
+        eprintln!("❌ Transaction NOT confirmed - position NOT updated (may retry)");
+        return Err(anyhow!("Transaction not confirmed on blockchain - position not updated"));
+    }
 
     // Update tracker based on sell type
     let update_result = {
