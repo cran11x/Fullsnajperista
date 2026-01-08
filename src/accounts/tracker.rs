@@ -24,6 +24,7 @@ pub struct TokenBuy {
     pub twitter_type: Option<String>, // "account", "community", "status", or None
     pub creator_token_count: u32,
     pub detection_method: String, // "instruction" or "balance_fallback"
+    pub socials_source: Option<String>, // "RPC", "IPFS", "RPC+IPFS", or "None" - where socials data was fetched from
 
     // 🆕 NEW: Market cap tracking - PRE and POST buy
     pub mc_at_detection_sol: Option<f64>,  // MC when first detected (in SOL)
@@ -76,6 +77,12 @@ pub struct TokenBuy {
     pub mc_at_entry_usd: Option<f64>,        // MC at entry in USD
     #[serde(default)]
     pub current_value_usd: Option<f64>,       // Current position value in USD
+    
+    // 🆕 NEW: Sell failure tracking
+    #[serde(default)]
+    pub sell_failure_reason: Option<String>,   // Reason why sell failed (e.g., "slippage_too_high", "bonding_curve_not_found")
+    #[serde(default)]
+    pub sell_failure_timestamp: Option<DateTime<Utc>>, // When the sell failure occurred
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +160,7 @@ impl TokenTracker {
         // Create CSV header if file doesn't exist
         if !csv_path.exists() {
             let mut file = File::create(&csv_path)?;
-            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
+            writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,SocialsSource,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL")?;
         }
 
         Ok(Self {
@@ -339,7 +346,7 @@ impl TokenTracker {
         
         writeln!(
             writer,
-            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             buy.token_number,
             escape_csv(&buy.mint),
             escape_csv(&buy.signature),
@@ -355,9 +362,10 @@ impl TokenTracker {
             buy.discord.as_deref().map(escape_csv).unwrap_or_default(),
             buy.creator_token_count,
             escape_csv(&buy.detection_method),
+            buy.socials_source.as_deref().map(escape_csv).unwrap_or_default(),
             mc_detection_str,
             mc_entry_str,
-            token_price_str,
+            token_price_str
         )
         .map_err(|e| anyhow::anyhow!("Failed to write to CSV: {}", e))?;
 
@@ -610,7 +618,7 @@ impl TokenTracker {
         // Clear CSV file
         if let Ok(mut file) = std::fs::File::create(&self.csv_path) {
             use std::io::Write;
-            let _ = writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL");
+            let _ = writeln!(file, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,SocialsSource,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL");
         }
         
         Ok(())
@@ -683,6 +691,9 @@ impl TokenTracker {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             buy.sold = true;
             buy.sell_signature = Some(sell_signature);
+            // Clear sell failure reason when successfully sold
+            buy.sell_failure_reason = None;
+            buy.sell_failure_timestamp = None;
             // Save JSON after update
             if let Err(e) = self.save_json() {
                 eprintln!("❌ Failed to save JSON tracker after marking as sold: {}", e);
@@ -690,6 +701,25 @@ impl TokenTracker {
                 return Err(e);
             } else {
                 eprintln!("✅ JSON tracker saved after marking as sold: {}", self.json_path);
+            }
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Record sell failure reason for a position
+    pub fn record_sell_failure(&mut self, mint: &str, reason: String) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.sell_failure_reason = Some(reason.clone());
+            buy.sell_failure_timestamp = Some(Utc::now());
+            // Save JSON after update
+            if let Err(e) = self.save_json() {
+                eprintln!("❌ Failed to save JSON tracker after recording sell failure: {}", e);
+                eprintln!("   JSON path: {}", self.json_path);
+                return Err(e);
+            } else {
+                eprintln!("⚠️  Sell failure recorded for {}: {}", mint, reason);
             }
             Ok(())
         } else {
@@ -1106,6 +1136,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1367,7 +1400,7 @@ mod tests {
         };
 
         // Create CSV header
-        std::fs::write(&csv_path, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL\n").unwrap();
+        std::fs::write(&csv_path, "Token#,Mint,Signature,Creator,DevBuy(SOL),OurBuy(SOL),Timestamp,HasSocials,Twitter,TwitterType,Website,Telegram,Discord,CreatorTokens,DetectionMethod,SocialsSource,MC_Detection_USD,MC_Entry_USD,TokenPrice_SOL\n").unwrap();
 
         let buy = TokenBuy {
             token_number: 1,
@@ -1503,6 +1536,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         let buy2 = TokenBuy {
@@ -1547,8 +1583,11 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
-
+        
         tracker.record_buy(buy1).unwrap();
         tracker.record_buy(buy2).unwrap();
 
@@ -1782,6 +1821,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
         
         // Record buy should save JSON
@@ -1853,6 +1895,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1929,6 +1974,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1999,6 +2047,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -2080,6 +2131,9 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            socials_source: None,
         };
 
         tracker.record_buy(buy).unwrap();

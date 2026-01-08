@@ -1092,7 +1092,7 @@ async fn listen_websocket_once(
                 Some(subscription_handle.clone()),
             ).await {
                 Ok(sig) => {
-                    if let Some((signature, socials_opt)) = sig {
+                    if let Some((signature, socials_opt, _socials_source)) = sig {
                         // Get MC if available from tracker - use try_read to avoid blocking
                         let mc = {
                             match tracker.try_read() {
@@ -1239,7 +1239,7 @@ async fn process_and_buy(
     logger: Arc<std::sync::Mutex<TokenLogger>>,
     history_tracker: Option<Arc<std::sync::RwLock<crate::accounts::HistoryTracker>>>,
     subscription_handle: Option<Arc<Option<SubscriptionHandle>>>,
-) -> Result<Option<(String, Option<Socials>)>> {
+) -> Result<Option<(String, Option<Socials>, Option<String>)>> {
     let mint = accounts.mint;
     let dev_buy_lamports = accounts.dev_buy_sol;
     let dev_buy_sol = dev_buy_lamports as f64 / 1e9;
@@ -1314,7 +1314,7 @@ async fn process_and_buy(
     // This ensures socials data is available for filters (especially Twitter Community)
     // We use blocking fetch with retries to ensure we get the data before applying filters
     let config_socials = config.clone();
-    let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Socials, TokenMetadata), anyhow::Error>> + Send>> = Box::pin(async move {
+    let metadata_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Socials, TokenMetadata, String), anyhow::Error>> + Send>> = Box::pin(async move {
         if let Err(_e) = socials_rate_limiter_clone.check() {
             let mut m = metrics_clone_socials.write().unwrap();
             m.record_error(ErrorType::Network);
@@ -1352,7 +1352,7 @@ async fn process_and_buy(
     let (das_result, mc_result, metadata_result): (
         Result<u32, anyhow::Error>,
         Result<(BondingCurveAccount, f64), anyhow::Error>,
-        Result<(Socials, TokenMetadata), anyhow::Error>
+        Result<(Socials, TokenMetadata, String), anyhow::Error>
     ) = tokio::join!(
         das_fut,
         mc_fut,
@@ -1361,14 +1361,14 @@ async fn process_and_buy(
     
     // ✅ CRITICAL: Extract socials and metadata - if fetch failed, we need to handle it properly
     // For filters that require socials (like Twitter Community), we should retry once or reject with clear reason
-    let (socials_result, metadata_opt) = match metadata_result {
-        Ok((socials, metadata)) => {
+    let (socials_result, metadata_opt, socials_source_opt) = match metadata_result {
+        Ok((socials, metadata, source)) => {
             // Log successful fetch (detailed logging already done in socials.rs)
             let socials_count = socials.count();
             if socials_count > 0 {
                 eprintln!("✅ Socials available for {}: {} socials", mint_str, socials_count);
             }
-            (Some(socials), Some(metadata))
+            (Some(socials), Some(metadata), Some(source))
         }
         Err(e) => {
             // Socials fetch failed - log it and decide whether to retry or reject
@@ -1393,19 +1393,19 @@ async fn process_and_buy(
                     1, // Single retry
                     config.socials_retry_delay_ms,
                 ).await {
-                    Ok((socials, metadata)) => {
+                    Ok((socials, metadata, source)) => {
                         eprintln!("   ✅ Retry successful");
-                        (Some(socials), Some(metadata))
+                        (Some(socials), Some(metadata), Some(source))
                     }
                     Err(retry_err) => {
                         eprintln!("   ❌ Retry also failed: {}", retry_err);
                         // Return None - filters will handle this
-                        (None, None)
+                        (None, None, None)
                     }
                 }
             } else {
                 // No filters require socials, so we can continue without them
-                (None, None)
+                (None, None, None)
             }
         }
     };
@@ -1823,103 +1823,249 @@ async fn process_and_buy(
     // SECTION 3: ACCOUNT VERIFICATION
     // ========================================================================
     
+    // ✅ FIX: Verify bonding curve PDA is correctly derived before checking blockchain
+    let (expected_bonding_curve, _) = crate::pda_derivation::derive_bonding_curve_pda(&accounts.mint);
+    if accounts.bonding_curve != expected_bonding_curve {
+        let reason = format!(
+            "SKIP: Bonding curve PDA mismatch - expected: {}, got: {}",
+            expected_bonding_curve, accounts.bonding_curve
+        );
+        eprintln!("   ❌ {}", reason);
+        // Log filtered token
+        if let Ok(logger_guard) = logger.lock() {
+            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+            let _ = logger_guard.log_filtered(
+                mint.to_string(),
+                reason.clone(),
+                Some(init_signature.clone()),
+                Some(dev_buy_sol),
+                Some(accounts.creator.to_string()),
+                Some(creator_count),
+                socials_info,
+            );
+        }
+        return Err(anyhow!(reason));
+    }
+    
     // Verify bonding curve account
     let mut bonding_curve_ready = false;
-    let max_wait_attempts = 5; // Optimized: 5 attempts × 20ms = max 100ms for premium RPC
-    let wait_interval_ms = 20; // Optimized: reduced from 30ms to 20ms for premium RPC
+    // ✅ FIX: Increased attempts and use exponential backoff for tokens that are still initializing
+    let max_wait_attempts = 15; // Increased from 5 to 15 for better handling of slow initialization
+    let base_wait_interval_ms = 30; // Base wait time
+    
+    eprintln!("   🔍 Verifying bonding curve: {} (max {} attempts)", expected_bonding_curve, max_wait_attempts);
+    
+    // Helper function to check if bonding curve is complete
+    let check_bonding_curve_complete = |account: &solana_sdk::account::Account| -> Result<bool> {
+        use borsh::BorshDeserialize;
+        const BONDING_CURVE_SIZE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1; // 57 bytes
+        if account.data.is_empty() {
+            return Ok(false);
+        }
+        let data_slice = if account.data.len() >= BONDING_CURVE_SIZE {
+            &account.data[..BONDING_CURVE_SIZE]
+        } else {
+            &account.data[..]
+        };
+        if let Ok(curve) = BondingCurveAccount::try_from_slice(data_slice) {
+            Ok(curve.complete)
+        } else {
+            Ok(false)
+        }
+    };
+    
+    // Helper function to try with finalized commitment as fallback
+    // Note: This is defined as a closure that captures the necessary variables
+    // We'll inline it in each place it's used to avoid async closure issues
     
     for attempt in 1..=max_wait_attempts {
+        // ✅ FIX: Use exponential backoff - wait longer on each attempt
+        let wait_interval_ms = if attempt == 1 {
+            base_wait_interval_ms
+        } else {
+            // Exponential backoff: 30ms, 60ms, 120ms, 240ms, etc. (capped at 500ms)
+            std::cmp::min(base_wait_interval_ms * (1 << (attempt - 1)), 500)
+        };
+        
+        eprintln!("   📍 Attempt {}/{}: checking bonding curve (wait: {}ms)...", 
+                 attempt, max_wait_attempts, wait_interval_ms);
+        
         match rpc.get_account_with_commitment(&accounts.bonding_curve, CommitmentConfig::confirmed()).await {
             Ok(account_info) => {
                 let account = match account_info.value {
                     Some(acc) => acc,
                     None => {
                         if attempt < max_wait_attempts {
+                            eprintln!("   ⏳ Bonding curve not found yet (attempt {}/{}, waiting {}ms)...", 
+                                     attempt, max_wait_attempts, wait_interval_ms);
                             tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                             continue;
                         } else {
-                            let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
-                            // Log filtered token
-                            if let Ok(logger_guard) = logger.lock() {
-                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
-                                let _ = logger_guard.log_filtered(
-                                    mint.to_string(),
-                                    reason.clone(),
-                                    Some(init_signature.clone()),
-                                    Some(dev_buy_sol),
-                                    Some(accounts.creator.to_string()),
-                                    Some(creator_count),
-                                    socials_info,
-                                );
+                            // ✅ FIX: Try with finalized commitment as last resort
+                            eprintln!("   🔄 Last attempt: trying with finalized commitment...");
+                            match rpc.get_account_with_commitment(&accounts.bonding_curve, CommitmentConfig::finalized()).await {
+                                Ok(finalized_info) => {
+                                    if let Some(finalized_acc) = finalized_info.value {
+                                        eprintln!("   ✅ Found with finalized commitment!");
+                                        if finalized_acc.data.is_empty() {
+                                            let reason = "SKIP: Bonding curve account not ready for trading".to_string();
+                                            if let Ok(logger_guard) = logger.lock() {
+                                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                                let _ = logger_guard.log_filtered(
+                                                    mint.to_string(),
+                                                    reason.clone(),
+                                                    Some(init_signature.clone()),
+                                                    Some(dev_buy_sol),
+                                                    Some(accounts.creator.to_string()),
+                                                    Some(creator_count),
+                                                    socials_info,
+                                                );
+                                            }
+                                            return Err(anyhow!(reason));
+                                        }
+                                        if check_bonding_curve_complete(&finalized_acc)? {
+                                            let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
+                                            if let Ok(logger_guard) = logger.lock() {
+                                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                                let _ = logger_guard.log_filtered(
+                                                    mint.to_string(),
+                                                    reason.clone(),
+                                                    Some(init_signature.clone()),
+                                                    Some(dev_buy_sol),
+                                                    Some(accounts.creator.to_string()),
+                                                    Some(creator_count),
+                                                    socials_info,
+                                                );
+                                            }
+                                            return Err(anyhow!(reason));
+                                        }
+                                        bonding_curve_ready = true;
+                                        break;
+                                    } else {
+                                        let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                                        if let Ok(logger_guard) = logger.lock() {
+                                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                            let _ = logger_guard.log_filtered(
+                                                mint.to_string(),
+                                                reason.clone(),
+                                                Some(init_signature.clone()),
+                                                Some(dev_buy_sol),
+                                                Some(accounts.creator.to_string()),
+                                                Some(creator_count),
+                                                socials_info,
+                                            );
+                                        }
+                                        return Err(anyhow!(reason));
+                                    }
+                                }
+                                Err(e) => {
+                                    let reason = format!("SKIP: Bonding curve account not found - token not ready: {}", e);
+                                    if let Ok(logger_guard) = logger.lock() {
+                                        let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                        let _ = logger_guard.log_filtered(
+                                            mint.to_string(),
+                                            reason.clone(),
+                                            Some(init_signature.clone()),
+                                            Some(dev_buy_sol),
+                                            Some(accounts.creator.to_string()),
+                                            Some(creator_count),
+                                            socials_info,
+                                        );
+                                    }
+                                    return Err(anyhow!(reason));
+                                }
                             }
-                            return Err(anyhow!(reason));
                         }
                     }
                 };
                 
                 if account.data.is_empty() {
                     if attempt < max_wait_attempts {
+                        eprintln!("   ⏳ Bonding curve data empty (attempt {}/{}, waiting {}ms)...", 
+                                 attempt, max_wait_attempts, wait_interval_ms);
                         tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
                         continue;
                     } else {
-                        let reason = "SKIP: Bonding curve account not ready for trading".to_string();
-                        // Log filtered token
-                        if let Ok(logger_guard) = logger.lock() {
-                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
-                            let _ = logger_guard.log_filtered(
-                                mint.to_string(),
-                                reason.clone(),
-                                Some(init_signature.clone()),
-                                Some(dev_buy_sol),
-                                Some(accounts.creator.to_string()),
-                                Some(creator_count),
-                                socials_info,
-                            );
+                        // ✅ FIX: Try with finalized commitment as last resort
+                        eprintln!("   🔄 Last attempt: trying with finalized commitment...");
+                        match rpc.get_account_with_commitment(&accounts.bonding_curve, CommitmentConfig::finalized()).await {
+                            Ok(finalized_info) => {
+                                if let Some(finalized_acc) = finalized_info.value {
+                                    eprintln!("   ✅ Found with finalized commitment!");
+                                    if finalized_acc.data.is_empty() {
+                                        let reason = "SKIP: Bonding curve account not ready for trading".to_string();
+                                        if let Ok(logger_guard) = logger.lock() {
+                                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                            let _ = logger_guard.log_filtered(
+                                                mint.to_string(),
+                                                reason.clone(),
+                                                Some(init_signature.clone()),
+                                                Some(dev_buy_sol),
+                                                Some(accounts.creator.to_string()),
+                                                Some(creator_count),
+                                                socials_info,
+                                            );
+                                        }
+                                        return Err(anyhow!(reason));
+                                    }
+                                    if check_bonding_curve_complete(&finalized_acc)? {
+                                        let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
+                                        if let Ok(logger_guard) = logger.lock() {
+                                            let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                            let _ = logger_guard.log_filtered(
+                                                mint.to_string(),
+                                                reason.clone(),
+                                                Some(init_signature.clone()),
+                                                Some(dev_buy_sol),
+                                                Some(accounts.creator.to_string()),
+                                                Some(creator_count),
+                                                socials_info,
+                                            );
+                                        }
+                                        return Err(anyhow!(reason));
+                                    }
+                                    bonding_curve_ready = true;
+                                    break;
+                                } else {
+                                    let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                                    if let Ok(logger_guard) = logger.lock() {
+                                        let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                        let _ = logger_guard.log_filtered(
+                                            mint.to_string(),
+                                            reason.clone(),
+                                            Some(init_signature.clone()),
+                                            Some(dev_buy_sol),
+                                            Some(accounts.creator.to_string()),
+                                            Some(creator_count),
+                                            socials_info,
+                                        );
+                                    }
+                                    return Err(anyhow!(reason));
+                                }
+                            }
+                            Err(e) => {
+                                let reason = format!("SKIP: Bonding curve account not found - token not ready: {}", e);
+                                if let Ok(logger_guard) = logger.lock() {
+                                    let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                    let _ = logger_guard.log_filtered(
+                                        mint.to_string(),
+                                        reason.clone(),
+                                        Some(init_signature.clone()),
+                                        Some(dev_buy_sol),
+                                        Some(accounts.creator.to_string()),
+                                        Some(creator_count),
+                                        socials_info,
+                                    );
+                                }
+                                return Err(anyhow!(reason));
+                            }
                         }
-                        return Err(anyhow!(reason));
                     }
                 }
                 
                 // Check if bonding curve is complete (token migrated - can't buy anymore)
-                if !account.data.is_empty() {
-                    use borsh::BorshDeserialize;
-                    // BondingCurveAccount structure: 8+8+8+8+8+8+1 = 57 bytes
-                    const BONDING_CURVE_SIZE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1; // 57 bytes
-                    let data_slice = if account.data.len() >= BONDING_CURVE_SIZE {
-                        &account.data[..BONDING_CURVE_SIZE]
-                    } else {
-                        &account.data[..]
-                    };
-                    if let Ok(curve) = BondingCurveAccount::try_from_slice(data_slice) {
-                        if curve.complete {
-                            let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
-                            // Log filtered token
-                            if let Ok(logger_guard) = logger.lock() {
-                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
-                                let _ = logger_guard.log_filtered(
-                                    mint.to_string(),
-                                    reason.clone(),
-                                    Some(init_signature.clone()),
-                                    Some(dev_buy_sol),
-                                    Some(accounts.creator.to_string()),
-                                    Some(creator_count),
-                                    socials_info,
-                                );
-                            }
-                            return Err(anyhow!(reason));
-                        }
-                    }
-                }
-                
-                bonding_curve_ready = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < max_wait_attempts {
-                    tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
-                    continue;
-                } else {
-                    let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                if check_bonding_curve_complete(&account)? {
+                    let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
                     // Log filtered token
                     if let Ok(logger_guard) = logger.lock() {
                         let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
@@ -1934,6 +2080,93 @@ async fn process_and_buy(
                         );
                     }
                     return Err(anyhow!(reason));
+                }
+                
+                bonding_curve_ready = true;
+                eprintln!("   ✅ Bonding curve ready! (attempt {})", attempt);
+                break;
+            }
+            Err(e) => {
+                if attempt < max_wait_attempts {
+                    eprintln!("   ⏳ Bonding curve RPC error (attempt {}/{}, waiting {}ms): {}", 
+                             attempt, max_wait_attempts, wait_interval_ms, e);
+                    tokio::time::sleep(Duration::from_millis(wait_interval_ms)).await;
+                    continue;
+                } else {
+                    // ✅ FIX: Try with finalized commitment as last resort
+                    eprintln!("   🔄 Last attempt: trying with finalized commitment...");
+                    match rpc.get_account_with_commitment(&accounts.bonding_curve, CommitmentConfig::finalized()).await {
+                        Ok(finalized_info) => {
+                            if let Some(finalized_acc) = finalized_info.value {
+                                eprintln!("   ✅ Found with finalized commitment!");
+                                if finalized_acc.data.is_empty() {
+                                    let reason = "SKIP: Bonding curve account not ready for trading".to_string();
+                                    if let Ok(logger_guard) = logger.lock() {
+                                        let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                        let _ = logger_guard.log_filtered(
+                                            mint.to_string(),
+                                            reason.clone(),
+                                            Some(init_signature.clone()),
+                                            Some(dev_buy_sol),
+                                            Some(accounts.creator.to_string()),
+                                            Some(creator_count),
+                                            socials_info,
+                                        );
+                                    }
+                                    return Err(anyhow!(reason));
+                                }
+                                if check_bonding_curve_complete(&finalized_acc)? {
+                                    let reason = "SKIP: Token is complete (migrated) - cannot buy on bonding curve".to_string();
+                                    if let Ok(logger_guard) = logger.lock() {
+                                        let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                        let _ = logger_guard.log_filtered(
+                                            mint.to_string(),
+                                            reason.clone(),
+                                            Some(init_signature.clone()),
+                                            Some(dev_buy_sol),
+                                            Some(accounts.creator.to_string()),
+                                            Some(creator_count),
+                                            socials_info,
+                                        );
+                                    }
+                                    return Err(anyhow!(reason));
+                                }
+                                bonding_curve_ready = true;
+                                break;
+                            } else {
+                                let reason = "SKIP: Bonding curve account not found - token not ready".to_string();
+                                if let Ok(logger_guard) = logger.lock() {
+                                    let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                    let _ = logger_guard.log_filtered(
+                                        mint.to_string(),
+                                        reason.clone(),
+                                        Some(init_signature.clone()),
+                                        Some(dev_buy_sol),
+                                        Some(accounts.creator.to_string()),
+                                        Some(creator_count),
+                                        socials_info,
+                                    );
+                                }
+                                return Err(anyhow!(reason));
+                            }
+                        }
+                        Err(e) => {
+                            let reason = format!("SKIP: Bonding curve account not found - token not ready: {}", e);
+                            if let Ok(logger_guard) = logger.lock() {
+                                let socials_info = socials_opt.as_ref().map(|s| socials_to_info(s));
+                                let _ = logger_guard.log_filtered(
+                                    mint.to_string(),
+                                    reason.clone(),
+                                    Some(init_signature.clone()),
+                                    Some(dev_buy_sol),
+                                    Some(accounts.creator.to_string()),
+                                    Some(creator_count),
+                                    socials_info,
+                                );
+                            }
+                            return Err(anyhow!(reason));
+                        }
+                    }
                 }
             }
         }
@@ -2288,6 +2521,7 @@ async fn process_and_buy(
                             } else {
                                 "balance_fallback".to_string()
                             },
+                            socials_source: socials_source_opt.clone(),
                             mc_at_detection_sol: if mc_sol > 0.0 { Some(mc_sol) } else { None },
                             mc_at_entry_sol: mc_entry_sol,
                             token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
@@ -2314,6 +2548,8 @@ async fn process_and_buy(
                             mc_at_detection_usd: None,
                             mc_at_entry_usd: None,
                             current_value_usd: None,
+                            sell_failure_reason: None,
+                            sell_failure_timestamp: None,
         };
                         
                         let _ = tracker.record_buy(buy.clone());
@@ -2374,7 +2610,7 @@ async fn process_and_buy(
             timestamp: Utc::now(),
         });
         
-        return Ok(Some((mock_signature, socials_opt.clone())));
+        return Ok(Some((mock_signature, socials_opt.clone(), socials_source_opt.clone())));
     }
     
     // Only validate if NOT in mock buy mode
@@ -2798,6 +3034,7 @@ async fn process_and_buy(
                         } else {
                             "balance_fallback".to_string()
                         },
+                        socials_source: socials_source_opt.clone(),
                         mc_at_detection_sol: if mc_sol > 0.0 { Some(mc_sol) } else { None },
                         mc_at_entry_sol: mc_entry_sol,
                         token_price_sol: final_entry_price, // Use calculated entry price (invested SOL / actual token amount)
@@ -2824,6 +3061,8 @@ async fn process_and_buy(
                         mc_at_detection_usd: None,
                         mc_at_entry_usd: None,
                         current_value_usd: None,
+                        sell_failure_reason: None,
+                        sell_failure_timestamp: None,
                     };
                     
                     if let Err(e) = tracker.record_buy(buy.clone()) {
@@ -2983,7 +3222,7 @@ async fn process_and_buy(
         }
         
         let final_signature = actual_signature.as_ref().map(|s| s.clone()).unwrap_or_else(|| init_signature.clone());
-        Ok(Some((final_signature, socials_opt.clone())))
+        Ok(Some((final_signature, socials_opt.clone(), socials_source_opt.clone())))
     } else {
         
         match submission_result {
@@ -3723,7 +3962,7 @@ async fn monitor_positions(
                 
                 // Execute sell IMMEDIATELY in background (don't block monitoring)
                 tokio::spawn(async move {
-                    let _ = execute_sell(
+                    if let Err(e) = execute_sell(
                         &config_clone,
                         &wallet_clone,
                         rpc_clone.as_ref(),
@@ -3732,7 +3971,10 @@ async fn monitor_positions(
                         "stop_loss",
                         &event_tx_clone,
                         Some(sell_details),
-                    ).await;
+                    ).await {
+                        eprintln!("⚠️  Stop loss sell failed for {}: {} (reason already recorded in tracker)", 
+                                 &position_clone.mint[..8], e);
+                    }
                 });
             }
             
@@ -3904,7 +4146,7 @@ async fn monitor_positions(
                             };
                             
                             // Execute sell with rule's sell_percent
-                            let _ = execute_sell_with_percent(
+                            if let Err(e) = execute_sell_with_percent(
                                 &config_clone,
                                 &wallet_clone,
                                 rpc_task.as_ref(),
@@ -3914,7 +4156,10 @@ async fn monitor_positions(
                                 rule.sell_percent,
                                 &event_tx_clone,
                                 Some(sell_details),
-                            ).await;
+                            ).await {
+                                eprintln!("⚠️  Strategy sell failed for {} (rule {}): {} (reason already recorded in tracker)", 
+                                         &position_clone.mint[..8], rule.id, e);
+                            }
                             
                             // Mark rule as executed in tracker
                             if let Ok(mut tracker_guard) = tracker_clone.write() {
@@ -4031,7 +4276,7 @@ async fn monitor_positions(
                         };
                         
                         // Execute sell IMMEDIATELY (no delays, no other checks)
-                        let _ = execute_sell(
+                        if let Err(e) = execute_sell(
                             &config_clone,
                             &wallet_clone,
                             rpc_task.as_ref(),
@@ -4040,7 +4285,10 @@ async fn monitor_positions(
                             "stop_loss",
                             &event_tx_clone,
                             Some(sell_details),
-                        ).await;
+                        ).await {
+                            eprintln!("⚠️  Stop loss sell failed for {}: {} (reason already recorded in tracker)", 
+                                     &position_clone.mint[..8], e);
+                        }
                         
                         return Some(("stop_loss".to_string(), position_mint));
                     }
@@ -4110,7 +4358,7 @@ async fn monitor_positions(
                                     };
                                     
                                     // Execute sell at breakeven
-                                    let _ = execute_sell(
+                                    if let Err(e) = execute_sell(
                                         &config_clone,
                                         &wallet_clone,
                                         rpc_task.as_ref(),
@@ -4119,7 +4367,10 @@ async fn monitor_positions(
                                         "breakeven_stop_loss",
                                         &event_tx_clone,
                                         Some(sell_details),
-                                    ).await;
+                                    ).await {
+                                        eprintln!("⚠️  Breakeven stop loss sell failed for {}: {} (reason already recorded in tracker)", 
+                                                 &position_clone.mint[..8], e);
+                                    }
                                     
                                     return Some(("breakeven_stop_loss".to_string(), position_mint));
                                 }
@@ -4194,7 +4445,7 @@ async fn monitor_positions(
                         };
                         
                         // Execute sell (non-blocking for take profit/dead coin)
-                        let _ = execute_sell(
+                        if let Err(e) = execute_sell(
                             &config_clone,
                             &wallet_clone,
                             rpc_task.as_ref(),
@@ -4203,7 +4454,10 @@ async fn monitor_positions(
                             reason,
                             &event_tx_clone,
                             Some(sell_details),
-                        ).await;
+                        ).await {
+                            eprintln!("⚠️  {} sell failed for {}: {} (reason already recorded in tracker)", 
+                                     reason, &position_clone.mint[..8], e);
+                        }
                         
                         return Some((reason.to_string(), position_mint));
                     }
@@ -4308,7 +4562,7 @@ async fn monitor_positions(
                             };
                             
                             // Execute sell for dead coin
-                            let _ = execute_sell(
+                            if let Err(e) = execute_sell(
                                 &config_clone,
                                 &wallet_clone,
                                 rpc_arc.as_ref(),
@@ -4317,7 +4571,10 @@ async fn monitor_positions(
                                 "dead_coin",
                                 &event_tx,
                                 Some(sell_details),
-                            ).await;
+                            ).await {
+                                eprintln!("⚠️  Dead coin sell failed for {}: {} (reason already recorded in tracker)", 
+                                         &position.mint[..8], e);
+                            }
                         } else {
                             // Update history if MC changed significantly
                             if mc_change >= mc_change_threshold {
@@ -4606,6 +4863,7 @@ pub async fn execute_manual_buy(
             twitter_type: None,
             creator_token_count: 0,
             detection_method: "manual".to_string(),
+            socials_source: None, // Manual buy doesn't fetch socials
             mc_at_detection_sol: None,
             mc_at_entry_sol: mc_entry_sol,
             token_price_sol: token_price_entry,
@@ -4632,6 +4890,8 @@ pub async fn execute_manual_buy(
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
         };
         
         // Try to record buy (non-blocking)
@@ -4820,6 +5080,31 @@ async fn extract_creator_vault_from_buy_tx(
     }
 }
 
+/// Categorize error into sell failure reason
+pub(crate) fn categorize_sell_failure_reason(error: &anyhow::Error) -> String {
+    let error_str = error.to_string().to_lowercase();
+    
+    if error_str.contains("slippage") || error_str.contains("slippage too high") {
+        "slippage_too_high".to_string()
+    } else if error_str.contains("bonding curve not found") || error_str.contains("bonding curve account does not exist") {
+        "bonding_curve_not_found".to_string()
+    } else if error_str.contains("migrated") || error_str.contains("migrated to raydium") {
+        "bonding_curve_migrated".to_string()
+    } else if error_str.contains("token balance is 0") || error_str.contains("balance is 0") {
+        "token_balance_zero".to_string()
+    } else if error_str.contains("transaction not confirmed") || error_str.contains("not confirmed on blockchain") {
+        "transaction_not_confirmed".to_string()
+    } else if error_str.contains("transaction failed") || error_str.contains("transaction error") {
+        "transaction_failed".to_string()
+    } else if error_str.contains("insufficient") && error_str.contains("sol") {
+        "insufficient_sol".to_string()
+    } else if error_str.contains("rpc") || error_str.contains("network") || error_str.contains("connection") {
+        "rpc_error".to_string()
+    } else {
+        format!("unknown_error: {}", error_str.chars().take(100).collect::<String>())
+    }
+}
+
 /// Format and log detailed sell information
 fn log_sell_details(mint: &str, details: &SellDetails) {
     eprintln!("╔════════════════════════════════════════════════════════════════╗");
@@ -4875,6 +5160,20 @@ fn log_sell_details(mint: &str, details: &SellDetails) {
     eprintln!("╚════════════════════════════════════════════════════════════════╝");
 }
 
+/// Helper function to record sell failure in tracker
+fn record_sell_failure_in_tracker(
+    tracker: &Arc<std::sync::RwLock<Option<TokenTracker>>>,
+    mint: &str,
+    error: &anyhow::Error,
+) {
+    if let Ok(mut tracker_opt) = tracker.write() {
+        if let Some(tracker) = tracker_opt.as_mut() {
+            let reason = categorize_sell_failure_reason(error);
+            let _ = tracker.record_sell_failure(mint, reason);
+        }
+    }
+}
+
 /// Execute sell transaction for a position
 async fn execute_sell(
     config: &Config,
@@ -4899,12 +5198,16 @@ async fn execute_sell(
     let bonding_curve_str = position.bonding_curve.as_ref()
         .ok_or_else(|| {
             eprintln!("   ❌ SELL FAILED: Bonding curve not found in position");
-            anyhow!("Bonding curve not found in position - cannot sell")
+            let error = anyhow!("Bonding curve not found in position - cannot sell");
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
         })?;
     
     let bonding_curve = Pubkey::from_str(bonding_curve_str).map_err(|e| {
         eprintln!("   ❌ SELL FAILED: Invalid bonding curve address: {}", bonding_curve_str);
-        anyhow!("Invalid bonding curve address: {} - {}", bonding_curve_str, e)
+        let error = anyhow!("Invalid bonding curve address: {} - {}", bonding_curve_str, e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
     })?;
     
     // 🔥 IMPROVED: Verify bonding curve account exists and is valid
@@ -4912,7 +5215,9 @@ async fn execute_sell(
         Ok(account_info) => {
             if account_info.value.is_none() {
                 eprintln!("   ❌ SELL FAILED: Bonding curve account does not exist (token may be migrated)");
-                return Err(anyhow!("Bonding curve account does not exist - token may be migrated to Raydium"));
+                let error = anyhow!("Bonding curve account does not exist - token may be migrated to Raydium");
+                record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                return Err(error);
             }
             eprintln!("   ✅ Bonding curve account verified");
         }
@@ -4982,13 +5287,17 @@ async fn execute_sell(
         eprintln!("      - Tried standard Token Program ATA: {}", get_associated_token_address_with_program_id(
             &user_wallet, &mint, &Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap()
         ));
-        return Err(anyhow!("Token balance is 0 - tried all token accounts (tracker ATA, Token 2022, standard Token Program)"));
+        let error = anyhow!("Token balance is 0 - tried all token accounts (tracker ATA, Token 2022, standard Token Program)");
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        return Err(error);
     }
 
     // ⚡ ULTRA FAST: Calculate sell amount
     let sell_amount = (token_balance as f64 * (config.sell_percent / 100.0)) as u64;
     if sell_amount == 0 {
-        return Err(anyhow!("Sell amount is 0"));
+        let error = anyhow!("Sell amount is 0");
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        return Err(error);
     }
 
     // ⚡ ULTRA FAST: Reconstruct accounts in parallel with blockhash fetch
@@ -5073,7 +5382,11 @@ async fn execute_sell(
             }
         }
     );
-    let sell_ix = sell_ix?;
+    let sell_ix = sell_ix.map_err(|e| {
+        let error = anyhow!("Failed to build sell instruction: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     
     // ⚡ ULTRA FAST: Build transaction
     let helius_tip_amount = 200_000u64;
@@ -5113,11 +5426,25 @@ async fn execute_sell(
 
     // ⚡ ULTRA FAST: Send transaction - use fastest method directly
     let tx_sig = match config.submission_mode {
-        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await?,
+        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await.map_err(|e| {
+            let error = anyhow!("Helius transaction failed: {}", e);
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
+        })?,
         crate::config::SubmissionMode::Jito => {
-            return Ok(format!("Jito: {}", send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?));
+            return send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await
+                .map(|bundle_id| format!("Jito: {}", bundle_id))
+                .map_err(|e| {
+                    let error = anyhow!("Jito bundle failed: {}", e);
+                    record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                    error
+                });
         }
-        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await?.to_string(),
+        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await.map_err(|e| {
+            let error = anyhow!("RPC transaction failed: {}", e);
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
+        })?.to_string(),
         crate::config::SubmissionMode::All => {
             // ⚡ ULTRA FAST: Try all in parallel, use first success
             let tx_helius = tx.clone();
@@ -5158,7 +5485,9 @@ async fn execute_sell(
             Ok(sig) => sig,
             Err(_) => {
                 eprintln!("⚠️  Invalid transaction signature format: {}", signature);
-                return Err(anyhow!("Invalid transaction signature"));
+                let error = anyhow!("Invalid transaction signature");
+                record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                return Err(error);
             }
         };
         
@@ -5206,7 +5535,15 @@ async fn execute_sell(
         }
     } else {
         eprintln!("❌ Transaction NOT confirmed - position NOT marked as sold (may retry)");
-        return Err(anyhow!("Transaction not confirmed on blockchain - position not marked as sold"));
+        let error = anyhow!("Transaction not confirmed on blockchain - position not marked as sold");
+        // Record sell failure reason
+        if let Ok(mut tracker_opt) = tracker.write() {
+            if let Some(tracker) = tracker_opt.as_mut() {
+                let reason = categorize_sell_failure_reason(&error);
+                let _ = tracker.record_sell_failure(&position.mint, reason);
+            }
+        }
+        return Err(error);
     }
 
     // ⚡ ULTRA FAST: Send event immediately (non-blocking)
@@ -5241,11 +5578,23 @@ async fn execute_sell_with_percent(
         // Same as execute_sell, but use custom sell_percent
         eprintln!("🎯 PARTIAL SELL EXECUTION: {} - Selling {:.0}% of position", position.mint, sell_percent);
     }
-    let mint = Pubkey::from_str(&position.mint)?;
+    let mint = Pubkey::from_str(&position.mint).map_err(|e| {
+        let error = anyhow!("Invalid mint address: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     
     let bonding_curve_str = position.bonding_curve.as_ref()
-        .ok_or_else(|| anyhow!("Bonding curve not found in position"))?;
-    let bonding_curve = Pubkey::from_str(bonding_curve_str)?;
+        .ok_or_else(|| {
+            let error = anyhow!("Bonding curve not found in position");
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
+        })?;
+    let bonding_curve = Pubkey::from_str(bonding_curve_str).map_err(|e| {
+        let error = anyhow!("Invalid bonding curve address: {} - {}", bonding_curve_str, e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     
     let user_wallet = wallet.pubkey();
     let token_program_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
@@ -5290,16 +5639,24 @@ async fn execute_sell_with_percent(
     }
     
     if token_balance == 0 {
-        return Err(anyhow!("Token balance is 0"));
+        let error = anyhow!("Token balance is 0");
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        return Err(error);
     }
 
     // Calculate sell amount using custom sell_percent
     let sell_amount = (token_balance as f64 * (sell_percent / 100.0)) as u64;
     if sell_amount == 0 {
-        return Err(anyhow!("Sell amount is 0"));
+        let error = anyhow!("Sell amount is 0");
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        return Err(error);
     }
 
-    let creator = Pubkey::from_str(&position.creator)?;
+    let creator = Pubkey::from_str(&position.creator).map_err(|e| {
+        let error = anyhow!("Invalid creator address: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     let associated_bonding_curve = get_associated_token_address_with_program_id(
         &bonding_curve, &mint, &token_program_used
     );
@@ -5321,8 +5678,16 @@ async fn execute_sell_with_percent(
         rpc.get_latest_blockhash(),
         creator_vault_fut
     );
-    let recent_blockhash = recent_blockhash?;
-    let creator_vault = creator_vault?;
+    let recent_blockhash = recent_blockhash.map_err(|e| {
+        let error = anyhow!("Failed to get latest blockhash: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
+    let creator_vault = creator_vault.map_err(|e| {
+        let error = anyhow!("Failed to get creator vault: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     
     let accounts = PumpBuyAccounts {
         mint, bonding_curve, associated_bonding_curve, creator_vault,
@@ -5344,7 +5709,11 @@ async fn execute_sell_with_percent(
             }
         }
     );
-    let sell_ix = sell_ix?;
+    let sell_ix = sell_ix.map_err(|e| {
+        let error = anyhow!("Failed to build sell instruction: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
     
     let helius_tip_amount = 200_000u64;
     let helius_tip_account = crate::constants::random_helius_tip_account();
@@ -5355,8 +5724,16 @@ async fn execute_sell_with_percent(
         system_instruction::transfer(&user_wallet, &helius_tip_account, helius_tip_amount),
     ];
     
-    let msg = v0::Message::try_compile(&user_wallet, &instructions, &[], recent_blockhash)?;
-    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
+    let msg = v0::Message::try_compile(&user_wallet, &instructions, &[], recent_blockhash).map_err(|e| {
+        let error = anyhow!("Failed to compile message: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet]).map_err(|e| {
+        let error = anyhow!("Failed to create transaction: {}", e);
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        error
+    })?;
 
     if config.mock_sell {
         use solana_sdk::signature::Signature;
@@ -5390,31 +5767,66 @@ async fn execute_sell_with_percent(
     }
 
     let tx_sig = match config.submission_mode {
-        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await?,
+        crate::config::SubmissionMode::Helius => send_helius_transaction(tx).await.map_err(|e| {
+            let error = anyhow!("Helius transaction failed: {}", e);
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
+        })?,
         crate::config::SubmissionMode::Jito => {
-            return Ok(format!("Jito: {}", send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await?));
+            return send_jito_bundle(tx, wallet, recent_blockhash, config.jito_tip).await
+                .map(|bundle_id| format!("Jito: {}", bundle_id))
+                .map_err(|e| {
+                    let error = anyhow!("Jito bundle failed: {}", e);
+                    record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                    error
+                });
         }
-        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await?.to_string(),
+        crate::config::SubmissionMode::Rpc => rpc.send_transaction(&tx).await.map_err(|e| {
+            let error = anyhow!("RPC transaction failed: {}", e);
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            error
+        })?.to_string(),
         crate::config::SubmissionMode::All => {
             let tx_helius = tx.clone();
             let tx_jito = tx.clone();
             let tx_rpc = tx.clone();
             let wallet_bytes = wallet.to_bytes();
-            let wallet_clone = Keypair::from_bytes(&wallet_bytes)?;
+            let wallet_clone = Keypair::from_bytes(&wallet_bytes).map_err(|e| {
+                let error = anyhow!("Failed to clone wallet: {}", e);
+                record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                error
+            })?;
             let jito_tip = config.jito_tip;
             let rpc_url = config.rpc_url.clone();
+            let mint_clone = position.mint.clone();
+            let tracker_clone = tracker.clone();
             
             tokio::select! {
                 res = tokio::spawn(async move { send_helius_transaction(tx_helius).await }) => {
-                    res??.to_string()
+                    res?.map_err(|e| {
+                        let error = anyhow!("Helius transaction failed: {}", e);
+                        record_sell_failure_in_tracker(&tracker_clone, &mint_clone, &error);
+                        error
+                    })?.to_string()
                 }
                 res = tokio::spawn(async move { send_jito_bundle(tx_jito, &wallet_clone, recent_blockhash, jito_tip).await }) => {
-                    return Ok(format!("Jito: {}", res??));
+                    match res? {
+                        Ok(bundle_id) => format!("Jito: {}", bundle_id),
+                        Err(e) => {
+                            let error = anyhow!("Jito bundle failed: {}", e);
+                            record_sell_failure_in_tracker(&tracker_clone, &mint_clone, &error);
+                            return Err(error);
+                        }
+                    }
                 }
                 res = tokio::spawn(async move {
                     RpcClient::new(rpc_url).send_transaction(&tx_rpc).await
                 }) => {
-                    res??.to_string()
+                    res?.map_err(|e| {
+                        let error = anyhow!("RPC transaction failed: {}", e);
+                        record_sell_failure_in_tracker(&tracker_clone, &mint_clone, &error);
+                        error
+                    })?.to_string()
                 }
             }
         }
@@ -5476,7 +5888,9 @@ async fn execute_sell_with_percent(
     // Only update tracker if transaction is confirmed
     if !confirmed {
         eprintln!("❌ Transaction NOT confirmed - position NOT updated (may retry)");
-        return Err(anyhow!("Transaction not confirmed on blockchain - position not updated"));
+        let error = anyhow!("Transaction not confirmed on blockchain - position not updated");
+        record_sell_failure_in_tracker(tracker, &position.mint, &error);
+        return Err(error);
     }
 
     // Update tracker based on sell type
@@ -5783,6 +6197,55 @@ mod tests {
         // let test_bc = Pubkey::from_str("...").unwrap();
         // let result = batch_fetch_bonding_curves(&rpc, &[test_bc]).await;
         // assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_exponential_backoff_timing() {
+        // Test exponential backoff calculation used in bonding curve retry logic
+        let base_wait_interval_ms = 30;
+        let max_wait_ms = 500;
+        let max_attempts = 15;
+        
+        let mut prev_wait = 0;
+        for attempt in 1..=max_attempts {
+            let wait_interval_ms = if attempt == 1 {
+                base_wait_interval_ms
+            } else {
+                // Exponential backoff: 30ms, 60ms, 120ms, 240ms, etc. (capped at 500ms)
+                std::cmp::min(base_wait_interval_ms * (1 << (attempt - 1)), max_wait_ms)
+            };
+            
+            // Verify it doesn't exceed max
+            assert!(wait_interval_ms <= max_wait_ms, 
+                   "Wait interval {}ms exceeds max {}ms at attempt {}", 
+                   wait_interval_ms, max_wait_ms, attempt);
+            
+            // Verify it increases (except first)
+            if attempt > 1 {
+                assert!(wait_interval_ms >= prev_wait, 
+                       "Wait interval should increase: attempt {} = {}ms, previous = {}ms", 
+                       attempt, wait_interval_ms, prev_wait);
+            }
+            
+            // Verify first attempt is base wait
+            if attempt == 1 {
+                assert_eq!(wait_interval_ms, base_wait_interval_ms, 
+                          "First attempt should use base wait interval");
+            }
+            
+            prev_wait = wait_interval_ms;
+        }
+        
+        // Verify specific values for first few attempts
+        assert_eq!(base_wait_interval_ms * (1 << 0), 30);  // attempt 1
+        assert_eq!(base_wait_interval_ms * (1 << 1), 60);  // attempt 2
+        assert_eq!(base_wait_interval_ms * (1 << 2), 120); // attempt 3
+        assert_eq!(base_wait_interval_ms * (1 << 3), 240); // attempt 4
+        assert_eq!(base_wait_interval_ms * (1 << 4), 480); // attempt 5
+        
+        // Verify cap works (attempt 5 should be 480, attempt 6 should be capped at 500)
+        let attempt_6_wait = std::cmp::min(base_wait_interval_ms * (1 << 5), max_wait_ms);
+        assert_eq!(attempt_6_wait, max_wait_ms, "Wait should be capped at max");
     }
 
     #[test]

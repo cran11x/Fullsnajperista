@@ -264,7 +264,7 @@ impl Socials {
 pub async fn check_token_metadata(
     mint_address: &str,
     api_key: &str,
-) -> Result<(Socials, TokenMetadata)> {
+) -> Result<(Socials, TokenMetadata, String)> {
     check_token_metadata_with_config(
         mint_address,
         api_key,
@@ -277,6 +277,7 @@ pub async fn check_token_metadata(
 }
 
 /// Fetch token metadata with configurable timeouts and retries
+/// Returns (Socials, TokenMetadata, source) where source is "RPC", "IPFS", "RPC+IPFS", or "None"
 pub async fn check_token_metadata_with_config(
     mint_address: &str,
     api_key: &str,
@@ -285,7 +286,7 @@ pub async fn check_token_metadata_with_config(
     total_timeout_ms: u64,
     max_retries: u32,
     retry_delay_ms: u64,
-) -> Result<(Socials, TokenMetadata)> {
+) -> Result<(Socials, TokenMetadata, String)> {
     // Acquire semaphore permit for concurrency control
     let _permit = SOCIALS_SEMAPHORE.acquire().await
         .map_err(|e| anyhow::anyhow!("Failed to acquire semaphore: {}", e))?;
@@ -320,13 +321,14 @@ pub async fn check_token_metadata_with_config(
 }
 
 /// Internal function that performs a single fetch attempt
+/// Returns (Socials, TokenMetadata, source) where source is "RPC", "IPFS", "RPC+IPFS", or "None"
 async fn check_token_metadata_internal(
     mint_address: &str,
     api_key: &str,
     das_timeout_ms: u64,
     ipfs_timeout_ms: u64,
     _total_timeout_ms: u64,
-) -> Result<(Socials, TokenMetadata)> {
+) -> Result<(Socials, TokenMetadata, String)> {
     let start = std::time::Instant::now();
 
     // ⚡ Use shared HTTP client for better performance
@@ -480,12 +482,12 @@ async fn check_token_metadata_internal(
     final_metadata.telegram = socials.telegram.clone();
     final_metadata.discord = socials.discord.clone();
     
-    // Log where socials were fetched from
+    // Determine source of socials data
     let rpc_count = rpc_socials.count();
     let ipfs_count = ipfs_socials.count();
     let final_count = socials.count();
-    if final_count > 0 {
-        let sources = if rpc_count > 0 && ipfs_count > 0 {
+    let source = if final_count > 0 {
+        if rpc_count > 0 && ipfs_count > 0 {
             format!("RPC+IPFS (RPC: {}, IPFS: {})", rpc_count, ipfs_count)
         } else if rpc_count > 0 {
             "RPC".to_string()
@@ -493,8 +495,14 @@ async fn check_token_metadata_internal(
             "IPFS".to_string()
         } else {
             "Unknown".to_string()
-        };
-        eprintln!("✅ Socials fetched for {}: {} socials from {}", mint_address, final_count, sources);
+        }
+    } else {
+        "None".to_string()
+    };
+    
+    // Log where socials were fetched from
+    if final_count > 0 {
+        eprintln!("✅ Socials fetched for {}: {} socials from {}", mint_address, final_count, source);
     } else {
         eprintln!("⚠️  No socials found for {} (RPC: {}, IPFS: {})", mint_address, rpc_count, ipfs_count);
     }
@@ -505,7 +513,7 @@ async fn check_token_metadata_internal(
         cache.put(mint_address.to_string(), socials.clone());
     }
     
-    Ok((socials, final_metadata))
+    Ok((socials, final_metadata, source))
 }
 
 /// ⚡ OPTIMIZED: Fast social check with retry logic + LRU cache
@@ -520,7 +528,7 @@ pub async fn check_token_socials(mint_address: &str, api_key: &str) -> Result<So
     }
     
     // If not in cache, fetch metadata and return socials
-    let (socials, _) = check_token_metadata(mint_address, api_key).await?;
+    let (socials, _, _) = check_token_metadata(mint_address, api_key).await?;
     Ok(socials)
 }
 
@@ -541,7 +549,7 @@ pub async fn fetch_socials_with_retry(
     }
     
     // Fetch with retry
-    let (socials, _) = check_token_metadata_with_config(
+    let (socials, _, _) = check_token_metadata_with_config(
         mint_address,
         api_key,
         DEFAULT_DAS_TIMEOUT_MS,
