@@ -829,7 +829,20 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                     .strong()
                     .color(egui::Color32::from_rgb(220, 230, 245)));
                 ui.add_space(8.0);
-                use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price};
+                use crate::utils::{sol_to_usd, usd_to_sol, get_cached_sol_price, refresh_sol_price_if_needed};
+                
+                // ✅ Refresh SOL price before conversion to ensure accuracy
+                // Spawn async task to refresh (non-blocking)
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new();
+                    if let Ok(rt) = rt {
+                        rt.block_on(async {
+                            refresh_sol_price_if_needed().await;
+                        });
+                    }
+                });
+                
                 let take_profit_usd = sol_to_usd(config_clone.take_profit_mc_sol);
                 let take_profit_str = state.get_or_init("take_profit_mc_usd", take_profit_usd.to_string());
                 if ui.add(egui::TextEdit::singleline(take_profit_str)
@@ -837,7 +850,20 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         .changed() {
                     if let Ok(val_usd) = take_profit_str.parse::<f64>() {
                         if val_usd > 0.0 {
-                            // Convert USD to SOL
+                            // ✅ Refresh SOL price before conversion to ensure accuracy
+                            let ctx = ui.ctx().clone();
+                            let refresh_handle = std::thread::spawn(move || {
+                                let rt = tokio::runtime::Runtime::new();
+                                if let Ok(rt) = rt {
+                                    rt.block_on(async {
+                                        refresh_sol_price_if_needed().await;
+                                    });
+                                }
+                            });
+                            // Wait a bit for refresh to complete (non-blocking UI)
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            
+                            // Convert USD to SOL using refreshed price
                             config_clone.take_profit_mc_sol = usd_to_sol(val_usd);
                             apply_config_live(&config, &control_tx, &config_clone);
                             state.last_update_time = Some(std::time::Instant::now());

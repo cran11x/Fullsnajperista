@@ -205,22 +205,34 @@ pub async fn get_transaction_balance_change(
     Err(anyhow::anyhow!("Account not found or meta missing"))
 }
 
-/// Fetch SOL price from Jupiter API (reliable and free)
+/// Fetch SOL price from CoinGecko API (reliable and free)
+/// Falls back to Binance API if CoinGecko fails
 pub async fn fetch_sol_price_usd() -> Result<f64> {
     let client = get_shared_http_client();
-    let response = client
-        .get("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112")
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-        
-    if let Some(price_str) = response["data"]["So11111111111111111111111111111111111111112"]["price"].as_str() {
-        let price = price_str.parse::<f64>()?;
-        Ok(price)
-    } else {
-        Err(anyhow::anyhow!("Failed to parse price from Jupiter response"))
+    
+    // Try CoinGecko first (most reliable)
+    let coingecko_url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
+    if let Ok(response) = client.get(coingecko_url).send().await {
+        if let Ok(json) = response.json::<serde_json::Value>().await {
+            if let Some(price) = json["solana"]["usd"].as_f64() {
+                return Ok(price);
+            }
+        }
     }
+    
+    // Fallback to Binance API
+    let binance_url = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
+    if let Ok(response) = client.get(binance_url).send().await {
+        if let Ok(json) = response.json::<serde_json::Value>().await {
+            if let Some(price_str) = json["price"].as_str() {
+                if let Ok(price) = price_str.parse::<f64>() {
+                    return Ok(price);
+                }
+            }
+        }
+    }
+    
+    Err(anyhow::anyhow!("Failed to fetch SOL price from both CoinGecko and Binance"))
 }
 
 /// SOL price cache - stores (price, last_update_time)
