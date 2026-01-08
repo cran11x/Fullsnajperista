@@ -3891,9 +3891,7 @@ async fn monitor_positions(
             for position in active_positions.iter() {
                 // 🚀 ULTRA FAST: Check PnL from tracker FIRST (if available) - fastest path
                 if let Some(pnl_percent) = position.pnl_percent {
-                    // Skip normal stop loss check if breakeven mode is active
-                    // (breakeven check requires MC data which will be done in parallel task)
-                    if !position.breakeven_mode_active && pnl_percent <= -stop_loss_percent {
+                    if pnl_percent <= -stop_loss_percent {
                         // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
                         positions_to_sell_immediately.push(position.clone());
                         continue; // Skip to next position
@@ -4080,12 +4078,24 @@ async fn monitor_positions(
                     // Check if entry price is valid
                     let is_entry_price_valid = entry_price > 0.0 && entry_price.is_finite() && !entry_price.is_nan();
                     
-                    // Skip sell checks if critical data is invalid (prevents random sells)
-                    // Only skip if ALL critical data is invalid - allow some to be missing if others are valid
+                    // ✅ FIX: Allow MC-based checks even if PnL is invalid
+                    // MC trigger can be checked independently of PnL validity
+                    // Only skip ALL checks if ALL critical data is invalid
+                    // This allows MC-based rules to work even when PnL calculation fails
                     if !is_mc_valid && !is_pnl_valid && !is_entry_price_valid {
                         eprintln!("⚠️  AUTO-SELL SKIPPED for {}: Invalid data (MC: {:.2}, PnL: {:?}, Entry: {:.8}) - skipping all checks", 
                                  &position_clone.mint[..8], current_mc_sol, current_pnl_percent, entry_price);
                         return None;
+                    }
+                    
+                    // Log if some data is invalid but we continue (for debugging)
+                    if !is_mc_valid {
+                        eprintln!("⚠️  AUTO-SELL: MC invalid ({:.2}) for {} - MC-based rules will be skipped, but other rules may still trigger", 
+                                 current_mc_sol, &position_clone.mint[..8]);
+                    }
+                    if !is_pnl_valid {
+                        eprintln!("⚠️  AUTO-SELL: PnL invalid ({:?}) for {} - PnL-based rules will be skipped, but MC-based rules may still trigger", 
+                                 current_pnl_percent, &position_clone.mint[..8]);
                     }
                     
                     // Check strategy rules if available
@@ -4187,21 +4197,15 @@ async fn monitor_positions(
                     // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
                     // This prevents incorrect PnL calculation when entry price is not yet available
                     let should_sell_stop_loss = if entry_price > 0.0 {
-                        // Check if breakeven mode is active - if so, skip normal stop loss check
-                        // (breakeven check is done later with MC data)
-                        if position_clone.breakeven_mode_active {
-                            false // Skip normal stop loss in breakeven mode
+                        // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
+                        let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
+                        
+                        if pnl_percent <= -stop_loss_percent {
+                            eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
+                                     pnl_percent, entry_price, current_price, stop_loss_percent);
+                            true
                         } else {
-                            // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
-                            let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
-                            
-                            if pnl_percent <= -stop_loss_percent {
-                                eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
-                                         pnl_percent, entry_price, current_price, stop_loss_percent);
-                                true
-                            } else {
-                                false
-                            }
+                            false
                         }
                     } else if let Some(entry_mc_val) = entry_mc {
                         // Fallback to MC check if we don't have entry price but have entry MC
@@ -4210,32 +4214,13 @@ async fn monitor_positions(
                             return None; // Invalid entry MC
                         }
                         
-                        // Check if breakeven mode is active - if so, skip normal stop loss check
-                        if position_clone.breakeven_mode_active {
-                            false // Skip normal stop loss in breakeven mode (handled later)
-                        } else {
-                            // OPTIMIZED: Use batch-fetched MC data (already calculated above)
-                            // Check if we should use breakeven stop loss
-                            // ✅ CRITICAL FIX: Check breakeven_mode_active OR if MC reaches threshold
-                            // Once breakeven mode is active, it stays active even if MC drops below threshold
-                            if position_clone.breakeven_mode_active || current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
-                                // Breakeven mode: use entry MC as stop loss
-                                if current_mc_sol < entry_mc_val {
-                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED (MC fallback): MC dropped to {:.2} SOL (entry: {:.2} SOL)", 
-                                             current_mc_sol, entry_mc_val);
-                                    return Some(("breakeven_stop_loss".to_string(), position_mint.clone()));
-                                }
-                                false // In breakeven mode, only sell if below entry
-                            } else {
-                                // Normal stop loss check
-                                let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
-                                if current_mc_sol < stop_loss_threshold {
-                                    eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from {:.2} SOL to {:.2} SOL (threshold: {:.2} SOL)", 
-                                             entry_mc_val, current_mc_sol, stop_loss_threshold);
-                                }
-                                current_mc_sol < stop_loss_threshold
-                            }
+                        // Normal stop loss check
+                        let stop_loss_threshold = entry_mc_val * (1.0 - stop_loss_percent / 100.0);
+                        if current_mc_sol < stop_loss_threshold {
+                            eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from {:.2} SOL to {:.2} SOL (threshold: {:.2} SOL)", 
+                                     entry_mc_val, current_mc_sol, stop_loss_threshold);
                         }
+                        current_mc_sol < stop_loss_threshold
                     } else {
                         // No entry price and no entry MC - can't calculate stop loss, skip
                         eprintln!("⚠️  Position {}: No entry price ({:?}) and no entry MC ({:?}) - cannot monitor stop loss", 
@@ -4292,93 +4277,6 @@ async fn monitor_positions(
                         
                         return Some(("stop_loss".to_string(), position_mint));
                     }
-                    
-                    // 🎯 BREAKEVEN STOP LOSS: If breakeven mode is active, use entry MC as stop loss
-                    // Only check if breakeven is enabled
-                    if config_clone.enable_breakeven {
-                        if let Some(entry_mc_val) = entry_mc {
-                            if entry_mc_val > 0.0 {
-                                // Check if MC reaches threshold (activates breakeven mode)
-                                let breakeven_mode_active = if current_mc_sol >= config_clone.breakeven_mc_threshold_sol {
-                                    // Update peak MC in tracker (activates breakeven mode)
-                                    if let Ok(mut tracker_guard) = tracker_clone.write() {
-                                        if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                            let _ = tracker_ref.update_peak_mc(
-                                                &position_clone.mint,
-                                                current_mc_sol,
-                                                config_clone.breakeven_mc_threshold_sol,
-                                            );
-                                        }
-                                    }
-                                    true // MC just reached threshold, breakeven mode is now active
-                                } else {
-                                // Check if breakeven mode was already active (from previous cycle)
-                                // Read fresh from tracker to get updated status
-                                let mut is_active = position_clone.breakeven_mode_active;
-                                if let Ok(tracker_guard) = tracker_clone.read() {
-                                    if let Some(tracker_ref) = tracker_guard.as_ref() {
-                                        if let Some(pos) = tracker_ref.get_active_positions().iter().find(|p| p.mint == position_clone.mint) {
-                                            is_active = pos.breakeven_mode_active;
-                                        }
-                                    }
-                                }
-                                    is_active
-                                };
-                                
-                                // ✅ CRITICAL FIX: Check breakeven stop loss if breakeven mode is active
-                                // Once activated (MC reached threshold), breakeven mode stays active
-                                // and we check if MC drops below entry, regardless of current MC level
-                                if breakeven_mode_active {
-                                // Check if MC dropped below entry (breakeven stop loss)
-                                if current_mc_sol < entry_mc_val {
-                                    eprintln!("🛡️  BREAKEVEN STOP LOSS TRIGGERED: MC dropped from peak to {:.2} (entry: {:.2}) - SELLING AT BREAKEVEN", 
-                                             current_mc_sol, entry_mc_val);
-                                    
-                                    // Calculate PnL for logging
-                                    let pnl_percent = if entry_price > 0.0 {
-                                        Some(((current_price - entry_price) / entry_price) * 100.0)
-                                    } else {
-                                        None
-                                    };
-                                    
-                                    // Create detailed sell information
-                                    let sell_details = SellDetails {
-                                        reason: "breakeven_stop_loss".to_string(),
-                                        trigger_type: Some("Breakeven".to_string()),
-                                        trigger_value: None,
-                                        current_pnl_percent: pnl_percent,
-                                        peak_pnl_percent: position_clone.peak_pnl_percent,
-                                        current_mc_sol: Some(current_mc_sol),
-                                        entry_mc_sol: Some(entry_mc_val),
-                                        entry_price: if entry_price > 0.0 { Some(entry_price) } else { None },
-                                        current_price: Some(current_price),
-                                        sell_percent: 100.0,
-                                        time_since_buy_sec: Some(time_since_buy),
-                                        rule_id: None,
-                                    };
-                                    
-                                    // Execute sell at breakeven
-                                    if let Err(e) = execute_sell(
-                                        &config_clone,
-                                        &wallet_clone,
-                                        rpc_task.as_ref(),
-                                        &tracker_clone,
-                                        &position_clone,
-                                        "breakeven_stop_loss",
-                                        &event_tx_clone,
-                                        Some(sell_details),
-                                    ).await {
-                                        eprintln!("⚠️  Breakeven stop loss sell failed for {}: {} (reason already recorded in tracker)", 
-                                                 &position_clone.mint[..8], e);
-                                    }
-                                    
-                                    return Some(("breakeven_stop_loss".to_string(), position_mint));
-                                }
-                                    // Continue to take profit check (in breakeven mode, skip normal stop loss)
-                                }
-                            }
-                        }
-                    } // End of enable_breakeven check
                     
                     // Check take profit: current_mc_sol >= take_profit_mc_sol
                     // ✅ FIX: Only check take profit if MC is valid (prevents random sells)

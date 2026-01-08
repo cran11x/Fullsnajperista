@@ -116,7 +116,14 @@ fn extract_socials_from_rpc_response(asset_result: &AssetResult) -> Socials {
             socials.twitter = metadata.twitter.clone();
         }
         if socials.website.is_none() {
-            socials.website = metadata.website.clone();
+            // ✅ FIX: Don't set website if it's a Twitter community link
+            if let Some(ref website) = metadata.website {
+                if !website.to_lowercase().contains("/i/communities/") {
+                    socials.website = metadata.website.clone();
+                }
+            } else {
+                socials.website = None;
+            }
         }
         if socials.telegram.is_none() {
             socials.telegram = metadata.telegram.clone();
@@ -145,7 +152,10 @@ fn extract_socials_from_rpc_response(asset_result: &AssetResult) -> Socials {
                         if let Some(website_val) = obj.get("website").or_else(|| obj.get("Website")) {
                             if let Some(website_str) = website_val.as_str() {
                                 if !website_str.is_empty() {
-                                    socials.website = Some(website_str.to_string());
+                                    // ✅ FIX: Don't set website if it's a Twitter community link
+                                    if !website_str.to_lowercase().contains("/i/communities/") {
+                                        socials.website = Some(website_str.to_string());
+                                    }
                                 }
                             }
                         }
@@ -180,7 +190,14 @@ fn extract_socials_from_rpc_response(asset_result: &AssetResult) -> Socials {
                 socials.twitter = metadata.twitter.clone();
             }
             if socials.website.is_none() {
-                socials.website = metadata.website.clone();
+                // ✅ FIX: Don't set website if it's a Twitter community link
+                if let Some(ref website) = metadata.website {
+                    if !website.to_lowercase().contains("/i/communities/") {
+                        socials.website = metadata.website.clone();
+                    }
+                } else {
+                    socials.website = None;
+                }
             }
             if socials.telegram.is_none() {
                 socials.telegram = metadata.telegram.clone();
@@ -195,10 +212,23 @@ fn extract_socials_from_rpc_response(asset_result: &AssetResult) -> Socials {
 }
 
 /// Merge socials from RPC and IPFS sources (RPC has priority)
+/// ✅ FIX: Filters out Twitter community links from website field
 fn merge_socials(rpc_socials: &Socials, ipfs_socials: &Socials) -> Socials {
+    // Helper function to filter out Twitter community links
+    let filter_twitter_community = |website: Option<String>| -> Option<String> {
+        website.and_then(|w| {
+            if w.to_lowercase().contains("/i/communities/") {
+                None // Don't use Twitter community link as website
+            } else {
+                Some(w)
+            }
+        })
+    };
+    
     Socials {
         twitter: rpc_socials.twitter.clone().or_else(|| ipfs_socials.twitter.clone()),
-        website: rpc_socials.website.clone().or_else(|| ipfs_socials.website.clone()),
+        website: filter_twitter_community(rpc_socials.website.clone())
+            .or_else(|| filter_twitter_community(ipfs_socials.website.clone())),
         telegram: rpc_socials.telegram.clone().or_else(|| ipfs_socials.telegram.clone()),
         discord: rpc_socials.discord.clone().or_else(|| ipfs_socials.discord.clone()),
     }

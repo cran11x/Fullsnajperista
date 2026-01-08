@@ -386,33 +386,38 @@ impl Config {
             .map_err(|_| anyhow!("Invalid DEAD_COIN_TIMEOUT_SEC"))?;
 
         // Load sell strategy from JSON or use default
+        // ✅ FIX: Use take_profit_mc_sol from Settings instead of fixed 175 SOL
         let sell_strategy_config = if let Ok(json_str) = std::env::var("SELL_STRATEGY_JSON") {
             match SellStrategyConfig::from_json(&json_str) {
-                Ok(config) => {
+                Ok(mut config) => {
                     eprintln!("✅ Loaded sell strategy from SELL_STRATEGY_JSON");
+                    // Update MC trigger with value from Settings
+                    config.update_mc_trigger(take_profit_mc_sol);
                     Some(config)
                 }
                 Err(e) => {
                     eprintln!("⚠️  Failed to parse SELL_STRATEGY_JSON: {}, using default", e);
-                    Some(SellStrategyConfig::default())
+                    Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
                 }
             }
         } else {
             // Try loading from file
             if let Ok(json_str) = std::fs::read_to_string("sell_strategy.json") {
                 match SellStrategyConfig::from_json(&json_str) {
-                    Ok(config) => {
+                    Ok(mut config) => {
                         eprintln!("✅ Loaded sell strategy from sell_strategy.json");
+                        // Update MC trigger with value from Settings
+                        config.update_mc_trigger(take_profit_mc_sol);
                         Some(config)
                     }
                     Err(e) => {
                         eprintln!("⚠️  Failed to parse sell_strategy.json: {}, using default", e);
-                        Some(SellStrategyConfig::default())
+                        Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
                     }
                 }
             } else {
-                // Use default strategy
-                Some(SellStrategyConfig::default())
+                // Use default strategy with MC trigger from Settings
+                Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
             }
         };
 
@@ -1042,7 +1047,7 @@ impl Default for Config {
             max_name_length: 20,
             min_ticker_length: 3,
             max_ticker_length: 7,
-            sell_strategy_config: Some(SellStrategyConfig::default()),
+            sell_strategy_config: Some(SellStrategyConfig::default_with_mc_trigger(175.0)), // Default 175 SOL, will be updated from Settings
             // Advanced filters - Basic
             enable_has_twitter: false,
             enable_has_telegram: false,

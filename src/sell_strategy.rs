@@ -122,14 +122,11 @@ pub struct SellStrategyConfig {
 }
 
 impl SellStrategyConfig {
-    /// Kreira default sell strategiju sa 5 osnovnih pravila
+    /// Kreira jednostavnu default sell strategiju sa 2 osnovna pravila
     /// 
     /// # Default pravila (po prioritetu):
     /// 1. **Stop Loss (-30%)** - Priority 300 - Prodaje sve na -30% gubitka
-    /// 2. **Trailing Stop (20%)** - Priority 200 - Prodaje sve ako padne 20% od peak-a (samo ako je bio >= +30%)
-    /// 3. **Partial Sell 50% (+50%)** - Priority 100 - Prodaje 50% na +50% profita
-    /// 4. **Partial Sell 25% (+100%)** - Priority 90 - Prodaje 25% na +100% profita (samo ako je već prodano 50%)
-    /// 5. **Take Profit MC (175 SOL)** - Priority 50 - Prodaje sve kada MC dosegne 175 SOL
+    /// 2. **Take Profit MC** - Priority 200 - Prodaje sve kada MC dosegne određenu vrijednost (iz Settings)
     pub fn default() -> Self {
         Self {
             rules: vec![
@@ -146,52 +143,13 @@ impl SellStrategyConfig {
                     min_time_after_buy: None,
                     max_time_after_buy: None,
                 },
-                // Trailing Stop at 20% drop from peak
-                // Zaštita profita - prodaje sve ako cijena padne 20% od najviše točke
-                SellRule {
-                    id: "trailing_stop_20pct".to_string(),
-                    trigger: SellTrigger::TrailingStop(20.0),
-                    sell_percent: 100.0,
-                    priority: 200,
-                    enabled: true,
-                    min_pnl_percent: Some(30.0), // Aktivira se samo ako je profit bio barem +30%
-                    max_pnl_percent: None,
-                    min_time_after_buy: Some(60), // Minimum 1 minuta nakon kupnje (da se izbjegne false trigger)
-                    max_time_after_buy: None,
-                },
-                // Partial sell 50% at +50% profit
-                // Djelomična prodaja - prodaje pola pozicije na +50% profita, ostatak ostaje
-                SellRule {
-                    id: "partial_50pct".to_string(),
-                    trigger: SellTrigger::ProfitPercent(50.0),
-                    sell_percent: 50.0,
-                    priority: 100,
-                    enabled: true,
-                    min_pnl_percent: None,
-                    max_pnl_percent: None,
-                    min_time_after_buy: None,
-                    max_time_after_buy: None,
-                },
-                // Partial sell 25% at +100% profit
-                // Dodatna djelomična prodaja - prodaje još 25% na +100% profita
-                SellRule {
-                    id: "partial_100pct".to_string(),
-                    trigger: SellTrigger::ProfitPercent(100.0),
-                    sell_percent: 25.0,
-                    priority: 90,
-                    enabled: true,
-                    min_pnl_percent: Some(50.0), // Aktivira se samo ako je već prodano 50% (profit >= +50%)
-                    max_pnl_percent: None,
-                    min_time_after_buy: None,
-                    max_time_after_buy: None,
-                },
                 // Take profit at MC threshold
                 // Potpuna prodaja kada market cap dosegne određenu vrijednost
                 SellRule {
                     id: "take_profit_mc".to_string(),
-                    trigger: SellTrigger::MarketCapSol(175.0),
+                    trigger: SellTrigger::MarketCapSol(175.0), // Ova vrijednost će biti zamijenjena dinamički iz Settings
                     sell_percent: 100.0,
-                    priority: 50, // Najniži prioritet - provjerava se zadnje
+                    priority: 200, // Prioritet 200 - provjerava se nakon stop loss-a
                     enabled: true,
                     min_pnl_percent: None,
                     max_pnl_percent: None,
@@ -200,7 +158,7 @@ impl SellStrategyConfig {
                 },
             ],
             default_sell_percent: 100.0, // Ako nijedno pravilo ne odgovara, prodaj sve
-            allow_multiple_sells: true, // Dozvoli višestruke djelomične prodaje
+            allow_multiple_sells: false, // Jednostavna strategija - nema partial sell-a
             executed_rules: HashMap::new(),
         }
     }
@@ -358,6 +316,29 @@ impl SellStrategyConfig {
             .get(mint)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Creates default strategy with custom MC trigger
+    /// Koristi se kada se želi koristiti MC trigger iz Settings umjesto fiksnog 175 SOL
+    pub fn default_with_mc_trigger(mc_sol: f64) -> Self {
+        let mut config = Self::default();
+        // Find and update take_profit_mc rule
+        if let Some(rule) = config.rules.iter_mut().find(|r| r.id == "take_profit_mc") {
+            if let SellTrigger::MarketCapSol(_) = rule.trigger {
+                rule.trigger = SellTrigger::MarketCapSol(mc_sol);
+            }
+        }
+        config
+    }
+    
+    /// Updates MC trigger value for take_profit_mc rule
+    /// Koristi se kada se Settings promijeni i treba ažurirati MC trigger u strategiji
+    pub fn update_mc_trigger(&mut self, mc_sol: f64) {
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == "take_profit_mc") {
+            if let SellTrigger::MarketCapSol(_) = rule.trigger {
+                rule.trigger = SellTrigger::MarketCapSol(mc_sol);
+            }
+        }
     }
 }
 

@@ -110,7 +110,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                         let col_invested = 110.0;
                         let col_pnl = 140.0;
                         let col_tokens = 100.0;
-                        let col_action = 180.0;
+                        let col_action = 280.0; // Increased to fit all buttons including SELL
                         let row_height = 40.0;
                         let header_color = egui::Color32::from_rgb(220, 230, 245);
                         
@@ -305,7 +305,28 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                         egui::vec2(col_action, row_height),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            
+                                            // SELL button - make it prominent and visible
+                                            if ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("🚨 SELL")
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(egui::Color32::WHITE)
+                                                )
+                                                .fill(egui::Color32::from_rgb(255, 80, 80))
+                                                .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 120, 120)))
+                                                .min_size(egui::vec2(70.0, 28.0))
+                                                .rounding(egui::Rounding::same(4.0))
+                                            ).clicked() {
+                                                eprintln!("🖱️ Sell button clicked for {}", pos.mint);
+                                                if let Err(e) = control_tx.send(BotControl::ManualSell(pos.mint.clone())) {
+                                                    eprintln!("❌ Failed to send ManualSell command: {}", e);
+                                                } else {
+                                                    eprintln!("✅ ManualSell command sent for {}", pos.mint);
+                                                }
+                                            }
                                             
                                             if ui.button("📈 Chart").clicked() {
                                                 let url = format!(
@@ -352,24 +373,6 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                                                 let mut popups = open_popups_rc.borrow_mut();
                                                 popups.insert(popup_id.clone(), !is_open);
                                             }
-                                            
-                                            if ui.add(
-                                                egui::Button::new(
-                                                    egui::RichText::new("🚨 SELL")
-                                                        .size(13.0)
-                                                        .strong()
-                                                        .color(egui::Color32::WHITE)
-                                                )
-                                                .fill(egui::Color32::from_rgb(255, 80, 80))
-                                                .rounding(egui::Rounding::same(4.0))
-                                            ).clicked() {
-                                                eprintln!("🖱️ Sell button clicked for {}", pos.mint);
-                                                if let Err(e) = control_tx.send(BotControl::ManualSell(pos.mint.clone())) {
-                                                    eprintln!("❌ Failed to send ManualSell command: {}", e);
-                                                } else {
-                                                    eprintln!("✅ ManualSell command sent for {}", pos.mint);
-                                                }
-                                            }
                                         }
                                     );
                                 });
@@ -396,7 +399,7 @@ pub fn render(ui: &mut egui::Ui, tracker: &Arc<RwLock<Option<TokenTracker>>>, co
                         let col_invested = 110.0;
                         let col_pnl = 140.0;
                         let col_tokens = 100.0;
-                        let col_action = 180.0;
+                        let col_action = 280.0; // Increased to match active positions
                         let row_height = 40.0;
                         let header_color = egui::Color32::from_rgb(200, 200, 200);
                         
@@ -1010,9 +1013,6 @@ fn render_token_info_window(
                                 ui.label(pos.creator_token_count.to_string());
                                 ui.end_row();
                                 
-                                ui.label(egui::RichText::new("Breakeven Mode:").strong());
-                                ui.label(if pos.breakeven_mode_active { "Active" } else { "Inactive" });
-                                ui.end_row();
                                 
                                 ui.label(egui::RichText::new("Partial Sells:").strong());
                                 ui.label(pos.partial_sell_count.to_string());
