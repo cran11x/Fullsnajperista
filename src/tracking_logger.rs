@@ -70,8 +70,6 @@ pub enum TrackingOperation {
     PeakMCUpdate {
         current_mc: f64,
         peak_mc: Option<f64>,
-        breakeven_threshold: f64,
-        breakeven_mode_active: bool,
     },
     PriceValidation {
         entry_price: f64,

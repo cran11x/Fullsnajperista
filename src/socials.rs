@@ -939,7 +939,7 @@ mod tests {
         println!("\n📋 Test 1: Fetching metadata for token: {}", test_mint);
         let start = std::time::Instant::now();
         match check_token_metadata(test_mint, &api_key).await {
-            Ok((socials, metadata)) => {
+            Ok((socials, metadata, _)) => {
                 let elapsed = start.elapsed();
                 println!("   ✅ Success in {:?}", elapsed);
                 println!("   📊 Socials found:");
@@ -1024,7 +1024,7 @@ mod tests {
             let start = std::time::Instant::now();
             
             match check_token_metadata(mint, &api_key).await {
-                Ok((socials, metadata)) => {
+                Ok((socials, metadata, _)) => {
                     let elapsed = start.elapsed();
                     total_time += elapsed.as_millis() as u64;
                     success_count += 1;
@@ -1103,7 +1103,7 @@ mod tests {
         println!("═══════════════════════════════════════════════════════════\n");
         
         match check_token_metadata(mint, &api_key).await {
-            Ok((socials, metadata)) => {
+            Ok((socials, metadata, _)) => {
                 println!("✅ Successfully fetched metadata\n");
                 
                 println!("📊 Socials found:");

@@ -49,13 +49,10 @@ pub struct Config {
     pub enable_auto_sell: bool,
     pub stop_loss_percent: f64,
     pub take_profit_mc_sol: f64,
-    pub breakeven_mc_threshold_sol: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
     pub enable_dead_coin_sell: bool,
     pub dead_coin_timeout_sec: u64,
-    pub enable_trailing_stop: bool,  // Enable/disable trailing stop in sell strategy
-    pub enable_breakeven: bool,      // Enable/disable breakeven MC threshold protection
     pub blacklisted_tokens: HashSet<Pubkey>,
     pub blacklisted_creators: HashSet<Pubkey>,
     pub whitelisted_tokens: Option<HashSet<Pubkey>>, // None = svi dozvoljeni
@@ -340,16 +337,6 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
-        let enable_trailing_stop = std::env::var("ENABLE_TRAILING_STOP")
-            .unwrap_or_else(|_| "true".to_string())
-            .parse::<bool>()
-            .unwrap_or(true);
-
-        let enable_breakeven = std::env::var("ENABLE_BREAKEVEN")
-            .unwrap_or_else(|_| "true".to_string())
-            .parse::<bool>()
-            .unwrap_or(true);
-
         let stop_loss_percent = std::env::var("STOP_LOSS_PERCENT")
             .unwrap_or_else(|_| "30.0".to_string())
             .parse::<f64>()
@@ -359,11 +346,6 @@ impl Config {
             .unwrap_or_else(|_| "175.0".to_string()) // ~24000 USD at 137 SOL/USD
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_SOL"))?;
-
-        let breakeven_mc_threshold_sol = std::env::var("BREAKEVEN_MC_THRESHOLD_SOL")
-            .unwrap_or_else(|_| "102.0".to_string()) // ~14000 USD at 137 SOL/USD
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid BREAKEVEN_MC_THRESHOLD_SOL"))?;
 
         let sell_percent = std::env::var("SELL_PERCENT")
             .unwrap_or_else(|_| "100.0".to_string())
@@ -797,13 +779,10 @@ impl Config {
             enable_auto_sell,
             stop_loss_percent,
             take_profit_mc_sol,
-            breakeven_mc_threshold_sol,
             sell_percent,
             monitor_interval_sec,
             enable_dead_coin_sell,
             dead_coin_timeout_sec,
-            enable_trailing_stop,
-            enable_breakeven,
             blacklisted_tokens,
             blacklisted_creators,
             whitelisted_tokens,
@@ -1033,9 +1012,6 @@ impl Default for Config {
             enable_auto_sell: false,
             stop_loss_percent: 30.0,
             take_profit_mc_sol: 175.0, // ~24000 USD at 137 SOL/USD
-            breakeven_mc_threshold_sol: 102.0, // ~14000 USD at 137 SOL/USD
-            enable_trailing_stop: true, // Enable trailing stop by default
-            enable_breakeven: true,      // Enable breakeven protection by default
             sell_percent: 100.0,
             monitor_interval_sec: 5,
             enable_dead_coin_sell: false,
@@ -1141,12 +1117,10 @@ mod tests {
         env::remove_var("MIN_SOCIALS_COUNT");
         env::remove_var("MIN_DEV_BUY_SOL");
         env::remove_var("MAX_DEV_BUY_SOL");
-        env::remove_var("BREAKEVEN_MC_THRESHOLD_SOL");
         env::remove_var("MIN_DEV_TOKENS");
         env::remove_var("MAX_DEV_TOKENS");
         env::remove_var("ENABLE_TRACKER");
         env::remove_var("MOCK_BUY");
-        env::remove_var("BREAKEVEN_MC_THRESHOLD_USD");
     }
 
     #[test]
@@ -1162,26 +1136,6 @@ mod tests {
         assert_eq!(config.priority_fee, 5000000);
         assert_eq!(config.compute_units, 300000);
         
-        cleanup_test_env();
-    }
-
-    #[test]
-    fn test_breakeven_config_default() {
-        let config = Config::default();
-        assert_eq!(config.breakeven_mc_threshold_sol, 102.0);
-    }
-
-    #[test]
-    fn test_breakeven_config_from_env() {
-        setup_test_env();
-        env::set_var("BREAKEVEN_MC_THRESHOLD_SOL", "120.0");
-        
-        let config = Config::from_env();
-        assert!(config.is_ok());
-        let config = config.unwrap();
-        assert_eq!(config.breakeven_mc_threshold_sol, 120.0);
-        
-        env::remove_var("BREAKEVEN_MC_THRESHOLD_SOL");
         cleanup_test_env();
     }
 
@@ -1226,7 +1180,6 @@ mod tests {
         assert_eq!(config.submission_mode, SubmissionMode::Helius);
         assert!(!config.require_socials);
         assert!(!config.require_twitter);
-        assert_eq!(config.breakeven_mc_threshold_sol, 102.0);
     }
 
     #[test]

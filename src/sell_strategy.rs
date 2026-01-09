@@ -18,36 +18,10 @@ use anyhow::Result;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "value")]
 pub enum SellTrigger {
-    /// ProfitPercent: Aktivira se kada profit dosegne određeni postotak (npr. +50%, +100%)
-    /// Vrijednost: postotak profita (npr. 50.0 = +50%)
-    #[serde(rename = "ProfitPercent")]
-    ProfitPercent(f64),
-    
     /// MarketCapSol: Aktivira se kada market cap dosegne određenu vrijednost u SOL
     /// Vrijednost: market cap u SOL (npr. 175.0 = 175 SOL)
     #[serde(rename = "MarketCapSol")]
     MarketCapSol(f64),
-    
-    /// TrailingStop: Aktivira se kada cijena padne određeni postotak od najviše cijene (peaka)
-    /// Vrijednost: postotak pada od peak-a (npr. 20.0 = 20% pad od peak-a)
-    #[serde(rename = "TrailingStop")]
-    TrailingStop(f64),
-    
-    /// TimeBased: Aktivira se nakon određenog vremena od kupnje
-    /// Vrijednost: sekunde nakon kupnje (npr. 300 = 5 minuta)
-    #[serde(rename = "TimeBased")]
-    TimeBased(u64),
-    
-    /// DeadCoin: Aktivira se kada nema kretanja cijene određeno vrijeme
-    /// Vrijednost: sekunde bez kretanja (npr. 15 = 15 sekundi)
-    /// Napomena: Trenutno se obrađuje odvojeno u bot_core.rs
-    #[serde(rename = "DeadCoin")]
-    DeadCoin(u64),
-    
-    /// Breakeven: Aktivira se kada market cap padne ispod ulazne vrijednosti (entry MC)
-    /// Zaštita od gubitka - prodaje na breakeven točki
-    #[serde(rename = "Breakeven")]
-    Breakeven,
     
     /// StopLoss: Aktivira se kada gubitak dosegne određeni postotak
     /// Vrijednost: postotak gubitka (npr. 30.0 = -30% gubitak)
@@ -177,7 +151,6 @@ impl SellStrategyConfig {
     /// - `position`: Informacije o poziciji (entry price, MC, itd.)
     /// - `current_pnl_percent`: Trenutni profit/gubitak u postotku (npr. Some(50.0) = +50%)
     /// - `current_mc_sol`: Trenutni market cap u SOL
-    /// - `peak_pnl_percent`: Najviši profit % koji je pozicija dosegla (za trailing stop)
     /// - `time_since_buy`: Vrijeme u sekundama od kupnje
     /// - `executed_rule_ids`: Lista ID-jeva pravila koja su već izvršena za ovu poziciju
     /// 
@@ -190,25 +163,19 @@ impl SellStrategyConfig {
     /// 2. Provjerava svako enabled pravilo redom
     /// 3. Provjerava time constraints (min/max time after buy)
     /// 4. Provjerava PnL constraints (min/max PnL percent)
-    /// 5. Provjerava trigger uvjet (profit %, MC, trailing stop, itd.)
+    /// 5. Provjerava trigger uvjet (MC threshold ili stop loss)
     /// 6. Vraća prvo pravilo koje zadovoljava sve uvjete
     pub fn check_rules(
         &self,
-        position: &crate::accounts::TokenBuy,
+        _position: &crate::accounts::TokenBuy,
         current_pnl_percent: Option<f64>,
         current_mc_sol: Option<f64>,
-        peak_pnl_percent: Option<f64>,
         time_since_buy: u64,
         executed_rule_ids: &[String],
-        enable_trailing_stop: bool, // Enable/disable trailing stop rules
     ) -> Option<&SellRule> {
         // Sort rules by priority (higher first)
         let mut sorted_rules: Vec<&SellRule> = self.rules.iter()
-            .filter(|r| {
-                r.enabled && 
-                // Skip trailing stop rules if disabled
-                (enable_trailing_stop || !matches!(r.trigger, SellTrigger::TrailingStop(_)))
-            })
+            .filter(|r| r.enabled)
             .collect();
         sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
 
@@ -246,41 +213,11 @@ impl SellStrategyConfig {
 
             // Check trigger condition
             let should_trigger = match &rule.trigger {
-                SellTrigger::ProfitPercent(threshold) => {
-                    current_pnl_percent.map_or(false, |pnl| pnl >= *threshold)
-                }
                 SellTrigger::MarketCapSol(threshold) => {
                     current_mc_sol.map_or(false, |mc| mc >= *threshold)
                 }
-                SellTrigger::TrailingStop(drop_percent) => {
-                    if let (Some(current_pnl), Some(peak)) = (current_pnl_percent, peak_pnl_percent) {
-                        if peak > 0.0 {
-                            let drop = peak - current_pnl;
-                            drop >= *drop_percent
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
                 SellTrigger::StopLoss(threshold) => {
                     current_pnl_percent.map_or(false, |pnl| pnl <= -*threshold)
-                }
-                SellTrigger::Breakeven => {
-                    // Check if MC dropped below entry
-                    if let (Some(current_mc), Some(entry_mc)) = (current_mc_sol, position.mc_at_entry_sol) {
-                        current_mc < entry_mc
-                    } else {
-                        false
-                    }
-                }
-                SellTrigger::TimeBased(seconds) => {
-                    time_since_buy >= *seconds
-                }
-                SellTrigger::DeadCoin(_) => {
-                    // Dead coin detection is handled separately in bot_core
-                    false
                 }
             };
 

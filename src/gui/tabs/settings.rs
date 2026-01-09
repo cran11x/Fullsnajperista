@@ -58,7 +58,6 @@ struct SettingsState {
     take_profit_mc_str: Option<String>,
     sell_percent_str: Option<String>,
     monitor_interval_str: Option<String>,
-    breakeven_mc_threshold_str: Option<String>,
     // Blacklist/Whitelist
     blacklisted_tokens_str: Option<String>,
     blacklisted_creators_str: Option<String>,
@@ -225,18 +224,6 @@ impl SettingsState {
                 }
                 self.whitelisted_tokens_str.as_mut().unwrap()
             }
-            "breakeven_mc_threshold" => {
-                if self.breakeven_mc_threshold_str.is_none() {
-                    self.breakeven_mc_threshold_str = Some(default);
-                }
-                self.breakeven_mc_threshold_str.as_mut().unwrap()
-            }
-            "breakeven_mc_threshold_usd" => {
-                if self.breakeven_mc_threshold_str.is_none() {
-                    self.breakeven_mc_threshold_str = Some(default);
-                }
-                self.breakeven_mc_threshold_str.as_mut().unwrap()
-            }
             "max_name_length" => {
                 if self.max_name_length_str.is_none() {
                     self.max_name_length_str = Some(default);
@@ -339,9 +326,6 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
         state.helius_api_key_str = Some(config_clone.helius_api_key.clone());
     }
     // SOL price is now auto-refreshed, no need to store in state
-    if state.breakeven_mc_threshold_str.is_none() {
-        state.breakeven_mc_threshold_str = Some(config_clone.breakeven_mc_threshold_sol.to_string());
-    }
     if state.max_name_length_str.is_none() {
         state.max_name_length_str = Some(config_clone.max_name_length.to_string());
     }

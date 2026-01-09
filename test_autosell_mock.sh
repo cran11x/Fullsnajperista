@@ -13,7 +13,6 @@ export MOCK_BUY=true                   # Ne šalje stvarne transakcije
 export MOCK_SELL=true                  # Ne šalje stvarne sell transakcije
 export STOP_LOSS_PERCENT=5.0           # 5% stop loss
 export TAKE_PROFIT_MC_SOL=5.0          # 5 SOL take profit
-export BREAKEVEN_MC_THRESHOLD_SOL=3.0  # 3 SOL breakeven threshold
 export ENABLE_AUTO_SELL=true
 export MONITOR_INTERVAL_SEC=2          # Check every 2 seconds
 
@@ -22,7 +21,6 @@ echo "   MOCK_BUY: $MOCK_BUY (no real transactions)"
 echo "   MOCK_SELL: $MOCK_SELL (no real sell transactions)"
 echo "   STOP_LOSS_PERCENT: $STOP_LOSS_PERCENT%"
 echo "   TAKE_PROFIT_MC_SOL: $TAKE_PROFIT_MC_SOL SOL"
-echo "   BREAKEVEN_MC_THRESHOLD_SOL: $BREAKEVEN_MC_THRESHOLD_SOL SOL"
 echo "   MONITOR_INTERVAL_SEC: $MONITOR_INTERVAL_SEC"
 echo ""
 echo "✅ Safe mode: Bot will simulate buys/sells without real transactions"

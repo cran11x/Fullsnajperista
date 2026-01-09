@@ -54,10 +54,10 @@ use serde_json;
 #[derive(Debug, Clone)]
 struct SellDetails {
     reason: String,                    // Osnovni razlog ("stop_loss", "take_profit", "strategy_xxx", "manual_sell")
-    trigger_type: Option<String>,      // Tip triggera ("ProfitPercent", "TrailingStop", "MarketCapSol", itd.)
+    trigger_type: Option<String>,      // Tip triggera ("MarketCapSol", "StopLoss")
     trigger_value: Option<f64>,        // Vrednost triggera (threshold, drop_percent, itd.)
     current_pnl_percent: Option<f64>,  // Trenutni PnL %
-    peak_pnl_percent: Option<f64>,    // Peak PnL % (za TrailingStop)
+    peak_pnl_percent: Option<f64>,    // Peak PnL %
     current_mc_sol: Option<f64>,       // Trenutni MC u SOL
     entry_mc_sol: Option<f64>,         // Entry MC u SOL
     entry_price: Option<f64>,          // Entry price
@@ -2545,7 +2545,6 @@ async fn process_and_buy(
                             buy_fees_sol: None,
                             peak_mc_sol: None,
                             peak_pnl_percent: None,
-                            breakeven_mode_active: false,
                             executed_sell_rules: Vec::new(),
                             partial_sell_count: 0,
                             total_sold_percent: 0.0,
@@ -3065,7 +3064,6 @@ async fn process_and_buy(
                         buy_fees_sol: Some(total_buy_fees),
                         peak_mc_sol: None,
                         peak_pnl_percent: None,
-                        breakeven_mode_active: false,
                         executed_sell_rules: Vec::new(),
                         partial_sell_count: 0,
                         total_sold_percent: 0.0,
@@ -4130,33 +4128,16 @@ async fn monitor_positions(
                             &position_clone,
                             valid_pnl_percent,
                             valid_mc_sol,
-                            position_clone.peak_pnl_percent,
                             time_since_buy,
                             &executed_rule_ids,
-                            config_clone.enable_trailing_stop,
                         ) {
                             // Extract trigger type and value for detailed logging
                             let (trigger_type, trigger_value) = match &rule.trigger {
-                                crate::sell_strategy::SellTrigger::ProfitPercent(threshold) => {
-                                    (Some("ProfitPercent".to_string()), Some(*threshold))
-                                }
                                 crate::sell_strategy::SellTrigger::MarketCapSol(threshold) => {
                                     (Some("MarketCapSol".to_string()), Some(*threshold))
                                 }
-                                crate::sell_strategy::SellTrigger::TrailingStop(drop_percent) => {
-                                    (Some("TrailingStop".to_string()), Some(*drop_percent))
-                                }
-                                crate::sell_strategy::SellTrigger::TimeBased(seconds) => {
-                                    (Some("TimeBased".to_string()), Some(*seconds as f64))
-                                }
                                 crate::sell_strategy::SellTrigger::StopLoss(threshold) => {
                                     (Some("StopLoss".to_string()), Some(*threshold))
-                                }
-                                crate::sell_strategy::SellTrigger::Breakeven => {
-                                    (Some("Breakeven".to_string()), None)
-                                }
-                                crate::sell_strategy::SellTrigger::DeadCoin(_) => {
-                                    (Some("DeadCoin".to_string()), None)
                                 }
                             };
                             
@@ -4805,7 +4786,6 @@ pub async fn execute_manual_buy(
             buy_fees_sol: Some(0.00002), // Estimate for manual buy
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -6023,11 +6003,6 @@ async fn monitor_pnl_ultra_fast(
         let fetch_duration_ms = fetch_start.elapsed().as_millis() as u64;
         
         // Process all positions with batch-fetched data
-        let breakeven_threshold_sol = {
-            let cfg = config.read().unwrap();
-            cfg.breakeven_mc_threshold_sol
-        };
-        
         for (idx, (mint, bonding_curve_str)) in position_data.iter().enumerate() {
             let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
             
@@ -6240,7 +6215,6 @@ async fn monitor_pnl_ultra_fast(
                                 eprintln!("❌ PnL MONITOR: Failed to update PnL for {}: {}", mint_short, e);
                             }
                         }
-                        let _ = tracker.update_peak_mc(mint, current_mc_sol, breakeven_threshold_sol);
                         
                         // Get position data for history recording
                         if let Some(pos) = tracker.get_active_positions().iter().find(|p| p.mint == *mint) {

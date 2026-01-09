@@ -48,13 +48,11 @@ pub struct TokenBuy {
     // 🆕 NEW: Transaction fees tracking (for ultra-precision)
     pub buy_fees_sol: Option<f64>,           // Total fees paid for buy (Priority + Network)
     
-    // 🆕 NEW: Peak tracking for breakeven stop loss
+    // 🆕 NEW: Peak tracking
     #[serde(default)]
     pub peak_mc_sol: Option<f64>,            // Highest MC reached (in SOL)
     #[serde(default)]
     pub peak_pnl_percent: Option<f64>,       // Best PnL percentage reached
-    #[serde(default)]
-    pub breakeven_mode_active: bool,         // Whether breakeven mode is active
     
     // 🆕 NEW: Partial sell tracking for dynamic sell strategy
     #[serde(default)]
@@ -1069,33 +1067,6 @@ impl TokenTracker {
         }
     }
 
-    /// Update peak MC for a position (used when MC is fetched separately)
-    pub fn update_peak_mc(&mut self, mint: &str, current_mc_sol: f64, breakeven_threshold_sol: f64) -> Result<()> {
-        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
-            // Update peak MC if current is higher than existing peak, or if peak is None
-            match buy.peak_mc_sol {
-                None => {
-                    buy.peak_mc_sol = Some(current_mc_sol);
-                }
-                Some(peak) if current_mc_sol > peak => {
-                    buy.peak_mc_sol = Some(current_mc_sol);
-                }
-                _ => {
-                    // Peak remains the same
-                }
-            }
-            
-            // Activate breakeven mode if threshold reached
-            if current_mc_sol >= breakeven_threshold_sol {
-                buy.breakeven_mode_active = true;
-            }
-            
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
-        }
-    }
-
     /// Get all active positions with bonding curves (for batch PnL update)
     pub fn get_active_positions_for_pnl(&self) -> Vec<(String, String)> {
         let _all_buys = self.stats.buys.len();
@@ -1159,7 +1130,6 @@ mod tests {
             buy_fees_sol: Some(0.00001),
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1174,6 +1144,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1203,164 +1178,6 @@ mod tests {
         assert!(position.peak_pnl_percent.unwrap_or(0.0) >= peak_before.unwrap_or(0.0));
         // Current PnL should also be higher now
         assert!(position.pnl_percent.is_some());
-    }
-
-    #[test]
-    fn test_peak_mc_tracking() {
-        let mut tracker = TokenTracker::new().unwrap();
-
-        let buy = TokenBuy {
-            token_number: 1,
-            mint: "test_mint_mc".to_string(),
-            signature: "test_sig".to_string(),
-            creator: "test_creator".to_string(),
-            dev_buy_sol: 2.0,
-            our_buy_sol: 0.1,
-            timestamp: Utc::now(),
-            has_socials: false,
-            twitter: None,
-            website: None,
-            telegram: None,
-            discord: None,
-            twitter_type: None,
-            creator_token_count: 0,
-            detection_method: "instruction".to_string(),
-            mc_at_detection_sol: Some(51.0),
-            mc_at_entry_sol: Some(51.0),
-            token_price_sol: Some(0.00005),
-            token_amount: None,
-            user_token_account: None,
-            bonding_curve: Some("test_bonding_curve_mc".to_string()),
-            sold: false,
-            sell_signature: None,
-            current_price_sol: None,
-            current_value_sol: None,
-            pnl_sol: None,
-            pnl_percent: None,
-            last_pnl_update: None,
-            buy_fees_sol: None,
-            peak_mc_sol: None,
-            peak_pnl_percent: None,
-            breakeven_mode_active: false,
-            executed_sell_rules: Vec::new(),
-            partial_sell_count: 0,
-            total_sold_percent: 0.0,
-            dev_buy_usd: None,
-            our_buy_usd: None,
-            pnl_usd: None,
-            mc_at_detection_usd: None,
-            mc_at_entry_usd: None,
-            current_value_usd: None,
-            sell_failure_reason: None,
-            sell_failure_timestamp: None,
-            sell_reason: None,
-            sell_timestamp: None,
-        };
-
-        tracker.record_buy(buy).unwrap();
-
-        // Update peak MC - should track highest (using SOL values, ~58 SOL = 8000 USD at 137 SOL/USD)
-        tracker.update_peak_mc("test_mint_mc", 58.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_sol, Some(58.0));
-        assert_eq!(position.breakeven_mode_active, false); // Not reached threshold yet
-
-        // Update with lower MC (peak should remain)
-        tracker.update_peak_mc("test_mint_mc", 55.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_sol, Some(58.0)); // Peak should remain
-
-        // Update with higher MC (peak should update)
-        tracker.update_peak_mc("test_mint_mc", 73.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_sol, Some(73.0)); // Peak should update
-
-        // Update with MC above threshold (should activate breakeven mode)
-        tracker.update_peak_mc("test_mint_mc", 110.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.peak_mc_sol, Some(110.0));
-        assert_eq!(position.breakeven_mode_active, true); // Should activate breakeven mode
-        
-        // ✅ CRITICAL TEST: Breakeven mode should stay active even when MC drops below threshold
-        // This simulates the scenario where token reaches threshold, then drops back to entry
-        tracker.update_peak_mc("test_mint_mc", 44.0, 102.0).unwrap(); // MC drops below threshold
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_mint_mc").unwrap();
-        assert_eq!(position.breakeven_mode_active, true); // Breakeven mode should STAY active
-        assert_eq!(position.peak_mc_sol, Some(110.0)); // Peak should remain at highest
-    }
-
-    #[test]
-    fn test_breakeven_stop_loss_scenario() {
-        // Test scenario: Token goes to 14000, then returns to entry - should trigger sell
-        let mut tracker = TokenTracker::new().unwrap();
-
-        let buy = TokenBuy {
-            token_number: 1,
-            mint: "test_breakeven".to_string(),
-            signature: "test_sig".to_string(),
-            creator: "test_creator".to_string(),
-            dev_buy_sol: 2.0,
-            our_buy_sol: 0.1,
-            timestamp: Utc::now(),
-            has_socials: false,
-            twitter: None,
-            website: None,
-            telegram: None,
-            discord: None,
-            twitter_type: None,
-            creator_token_count: 0,
-            detection_method: "instruction".to_string(),
-            mc_at_detection_sol: Some(36.5),
-            mc_at_entry_sol: Some(36.5), // Entry MC = 5000
-            token_price_sol: Some(0.00005),
-            token_amount: Some(2000000),
-            user_token_account: None,
-            bonding_curve: Some("test_bonding_curve".to_string()),
-            sold: false,
-            sell_signature: None,
-            current_price_sol: None,
-            current_value_sol: None,
-            pnl_sol: None,
-            pnl_percent: None,
-            last_pnl_update: None,
-            buy_fees_sol: None,
-            peak_mc_sol: None,
-            peak_pnl_percent: None,
-            breakeven_mode_active: false,
-            executed_sell_rules: Vec::new(),
-            partial_sell_count: 0,
-            total_sold_percent: 0.0,
-            dev_buy_usd: None,
-            our_buy_usd: None,
-            pnl_usd: None,
-            mc_at_detection_usd: None,
-            mc_at_entry_usd: None,
-            current_value_usd: None,
-            sell_failure_reason: None,
-            sell_failure_timestamp: None,
-            sell_reason: None,
-            sell_timestamp: None,
-        };
-
-        tracker.record_buy(buy).unwrap();
-
-        // Step 1: MC reaches threshold (102 SOL) - should activate breakeven mode
-        tracker.update_peak_mc("test_breakeven", 102.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
-        assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should be activated when MC reaches threshold");
-        assert_eq!(position.peak_mc_sol, Some(102.0));
-
-        // Step 2: MC drops to 33 SOL (below entry of 36.5 SOL) - breakeven mode should still be active
-        // This simulates the scenario where token returns to entry after reaching threshold
-        tracker.update_peak_mc("test_breakeven", 33.0, 102.0).unwrap();
-        let position = tracker.get_active_positions().into_iter().find(|p| p.mint == "test_breakeven").unwrap();
-        assert_eq!(position.breakeven_mode_active, true, "Breakeven mode should STAY active even when MC drops below threshold");
-        assert_eq!(position.peak_mc_sol, Some(102.0), "Peak MC should remain at highest value");
-        
-        // At this point, the monitoring logic should detect:
-        // - breakeven_mode_active = true
-        // - current_mc (33 SOL) < entry_mc (36.5 SOL)
-        // - Should trigger breakeven stop loss and sell
     }
 
     #[test]
@@ -1400,7 +1217,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1414,6 +1230,12 @@ mod tests {
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1481,7 +1303,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1495,6 +1316,12 @@ mod tests {
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -1577,7 +1404,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1592,6 +1418,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         let buy2 = TokenBuy {
@@ -1626,7 +1457,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1641,6 +1471,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
         
         tracker.record_buy(buy1).unwrap();
@@ -1689,7 +1524,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1703,6 +1537,12 @@ mod tests {
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1749,7 +1589,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1763,6 +1602,12 @@ mod tests {
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1874,7 +1719,6 @@ mod tests {
             buy_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1889,6 +1733,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
         
         // Record buy should save JSON
@@ -1950,7 +1799,6 @@ mod tests {
             buy_fees_sol: Some(0.00001),
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -1965,6 +1813,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -2031,7 +1884,6 @@ mod tests {
             buy_fees_sol: Some(0.00001),
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -2046,6 +1898,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -2106,7 +1963,6 @@ mod tests {
             buy_fees_sol: Some(0.00001),
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -2121,6 +1977,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -2192,7 +2053,6 @@ mod tests {
             buy_fees_sol: Some(0.00001),
             peak_mc_sol: None,
             peak_pnl_percent: None,
-            breakeven_mode_active: false,
             executed_sell_rules: Vec::new(),
             partial_sell_count: 0,
             total_sold_percent: 0.0,
@@ -2207,6 +2067,11 @@ mod tests {
             sell_reason: None,
             sell_timestamp: None,
             socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
 
         tracker.record_buy(buy).unwrap();
