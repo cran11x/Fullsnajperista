@@ -243,6 +243,12 @@ pub async fn run_bot(
     let pnl_history = history_tracker.clone();
     let pnl_shutdown = shutdown_rx.clone();
     
+    // Create tracking logger for detailed tracking operations logging
+    let tracking_logger = Arc::new(std::sync::Mutex::new(
+        crate::tracking_logger::create_tracking_logger()
+            .ok()  // Optional - don't fail if logger creation fails
+    ));
+    
     let _pnl_handle = tokio::spawn(async move {
         monitor_pnl_ultra_fast(
             pnl_config,
@@ -250,6 +256,7 @@ pub async fn run_bot(
             pnl_tracker,
             pnl_history,
             pnl_shutdown,
+            tracking_logger,
         ).await;
     });
     
@@ -2552,6 +2559,11 @@ async fn process_and_buy(
                             sell_failure_timestamp: None,
                             sell_reason: None,
                             sell_timestamp: None,
+                            tracking_error_count: 0,
+                            last_tracking_error: None,
+                            last_successful_tracking: None,
+                            suspicious_price_detected: false,
+                            bonding_curve_mismatch_detected: false,
         };
                         
                         let _ = tracker.record_buy(buy.clone());
@@ -3067,6 +3079,11 @@ async fn process_and_buy(
                         sell_failure_timestamp: None,
                         sell_reason: None,
                         sell_timestamp: None,
+                        tracking_error_count: 0,
+                        last_tracking_error: None,
+                        last_successful_tracking: None,
+                        suspicious_price_detected: false,
+                        bonding_curve_mismatch_detected: false,
                     };
                     
                     if let Err(e) = tracker.record_buy(buy.clone()) {
@@ -4802,6 +4819,11 @@ pub async fn execute_manual_buy(
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
         };
         
         // Try to record buy (non-blocking)
@@ -5892,6 +5914,7 @@ async fn monitor_pnl_ultra_fast(
     tracker: Arc<std::sync::RwLock<Option<TokenTracker>>>,
     history_tracker: Arc<std::sync::RwLock<crate::accounts::HistoryTracker>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    tracking_logger: Arc<std::sync::Mutex<Option<crate::tracking_logger::TrackingLogger>>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(150)); // Update every 150ms (~7x/sec) - balanced for UI responsiveness
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -5902,6 +5925,21 @@ async fn monitor_pnl_ultra_fast(
             eprintln!("🛑 PnL monitor received shutdown signal");
             break;
         }
+        
+        // Increment cycle for tracking logger
+        if let Ok(logger_guard) = tracking_logger.lock() {
+            if let Some(ref logger) = *logger_guard {
+                logger.increment_cycle();
+            }
+        }
+        
+        let cycle = {
+            if let Ok(logger_guard) = tracking_logger.lock() {
+                logger_guard.as_ref().map(|l| l.get_cycle()).unwrap_or(0)
+            } else {
+                0
+            }
+        };
         
         // Use select to check shutdown during interval tick
         tokio::select! {
@@ -5918,9 +5956,9 @@ async fn monitor_pnl_ultra_fast(
         // Refresh SOL price if needed
         crate::utils::refresh_sol_price_if_needed().await;
         
-        let _ = {
+        let rpc_endpoint = {
             let cfg = config.read().unwrap();
-            cfg.helius_api_key.clone()
+            cfg.rpc_url.clone()
         };
         
         // Get active positions
@@ -5976,11 +6014,13 @@ async fn monitor_pnl_ultra_fast(
         }
         
         // OPTIMIZED: Batch fetch all bonding curves at once
+        let fetch_start = std::time::Instant::now();
         let bonding_curve_data = if !bonding_curves_vec.is_empty() {
             batch_fetch_bonding_curves(&rpc, &bonding_curves_vec).await
         } else {
             Vec::new()
         };
+        let fetch_duration_ms = fetch_start.elapsed().as_millis() as u64;
         
         // Process all positions with batch-fetched data
         let breakeven_threshold_sol = {
@@ -5988,21 +6028,153 @@ async fn monitor_pnl_ultra_fast(
             cfg.breakeven_mc_threshold_sol
         };
         
-        for (idx, (mint, _)) in position_data.iter().enumerate() {
+        for (idx, (mint, bonding_curve_str)) in position_data.iter().enumerate() {
             let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
             
+            // Get position info for logging
+            let position_info = {
+                if let Ok(tracker_guard) = tracker.read() {
+                    if let Some(tracker_ref) = tracker_guard.as_ref() {
+                        if let Some(pos) = tracker_ref.get_active_positions().iter().find(|p| p.mint == *mint) {
+                            Some(crate::tracking_logger::PositionTrackingInfo::from(pos))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            
+            let context = crate::tracking_logger::TrackingContext {
+                monitor_cycle: Some(cycle),
+                batch_index: Some(idx),
+                batch_size: Some(position_data.len()),
+                rpc_endpoint: Some(rpc_endpoint.clone()),
+                network_latency_ms: Some(fetch_duration_ms),
+            };
+            
             if idx >= bonding_curve_data.len() {
-                eprintln!("⚠️  PnL MONITOR: Bonding curve fetch failed for {} (idx {} >= len {})", 
-                         mint_short, idx, bonding_curve_data.len());
+                let error_msg = format!("Bonding curve fetch failed (idx {} >= len {})", idx, bonding_curve_data.len());
+                eprintln!("⚠️  PnL MONITOR: {} for {}", error_msg, mint_short);
+                
+                // Log bonding curve fetch failure
+                if let Some(ref pos_info) = position_info {
+                    if let Ok(logger_guard) = tracking_logger.lock() {
+                        if let Some(ref logger) = *logger_guard {
+                            let _ = logger.log_bonding_curve_fetch(
+                                mint,
+                                pos_info.clone(),
+                                bonding_curve_str,
+                                Err(anyhow::anyhow!(error_msg.clone())),
+                                Some(fetch_duration_ms),
+                                context.clone(),
+                            );
+                        }
+                    }
+                }
                 continue; // Skip if batch fetch failed for this position
             }
             
             if let Some(curve) = &bonding_curve_data[idx] {
+                // ✅ VALIDATION: Verify bonding curve account matches mint
+                // This prevents using wrong bonding curve account due to index mismatch
+                let mint_pubkey = match Pubkey::from_str(mint) {
+                    Ok(pk) => pk,
+                    Err(_) => {
+                        eprintln!("⚠️  PnL MONITOR: Invalid mint address for {} - skipping", mint_short);
+                        continue;
+                    }
+                };
+                
+                let (expected_bonding_curve, _) = crate::pda_derivation::derive_bonding_curve_pda(&mint_pubkey);
+                let actual_bonding_curve = match Pubkey::from_str(bonding_curve_str) {
+                    Ok(pk) => pk,
+                    Err(_) => {
+                        eprintln!("⚠️  PnL MONITOR: Invalid bonding curve address for {} - skipping", mint_short);
+                        continue;
+                    }
+                };
+                
+                if expected_bonding_curve != actual_bonding_curve {
+                    let error_msg = format!(
+                        "Bonding curve mismatch: expected {} but got {} - possible index mismatch in batch fetch",
+                        expected_bonding_curve, actual_bonding_curve
+                    );
+                    eprintln!("🚨 CRITICAL: {} for {}", error_msg, mint_short);
+                    
+                    // Log critical error
+                    if let Some(ref pos_info) = position_info {
+                        if let Ok(logger_guard) = tracking_logger.lock() {
+                            if let Some(ref logger) = *logger_guard {
+                                let _ = logger.log_critical_tracking_failure(
+                                    mint,
+                                    pos_info.clone(),
+                                    crate::tracking_logger::TrackingError {
+                                        error_type: "bonding_curve_mismatch".to_string(),
+                                        error_message: error_msg.clone(),
+                                        error_code: None,
+                                    },
+                                    1,
+                                    context.clone(),
+                                );
+                            }
+                        }
+                    }
+                    
+                    // Skip this position - wrong bonding curve account
+                    continue;
+                }
+                
                 let current_price = curve.get_token_price_sol();
                 let current_mc_sol = curve.calculate_mc_sol();
                 use crate::utils::sol_to_usd;
                 let _current_mc = sol_to_usd(current_mc_sol);
                 
+                // ✅ VALIDATION: Check if price is suspicious before using it
+                let _price_validation: Option<()> = if let Some(ref pos_info) = position_info {
+                    if let Some(entry_price) = pos_info.entry_price_sol {
+                        if entry_price > 0.0 {
+                            let price_ratio = current_price / entry_price;
+                            // Flag as suspicious if price changed >10x or <0.1x unexpectedly
+                            // This could indicate wrong bonding curve account or data corruption
+                            let is_suspicious = price_ratio > 10.0 || price_ratio < 0.1;
+                            
+                            if is_suspicious {
+                                let reason = format!(
+                                    "Price ratio {:.2}x is suspicious (entry: {:.8e}, current: {:.8e}) - possible wrong bonding curve account or data corruption",
+                                    price_ratio, entry_price, current_price
+                                );
+                                
+                                // Log price validation warning
+                                if let Ok(logger_guard) = tracking_logger.lock() {
+                                    if let Some(ref logger) = *logger_guard {
+                                        let _ = logger.log_price_validation(
+                                            mint,
+                                            pos_info.clone(),
+                                            entry_price,
+                                            current_price,
+                                            true,
+                                            Some(reason.clone()),
+                                            context.clone(),
+                                        );
+                                    }
+                                }
+                                
+                                eprintln!("🚨 SUSPICIOUS PRICE for {}: {} - SKIPPING PnL update to prevent false stop loss", 
+                                         mint_short, reason);
+                                
+                                // Skip PnL update if price is suspicious - don't trigger false stop loss
+                                continue;
+                            }
+                        }
+                    }
+                    None
+                } else {
+                    None
+                };
                 
                 // Variables to capture position data for history recording
                 let mut pnl_percent_for_history: Option<f64> = None;
@@ -6017,10 +6189,52 @@ async fn monitor_pnl_ultra_fast(
                 // ✅ OPTIMIZED: Use try_write to avoid blocking UI thread
                 if let Ok(mut tracker_guard) = tracker.try_write() {
                     if let Some(tracker) = tracker_guard.as_mut() {
-                        match tracker.update_position_pnl_fast(mint, current_price) {
+                        let pnl_start = std::time::Instant::now();
+                        let pnl_result = tracker.update_position_pnl_fast(mint, current_price);
+                        let pnl_duration_ms = pnl_start.elapsed().as_millis() as u64;
+                        
+                        // Determine method used
+                        let method = if let Some(ref pos_info) = position_info {
+                            if pos_info.token_amount.is_some() {
+                                "precise"
+                            } else {
+                                "fallback"
+                            }
+                        } else {
+                            "unknown"
+                        };
+                        
+                        // Log PnL update
+                        let pnl_result_for_logging = pnl_result.as_ref().map(|_| {
+                            // Get updated PnL
+                            if let Some(updated_pos) = tracker.get_active_positions().iter().find(|p| p.mint == *mint) {
+                                (updated_pos.pnl_sol, updated_pos.pnl_percent)
+                            } else {
+                                (None, None)
+                            }
+                        });
+                        
+                        if let Some(ref pos_info) = position_info {
+                            if let Ok(logger_guard) = tracking_logger.lock() {
+                                if let Some(ref logger) = *logger_guard {
+                                    let result = pnl_result_for_logging.map_err(|e| anyhow::anyhow!("{}", e));
+                                    
+                                    let _ = logger.log_pnl_update(
+                                        mint,
+                                        pos_info.clone(),
+                                        current_price,
+                                        result,
+                                        method,
+                                        Some(pnl_duration_ms),
+                                        context.clone(),
+                                    );
+                                }
+                            }
+                        }
+                        
+                        match pnl_result {
                             Ok(_) => {
-                                // ✅ FIX: Don't log every update - too verbose (was logging 50x/sec)
-                                // Only log errors to reduce console spam
+                                // Success - tracking is working
                             },
                             Err(e) => {
                                 eprintln!("❌ PnL MONITOR: Failed to update PnL for {}: {}", mint_short, e);
@@ -6076,7 +6290,24 @@ async fn monitor_pnl_ultra_fast(
                 // If lock is held elsewhere (e.g., by GUI or another thread), skip this update
                 // This is fine, we'll catch it on the next iteration (every 20ms)
             } else {
-                eprintln!("⚠️  PnL MONITOR: Bonding curve data is None for {} (idx {})", mint_short, idx);
+                let error_msg = "Bonding curve data is None";
+                eprintln!("⚠️  PnL MONITOR: {} for {} (idx {})", error_msg, mint_short, idx);
+                
+                // Log bonding curve fetch failure
+                if let Some(ref pos_info) = position_info {
+                    if let Ok(logger_guard) = tracking_logger.lock() {
+                        if let Some(ref logger) = *logger_guard {
+                            let _ = logger.log_bonding_curve_fetch(
+                                mint,
+                                pos_info.clone(),
+                                bonding_curve_str,
+                                Err(anyhow::anyhow!(error_msg)),
+                                Some(fetch_duration_ms),
+                                context.clone(),
+                            );
+                        }
+                    }
+                }
             }
         }
     }

@@ -89,6 +89,18 @@ pub struct TokenBuy {
     pub sell_reason: Option<String>,           // Reason why position was sold (e.g., "stop_loss", "take_profit", "manual_sell", "strategy_xxx")
     #[serde(default)]
     pub sell_timestamp: Option<DateTime<Utc>>, // When the position was sold
+    
+    // 🆕 NEW: Tracking error tracking
+    #[serde(default)]
+    pub tracking_error_count: u32,             // Number of tracking errors encountered
+    #[serde(default)]
+    pub last_tracking_error: Option<DateTime<Utc>>, // Timestamp of last tracking error
+    #[serde(default)]
+    pub last_successful_tracking: Option<DateTime<Utc>>, // Timestamp of last successful tracking update
+    #[serde(default)]
+    pub suspicious_price_detected: bool,       // Flag if suspicious price was detected (price ratio >10x or <0.1x)
+    #[serde(default)]
+    pub bonding_curve_mismatch_detected: bool, // Flag if bonding curve mismatch was detected
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

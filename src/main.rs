@@ -25,6 +25,7 @@ pub mod pda_derivation;
 pub mod rate_limiter;
 pub mod socials;
 pub mod token_logger;
+pub mod tracking_logger;
 pub mod utils;
 pub mod validation;
 pub mod wallet;
