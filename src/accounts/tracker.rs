@@ -83,6 +83,12 @@ pub struct TokenBuy {
     pub sell_failure_reason: Option<String>,   // Reason why sell failed (e.g., "slippage_too_high", "bonding_curve_not_found")
     #[serde(default)]
     pub sell_failure_timestamp: Option<DateTime<Utc>>, // When the sell failure occurred
+    
+    // 🆕 NEW: Sell reason tracking
+    #[serde(default)]
+    pub sell_reason: Option<String>,           // Reason why position was sold (e.g., "stop_loss", "take_profit", "manual_sell", "strategy_xxx")
+    #[serde(default)]
+    pub sell_timestamp: Option<DateTime<Utc>>, // When the position was sold
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -679,6 +685,8 @@ impl TokenTracker {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             buy.sold = true;
             buy.sell_signature = Some("AUTO_CLEANUP".to_string());
+            buy.sell_reason = Some("auto_cleanup".to_string());
+            buy.sell_timestamp = Some(Utc::now());
             self.save_json()?;
             Ok(())
         } else {
@@ -687,10 +695,23 @@ impl TokenTracker {
     }
 
     /// Mark a position as sold
-    pub fn mark_as_sold(&mut self, mint: &str, sell_signature: String) -> Result<()> {
+    pub fn mark_as_sold(&mut self, mint: &str, sell_signature: String, sell_reason: Option<String>) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             buy.sold = true;
             buy.sell_signature = Some(sell_signature);
+            buy.sell_reason = sell_reason.clone();
+            buy.sell_timestamp = Some(Utc::now());
+            
+            // If sell_reason starts with "strategy_", extract rule ID and add to executed_sell_rules
+            if let Some(ref reason) = sell_reason {
+                if reason.starts_with("strategy_") {
+                    let rule_id = reason.strip_prefix("strategy_").unwrap_or(reason);
+                    if !buy.executed_sell_rules.contains(&rule_id.to_string()) {
+                        buy.executed_sell_rules.push(rule_id.to_string());
+                    }
+                }
+            }
+            
             // Clear sell failure reason when successfully sold
             buy.sell_failure_reason = None;
             buy.sell_failure_timestamp = None;
@@ -1138,6 +1159,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 
@@ -1216,6 +1239,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1297,6 +1324,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         tracker.record_buy(buy).unwrap();
@@ -1367,6 +1398,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1444,6 +1479,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         assert!(tracker.append_to_csv(&buy).is_ok());
@@ -1538,6 +1577,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 
@@ -1585,6 +1626,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
         
@@ -1644,6 +1687,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1700,6 +1747,10 @@ mod tests {
             mc_at_detection_usd: None,
             mc_at_entry_usd: None,
             current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
 
         assert!(tracker.record_buy(buy).is_ok());
@@ -1823,6 +1874,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
         
@@ -1897,6 +1950,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 
@@ -1976,6 +2031,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 
@@ -2049,6 +2106,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 
@@ -2133,6 +2192,8 @@ mod tests {
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
             socials_source: None,
         };
 

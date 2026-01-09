@@ -2550,6 +2550,8 @@ async fn process_and_buy(
                             current_value_usd: None,
                             sell_failure_reason: None,
                             sell_failure_timestamp: None,
+                            sell_reason: None,
+                            sell_timestamp: None,
         };
                         
                         let _ = tracker.record_buy(buy.clone());
@@ -3063,6 +3065,8 @@ async fn process_and_buy(
                         current_value_usd: None,
                         sell_failure_reason: None,
                         sell_failure_timestamp: None,
+                        sell_reason: None,
+                        sell_timestamp: None,
                     };
                     
                     if let Err(e) = tracker.record_buy(buy.clone()) {
@@ -4156,7 +4160,8 @@ async fn monitor_positions(
                             };
                             
                             // Execute sell with rule's sell_percent
-                            if let Err(e) = execute_sell_with_percent(
+                            // execute_sell_with_percent will mark as sold if successful, so we don't need fallback
+                            let sell_result = execute_sell_with_percent(
                                 &config_clone,
                                 &wallet_clone,
                                 rpc_task.as_ref(),
@@ -4166,21 +4171,26 @@ async fn monitor_positions(
                                 rule.sell_percent,
                                 &event_tx_clone,
                                 Some(sell_details),
-                            ).await {
-                                eprintln!("⚠️  Strategy sell failed for {} (rule {}): {} (reason already recorded in tracker)", 
-                                         &position_clone.mint[..8], rule.id, e);
-                            }
+                            ).await;
                             
-                            // Mark rule as executed in tracker
-                            if let Ok(mut tracker_guard) = tracker_clone.write() {
-                                if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                    if rule.sell_percent >= 100.0 {
-                                        // Full sell
-                                        let _ = tracker_ref.mark_as_sold(&position_clone.mint, "strategy_sell".to_string());
-                                    } else {
-                                        // Partial sell
-                                        let _ = tracker_ref.mark_partial_sell(&position_clone.mint, &rule.id, rule.sell_percent);
+                            match sell_result {
+                                Ok(_signature) => {
+                                    // Sell successful - execute_sell_with_percent already marked as sold with real signature
+                                    // Just mark rule as executed for tracking
+                                    if rule.sell_percent < 100.0 {
+                                        // Partial sell - mark rule as executed
+                                        if let Ok(mut tracker_guard) = tracker_clone.write() {
+                                            if let Some(tracker_ref) = tracker_guard.as_mut() {
+                                                let _ = tracker_ref.mark_rule_executed(&position_clone.mint, &rule.id);
+                                            }
+                                        }
                                     }
+                                    // For full sell, mark_as_sold already handles everything
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️  Strategy sell failed for {} (rule {}): {} (reason already recorded in tracker)", 
+                                             &position_clone.mint[..8], rule.id, e);
+                                    // Don't mark as sold if sell failed
                                 }
                             }
                             
@@ -4790,6 +4800,8 @@ pub async fn execute_manual_buy(
             current_value_usd: None,
             sell_failure_reason: None,
             sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
         };
         
         // Try to record buy (non-blocking)
@@ -5307,9 +5319,13 @@ async fn execute_sell(
         let mut mock_sig_bytes = [0u8; 64];
         rng.fill(&mut mock_sig_bytes);
         let mock_signature = format!("MOCK_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        // Get sell reason from details if available, otherwise use reason parameter
+        let sell_reason = details.as_ref()
+            .map(|d| d.reason.clone())
+            .or_else(|| Some(reason.to_string()));
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone());
+                let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
             }
         }
         let _ = event_tx.send(TokenEvent::Sold {
@@ -5426,9 +5442,13 @@ async fn execute_sell(
     
     // Only mark as sold if transaction is confirmed
     if confirmed {
+        // Get sell reason from details if available, otherwise use reason parameter
+        let sell_reason = details.as_ref()
+            .map(|d| d.reason.clone())
+            .or_else(|| Some(reason.to_string()));
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                let _ = tracker.mark_as_sold(&position.mint, signature.clone());
+                let _ = tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason);
             }
         }
     } else {
@@ -5642,10 +5662,14 @@ async fn execute_sell_with_percent(
         let mock_signature = format!("MOCK_PARTIAL_SELL_{}", Signature::from(mock_sig_bytes).to_string());
         
         // Update tracker for partial sell
+        // Get sell reason from details if available, otherwise use reason parameter
+        let sell_reason = details.as_ref()
+            .map(|d| d.reason.clone())
+            .or_else(|| Some(reason.to_string()));
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
                 if sell_percent >= 100.0 {
-                    let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone());
+                    let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
                 } else {
                     // Partial sell - update balance
                     let new_balance = token_balance - sell_amount;
@@ -5792,12 +5816,16 @@ async fn execute_sell_with_percent(
     }
 
     // Update tracker based on sell type
+    // Get sell reason from details if available, otherwise use reason parameter
+    let sell_reason = details.as_ref()
+        .map(|d| d.reason.clone())
+        .or_else(|| Some(reason.to_string()));
     let update_result = {
         if let Ok(mut tracker_opt) = tracker.try_write() {
             if let Some(tracker) = tracker_opt.as_mut() {
                 if sell_percent >= 100.0 {
                     // Full sell
-                    tracker.mark_as_sold(&position.mint, signature.clone())
+                    tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason)
                 } else {
                     // Partial sell - update balance and track
                     let new_balance = token_balance - sell_amount;
@@ -5819,10 +5847,14 @@ async fn execute_sell_with_percent(
             eprintln!("⚠️  Failed to update tracker: {}, will retry...", e);
             // Retry after delay (lock is dropped, so we can await safely)
             tokio::time::sleep(Duration::from_millis(200)).await;
+            // Get sell reason from details if available, otherwise use reason parameter
+            let sell_reason_retry = details.as_ref()
+                .map(|d| d.reason.clone())
+                .or_else(|| Some(reason.to_string()));
             if let Ok(mut tracker_opt) = tracker.try_write() {
                 if let Some(tracker) = tracker_opt.as_mut() {
                     let retry_result = if sell_percent >= 100.0 {
-                        tracker.mark_as_sold(&position.mint, signature.clone())
+                        tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason_retry)
                     } else {
                         let new_balance = token_balance - sell_amount;
                         tracker.update_token_amount(&position.mint, new_balance)

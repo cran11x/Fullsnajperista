@@ -1044,6 +1044,20 @@ fn render_token_info_window(
                                     }
                                     ui.end_row();
                                 }
+                                
+                                if let Some(sell_reason) = &pos.sell_reason {
+                                    ui.label(egui::RichText::new("Sell Reason:").strong());
+                                    let formatted_reason = format_sell_reason(sell_reason);
+                                    ui.label(egui::RichText::new(formatted_reason)
+                                        .color(egui::Color32::from_rgb(200, 200, 200)));
+                                    ui.end_row();
+                                }
+                                
+                                if let Some(sell_timestamp) = &pos.sell_timestamp {
+                                    ui.label(egui::RichText::new("Sell Timestamp:").strong());
+                                    ui.label(sell_timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+                                    ui.end_row();
+                                }
                             });
                     });
                 });
@@ -1064,5 +1078,20 @@ fn format_address_safe(addr: &str) -> String {
         format!("{}...{}", start, end)
     } else {
         addr.to_string()
+    }
+}
+
+fn format_sell_reason(reason: &str) -> String {
+    match reason {
+        "stop_loss" => "Stop Loss".to_string(),
+        "take_profit" => "Take Profit".to_string(),
+        "manual_sell" => "Manual Sell".to_string(),
+        "auto_cleanup" => "Auto Cleanup".to_string(),
+        reason if reason.starts_with("strategy_") => {
+            // Format strategy reasons nicely
+            let rule_id = reason.strip_prefix("strategy_").unwrap_or(reason);
+            format!("Strategy: {}", rule_id)
+        }
+        _ => reason.to_string(),
     }
 }
