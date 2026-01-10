@@ -50,10 +50,11 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_transaction_status::UiTransactionEncoding;
 use solana_client::rpc_config::RpcTransactionConfig;
 use serde_json;
+use serde::Serialize;
 
 #[derive(Debug, Clone)]
 struct SellDetails {
-    reason: String,                    // Osnovni razlog ("stop_loss", "take_profit", "strategy_xxx", "manual_sell")
+    reason: String,                    // Osnovni razlog ("stop_loss", "take_profit", "manual_sell")
     trigger_type: Option<String>,      // Tip triggera ("MarketCapSol", "StopLoss")
     trigger_value: Option<f64>,        // Vrednost triggera (threshold, drop_percent, itd.)
     current_pnl_percent: Option<f64>,  // Trenutni PnL %
@@ -72,6 +73,122 @@ fn format_addr(addr: &str) -> String {
         format!("{}...{}", &addr[..6], &addr[addr.len()-4..])
     } else {
         addr.to_string()
+    }
+}
+
+/// Log mock buy token to separate file (JSONL format)
+async fn log_mock_buy_token(
+    mint: &str,
+    mock_signature: &str,
+    init_signature: &str,
+    dev_buy_sol: f64,
+    creator: &str,
+    creator_count: u32,
+    socials_opt: &Option<Socials>,
+    socials_source_opt: &Option<String>,
+    mc_entry_sol: Option<f64>,
+    token_price_entry: f64,
+    our_buy_sol: f64,
+    token_amount: u64,
+    bonding_curve: &str,
+) {
+    use std::fs::OpenOptions;
+    use std::io::{BufWriter, Write};
+    use chrono::Utc;
+    
+    #[derive(Serialize)]
+    struct MockBuyEntry {
+        timestamp: String,
+        mint: String,
+        mock_signature: String,
+        init_signature: String,
+        dev_buy_sol: f64,
+        creator: String,
+        creator_token_count: Option<u32>,
+        our_buy_sol: f64,
+        token_amount: u64,
+        mc_entry_sol: Option<f64>,
+        token_price_entry: f64,
+        bonding_curve: String,
+        socials: Option<MockBuySocials>,
+        socials_source: Option<String>,
+    }
+    
+    #[derive(Serialize)]
+    struct MockBuySocials {
+        twitter: Option<String>,
+        telegram: Option<String>,
+        website: Option<String>,
+        discord: Option<String>,
+        count: usize,
+    }
+    
+    let socials = if let Some(s) = socials_opt {
+        Some(MockBuySocials {
+            twitter: s.twitter.clone(),
+            telegram: s.telegram.clone(),
+            website: s.website.clone(),
+            discord: s.discord.clone(),
+            count: {
+                let mut count = 0;
+                if s.twitter.is_some() { count += 1; }
+                if s.telegram.is_some() { count += 1; }
+                if s.website.is_some() { count += 1; }
+                if s.discord.is_some() { count += 1; }
+                count
+            },
+        })
+    } else {
+        None
+    };
+    
+    let entry = MockBuyEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        mint: mint.to_string(),
+        mock_signature: mock_signature.to_string(),
+        init_signature: init_signature.to_string(),
+        dev_buy_sol,
+        creator: creator.to_string(),
+        creator_token_count: Some(creator_count), // Convert u32 to Option<u32>
+        our_buy_sol,
+        token_amount,
+        mc_entry_sol,
+        token_price_entry,
+        bonding_curve: bonding_curve.to_string(),
+        socials,
+        socials_source: socials_source_opt.clone(),
+    };
+    
+    // Create filename with timestamp (one file per day)
+    let date_str = Utc::now().format("%Y%m%d");
+    let filename = format!("mock_buys_{}.jsonl", date_str);
+    
+    // Try to write to file (non-blocking, ignore errors)
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&filename)
+    {
+        Ok(file) => {
+            let mut writer = BufWriter::new(file);
+            match serde_json::to_string(&entry) {
+                Ok(json_str) => {
+                    if let Err(e) = writeln!(writer, "{}", json_str) {
+                        eprintln!("[DEBUG] ⚠️  Failed to write mock buy entry: {}", e);
+                    } else {
+                        let _ = writer.flush();
+                        let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
+                        eprintln!("✅ MOCK BUY logged: {} -> {}", mint_short, filename);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[DEBUG] ⚠️  Failed to serialize mock buy entry: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[DEBUG] ⚠️  Failed to open mock buy log file {}: {}", filename, e);
+        }
     }
 }
 
@@ -552,6 +669,7 @@ async fn listen_websocket_once(
     let mut stop_buying = false; // Flag for One Shot Mode to stop buying but keep monitoring
 
     loop {
+        eprintln!("[DEBUG] 🔄 WebSocket loop iteration - waiting for message...");
         // Periodic health check - verify we're still receiving messages
         if last_health_check.elapsed() > Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS) {
             let mut monitor = health_monitor.lock().unwrap();
@@ -625,6 +743,11 @@ async fn listen_websocket_once(
                                     (*cfg).clone()
                                 };
                                 
+                                // Debug: Check mock_sell config
+                                eprintln!("[DEBUG] 🔍 Manual sell config check:");
+                                eprintln!("[DEBUG]    - mock_sell: {}", config_clone.mock_sell);
+                                eprintln!("[DEBUG]    - enable_auto_sell: {}", config_clone.enable_auto_sell);
+                                
                                 let rpc_client = config_clone.create_rpc_client();
                                 
                                 // Execute sell in background task to not block WebSocket loop
@@ -634,6 +757,7 @@ async fn listen_websocket_once(
                                 eprintln!("   🚀 Spawning sell task for {}", position.mint);
                                 tokio::spawn(async move {
                                     eprintln!("   🔄 Sell task started for {}", position.mint);
+                                    eprintln!("[DEBUG] 🧪 Manual sell will use mock_sell={}", config_clone.mock_sell);
                                     
                                     // Create basic sell details for manual sell
                                     let sell_details = SellDetails {
@@ -654,6 +778,7 @@ async fn listen_websocket_once(
                                         rule_id: None,
                                     };
                                     
+                                    eprintln!("[DEBUG] 🚀 Calling execute_sell with mock_sell={}...", config_clone.mock_sell);
                                     match execute_sell(
                                         &config_clone,
                                         &wallet_clone,
@@ -667,6 +792,7 @@ async fn listen_websocket_once(
                                         Ok(sig) => {
                                             eprintln!("   ✅ Manual sell executed successfully!");
                                             eprintln!("      - Signature: {}", sig);
+                                            eprintln!("[DEBUG] ✅ Manual sell completed with signature: {}", sig);
                                             let _ = event_tx_clone.send(TokenEvent::Info {
                                                 message: format!("✅ Manual sell executed: {}", sig),
                                                 timestamp: Utc::now(),
@@ -794,9 +920,25 @@ async fn listen_websocket_once(
             }
             // Check for WebSocket messages
             msg_result = read.next() => {
+                eprintln!("[DEBUG] 📨 WebSocket message received or stream check (read.next() called)");
                 match msg_result {
                     Some(msg) => {
-                        let msg = msg?;
+                        eprintln!("[DEBUG] ✅ Got WebSocket message from stream, parsing...");
+                        let msg = match msg {
+                            Ok(m) => {
+                                eprintln!("[DEBUG] ✅ Message parsed successfully, type: {:?}", std::mem::discriminant(&m));
+                                m
+                            },
+                            Err(e) => {
+                                eprintln!("[DEBUG] ❌ WebSocket message error: {}", e);
+                                eprintln!("[DEBUG] ❌ WebSocket stream error details: {:?}", e);
+                                let _ = event_tx.send(TokenEvent::Error {
+                                    message: format!("WebSocket message error: {}", e),
+                                    timestamp: Utc::now(),
+                                });
+                                return Err(anyhow!("WebSocket message error: {}", e));
+                            }
+                        };
         // Log every 100 messages to show activity
         message_count += 1;
         
@@ -1082,6 +1224,8 @@ async fn listen_websocket_once(
             let dev_buy_sol = accounts.dev_buy_sol as f64 / 1e9;
             let creator = accounts.creator.to_string();
             
+            eprintln!("[DEBUG] 🚀 Starting process_and_buy for token {}...", mint.clone());
+            let process_start = std::time::Instant::now();
             match process_and_buy(
                 &config_for_buy,
                 wallet,
@@ -1099,7 +1243,11 @@ async fn listen_websocket_once(
                 Some(subscription_handle.clone()),
             ).await {
                 Ok(sig) => {
+                    let process_duration = process_start.elapsed();
+                    eprintln!("[DEBUG] ✅ process_and_buy returned Ok (took {:.2}ms)", process_duration.as_millis());
+                    eprintln!("[DEBUG] 📦 Result: {:?}", if sig.is_some() { "Some(signature, ...)" } else { "None" });
                     if let Some((signature, socials_opt, _socials_source)) = sig {
+                        eprintln!("[DEBUG] ✅ Buy successful with signature: {}", signature);
                         // Get MC if available from tracker - use try_read to avoid blocking
                         let mc = {
                             match tracker.try_read() {
@@ -1162,6 +1310,9 @@ async fn listen_websocket_once(
                             // Instead of breaking, we set the flag to stop buying new tokens
                             // This keeps the connection open for manual sells and monitoring
                             stop_buying = true;
+                        } else {
+                            // Log that we're continuing to listen for new tokens
+                            eprintln!("✅ Buy successful - continuing to listen for new tokens...");
                         }
                         
                         // Continue loop after successful buy
@@ -1170,6 +1321,7 @@ async fn listen_websocket_once(
                     }
                 }
                 Err(e) => {
+                    eprintln!("[DEBUG] ❌ process_and_buy returned Err");
                     eprintln!("❌ Processing error: {}", e);
                     let reason = if e.to_string().contains("SKIP") {
                         e.to_string()
@@ -1202,27 +1354,41 @@ async fn listen_websocket_once(
                 }
             }
             // Continue loop to process next WebSocket message
+            eprintln!("[DEBUG] 🔄 Finished processing message, continuing loop...");
+            eprintln!("[DEBUG] 🔄 Loop will now wait for next WebSocket message...");
         } else if let WsMessage::Ping(data) = msg {
             // Respond to ping with pong
+            eprintln!("[DEBUG] 🏓 Received Ping, sending Pong...");
             if let Err(e) = write.send(WsMessage::Pong(data)).await {
+                eprintln!("[DEBUG] ❌ Failed to send Pong: {}", e);
                 let _ = event_tx.send(TokenEvent::Error {
                     message: format!("Failed to send pong: {}", e),
                     timestamp: Utc::now(),
                 });
                 return Err(anyhow!("Failed to send pong: {}", e));
             }
+            eprintln!("[DEBUG] ✅ Pong sent successfully");
         } else if let WsMessage::Close(_) = msg {
             // Connection closed by server
+            eprintln!("[DEBUG] ❌ Received Close message from server");
             let _ = event_tx.send(TokenEvent::Info {
                 message: "WebSocket connection closed by server".to_string(),
                 timestamp: Utc::now(),
             });
             return Ok(false); // Normal exit
+        } else {
+            eprintln!("[DEBUG] ⚠️  Received other message type: {:?}", msg);
         }
         // Ignore other message types (Pong, Binary, etc.)
                     }
                     None => {
                         // WebSocket stream ended
+                        eprintln!("[DEBUG] ❌ WebSocket stream ended (read.next() returned None)");
+                        eprintln!("[DEBUG] ❌ This means the WebSocket connection was closed!");
+                        let _ = event_tx.send(TokenEvent::Error {
+                            message: "WebSocket stream ended unexpectedly".to_string(),
+                            timestamp: Utc::now(),
+                        });
                         return Ok(false); // Normal exit
                     }
                 }
@@ -2485,11 +2651,14 @@ async fn process_and_buy(
         let mock_signature = format!("MOCK_{}", mock_sig.to_string());
         
         // Record buy in tracker (same as real buy, but with MOCK signature)
-        eprintln!("📝 Recording mock buy in tracker...");
+        eprintln!("[DEBUG] 📝 Recording mock buy in tracker...");
+        eprintln!("[DEBUG] 🔒 Attempting to acquire tracker write lock...");
         match tracker.write() {
             Ok(mut tracker_opt) => {
+                eprintln!("[DEBUG] ✅ Tracker write lock acquired");
                 match tracker_opt.as_mut() {
                     Some(tracker) => {
+                        eprintln!("[DEBUG] ✅ Tracker exists, calling record_buy...");
                         let buy = TokenBuy {
                             token_number,
                             mint: mint.to_string(),
@@ -2565,11 +2734,24 @@ async fn process_and_buy(
                             bonding_curve_mismatch_detected: false,
         };
                         
-                        let _ = tracker.record_buy(buy.clone());
+                        eprintln!("[DEBUG] 🔄 Calling tracker.record_buy()...");
+                        match tracker.record_buy(buy.clone()) {
+                            Ok(_) => {
+                                eprintln!("[DEBUG] ✅ tracker.record_buy() completed successfully");
+                            }
+                            Err(e) => {
+                                eprintln!("[DEBUG] ⚠️  tracker.record_buy() failed: {}", e);
+                            }
+                        }
+                        eprintln!("[DEBUG] 🔓 Releasing tracker write lock...");
+                        drop(tracker_opt);
+                        eprintln!("[DEBUG] ✅ Tracker write lock released");
                         
                         // 📊 ULTRA MC TRACKING: Register token in history tracker for mock buy too
                         // ✅ FIX: Use try_write to avoid blocking/deadlock
+                        eprintln!("[DEBUG] 📊 Starting history tracker registration...");
                         if let Some(ref history) = history_tracker {
+                            eprintln!("[DEBUG] 📊 History tracker exists, attempting to register token...");
                             let mint_str = mint.to_string();
                             let bonding_curve_str = accounts.bonding_curve.to_string();
                             let entry_mc = mc_entry_sol.unwrap_or(0.0);
@@ -2578,7 +2760,9 @@ async fn process_and_buy(
                             let token_amount_opt = if token_amount > 0 { Some(token_amount) } else { None };
                             
                             // Try to get write lock (non-blocking)
+                            eprintln!("[DEBUG] 📊 Attempting to acquire history tracker write lock (non-blocking)...");
                             if let Ok(mut history_guard) = history.try_write() {
+                                eprintln!("[DEBUG] 📊 History tracker write lock acquired");
                                 history_guard.register_token(
                                     &mint_str,
                                     &bonding_curve_str,
@@ -2589,10 +2773,15 @@ async fn process_and_buy(
                                 );
                                 // Release lock before async call
                                 drop(history_guard);
+                                eprintln!("[DEBUG] 📊 History tracker write lock released");
+                            } else {
+                                eprintln!("[DEBUG] ⚠️  Could not acquire history tracker write lock (non-blocking), skipping...");
                             }
                             
                             // 📊 Record initial MC snapshot for mock buy (fetch outside lock)
+                            eprintln!("[DEBUG] 📊 Fetching bonding curve MC for history tracker...");
                             if let Ok((curve, _)) = fetch_bonding_curve_mc(rpc, &accounts.bonding_curve).await {
+                                eprintln!("[DEBUG] 📊 Bonding curve MC fetched successfully");
                                 if let Ok(mut history_guard) = history.try_write() {
                                     history_guard.record_from_bonding_curve(
                                         &mint_str,
@@ -2602,28 +2791,78 @@ async fn process_and_buy(
                                     let mint_short = if mint_str.len() > 8 { &mint_str[..8] } else { &mint_str };
                                     eprintln!("📊 HISTORY: Registered mock buy token {} in history tracker", mint_short);
                                 }
+                            } else {
+                                eprintln!("[DEBUG] ⚠️  Failed to fetch bonding curve MC for history tracker");
                             }
+                            eprintln!("[DEBUG] 📊 History tracker registration completed");
+                        } else {
+                            eprintln!("[DEBUG] ⚠️  History tracker is None, skipping registration");
                         }
                     }
-                    None => {}
+                    None => {
+                        eprintln!("[DEBUG] ⚠️  Tracker is None, cannot record buy");
+                    }
                 }
             }
-            Err(_e) => {}
+            Err(e) => {
+                eprintln!("[DEBUG] ❌ Failed to acquire tracker write lock: {}", e);
+                eprintln!("[DEBUG] ⚠️  Mock buy will continue without recording in tracker");
+            }
         }
         
+        eprintln!("[DEBUG] 📊 Finished tracker operations, moving to metrics...");
         // Record as successful submission (mock)
+        eprintln!("[DEBUG] 📊 Acquiring metrics write lock...");
         let mut m = metrics.write().unwrap();
+        eprintln!("[DEBUG] 📊 Metrics write lock acquired");
         m.record_submission(SubmissionMethod::Helius, true, 0);
+        eprintln!("[DEBUG] 📊 Metrics recorded, releasing lock...");
+        drop(m);
+        eprintln!("[DEBUG] 📊 Metrics lock released");
         
         // Send mock buy event
-        let _ = event_tx.send(TokenEvent::Bought {
+        eprintln!("[DEBUG] 📨 Sending mock buy event to channel...");
+        match event_tx.send(TokenEvent::Bought {
             mint: accounts.mint.to_string(),
             signature: mock_signature.clone(),
             mc: mc_entry_sol,
             timestamp: Utc::now(),
-        });
+        }) {
+            Ok(_) => {
+                eprintln!("[DEBUG] ✅ Mock buy event sent successfully");
+            }
+            Err(e) => {
+                eprintln!("[DEBUG] ⚠️  Failed to send mock buy event: {}", e);
+            }
+        }
         
-        return Ok(Some((mock_signature, socials_opt.clone(), socials_source_opt.clone())));
+        eprintln!("[DEBUG] ✅ Mock buy completed successfully - signature: {}", mock_signature);
+        
+        // 📝 Log mock buy token to separate file
+        eprintln!("[DEBUG] 📝 Logging mock buy token to file...");
+        log_mock_buy_token(
+            &mint.to_string(),
+            &mock_signature,
+            &init_signature,
+            dev_buy_sol,
+            &accounts.creator.to_string(),
+            creator_count, // u32
+            &socials_opt,
+            &socials_source_opt,
+            mc_entry_sol,
+            token_price_entry.unwrap_or(token_price_sol),
+            config.buy_amount_sol,
+            token_amount,
+            &accounts.bonding_curve.to_string(),
+        ).await;
+        
+        eprintln!("[DEBUG] 📡 About to return from process_and_buy - returning to WebSocket loop...");
+        eprintln!("[DEBUG] 📡 Bot will continue listening for new tokens...");
+        
+        eprintln!("[DEBUG] 🔄 Preparing return value...");
+        let result = Ok(Some((mock_signature, socials_opt.clone(), socials_source_opt.clone())));
+        eprintln!("[DEBUG] 🔙 Returning from process_and_buy with Ok(Some(...))");
+        return result;
     }
     
     // Only validate if NOT in mock buy mode
@@ -4059,28 +4298,6 @@ async fn monitor_positions(
                         }
                     };
                     
-                    // 🎯 DYNAMIC SELL STRATEGY: Use strategy-based evaluation
-                    // Check if we have a sell strategy config
-                    let sell_strategy = config_clone.sell_strategy_config.as_ref();
-                    
-                    // Calculate time since buy
-                    let time_since_buy = {
-                        let now = Utc::now();
-                        let buy_time = position_clone.timestamp;
-                        now.signed_duration_since(buy_time).num_seconds() as u64
-                    };
-                    
-                    // Get executed rules for this position
-                    let executed_rule_ids = if let Ok(tracker_guard) = tracker_clone.read() {
-                        if let Some(tracker_ref) = tracker_guard.as_ref() {
-                            tracker_ref.get_executed_rules(&position_clone.mint)
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
-                    
                     // Calculate current PnL
                     let entry_price = position_clone.token_price_sol.unwrap_or(0.0);
                     let current_pnl_percent = if entry_price > 0.0 {
@@ -4089,7 +4306,14 @@ async fn monitor_positions(
                         position_clone.pnl_percent
                     };
                     
-                    // ✅ FIX: Validate data before checking rules - prevent random sells
+                    // Calculate time since buy
+                    let time_since_buy = {
+                        let now = Utc::now();
+                        let buy_time = position_clone.timestamp;
+                        now.signed_duration_since(buy_time).num_seconds() as u64
+                    };
+                    
+                    // ✅ FIX: Validate data before checking auto-sell conditions - prevent random sells
                     // Check if market cap is valid (must be > 0 and finite)
                     let is_mc_valid = current_mc_sol > 0.0 && current_mc_sol.is_finite() && !current_mc_sol.is_nan();
                     // Check if PnL is valid (must be finite if Some)
@@ -4100,7 +4324,6 @@ async fn monitor_positions(
                     // ✅ FIX: Allow MC-based checks even if PnL is invalid
                     // MC trigger can be checked independently of PnL validity
                     // Only skip ALL checks if ALL critical data is invalid
-                    // This allows MC-based rules to work even when PnL calculation fails
                     if !is_mc_valid && !is_pnl_valid && !is_entry_price_valid {
                         eprintln!("⚠️  AUTO-SELL SKIPPED for {}: Invalid data (MC: {:.2}, PnL: {:?}, Entry: {:.8}) - skipping all checks", 
                                  &position_clone.mint[..8], current_mc_sol, current_pnl_percent, entry_price);
@@ -4109,97 +4332,15 @@ async fn monitor_positions(
                     
                     // Log if some data is invalid but we continue (for debugging)
                     if !is_mc_valid {
-                        eprintln!("⚠️  AUTO-SELL: MC invalid ({:.2}) for {} - MC-based rules will be skipped, but other rules may still trigger", 
+                        eprintln!("⚠️  AUTO-SELL: MC invalid ({:.2}) for {} - MC-based checks will be skipped", 
                                  current_mc_sol, &position_clone.mint[..8]);
                     }
                     if !is_pnl_valid {
-                        eprintln!("⚠️  AUTO-SELL: PnL invalid ({:?}) for {} - PnL-based rules will be skipped, but MC-based rules may still trigger", 
+                        eprintln!("⚠️  AUTO-SELL: PnL invalid ({:?}) for {} - PnL-based checks will be skipped", 
                                  current_pnl_percent, &position_clone.mint[..8]);
                     }
                     
-                    // Check strategy rules if available
-                    if let Some(strategy) = sell_strategy {
-                        // ✅ FIX: Only pass valid data to strategy rules (prevents random sells)
-                        // Pass None if data is invalid, so rules can handle it correctly
-                        let valid_pnl_percent = if is_pnl_valid { current_pnl_percent } else { None };
-                        let valid_mc_sol = if is_mc_valid { Some(current_mc_sol) } else { None };
-                        
-                        if let Some(rule) = strategy.check_rules(
-                            &position_clone,
-                            valid_pnl_percent,
-                            valid_mc_sol,
-                            time_since_buy,
-                            &executed_rule_ids,
-                        ) {
-                            // Extract trigger type and value for detailed logging
-                            let (trigger_type, trigger_value) = match &rule.trigger {
-                                crate::sell_strategy::SellTrigger::MarketCapSol(threshold) => {
-                                    (Some("MarketCapSol".to_string()), Some(*threshold))
-                                }
-                                crate::sell_strategy::SellTrigger::StopLoss(threshold) => {
-                                    (Some("StopLoss".to_string()), Some(*threshold))
-                                }
-                            };
-                            
-                            // Create detailed sell information
-                            let sell_details = SellDetails {
-                                reason: format!("strategy_{}", rule.id),
-                                trigger_type,
-                                trigger_value,
-                                current_pnl_percent: valid_pnl_percent,
-                                peak_pnl_percent: position_clone.peak_pnl_percent,
-                                current_mc_sol: valid_mc_sol,
-                                entry_mc_sol: position_clone.mc_at_entry_sol,
-                                entry_price: if is_entry_price_valid { Some(entry_price) } else { None },
-                                current_price: Some(current_price),
-                                sell_percent: rule.sell_percent,
-                                time_since_buy_sec: Some(time_since_buy),
-                                rule_id: Some(rule.id.clone()),
-                            };
-                            
-                            // Execute sell with rule's sell_percent
-                            // execute_sell_with_percent will mark as sold if successful, so we don't need fallback
-                            let sell_result = execute_sell_with_percent(
-                                &config_clone,
-                                &wallet_clone,
-                                rpc_task.as_ref(),
-                                &tracker_clone,
-                                &position_clone,
-                                &format!("strategy_{}", rule.id),
-                                rule.sell_percent,
-                                &event_tx_clone,
-                                Some(sell_details),
-                            ).await;
-                            
-                            match sell_result {
-                                Ok(_signature) => {
-                                    // Sell successful - execute_sell_with_percent already marked as sold with real signature
-                                    // Just mark rule as executed for tracking
-                                    if rule.sell_percent < 100.0 {
-                                        // Partial sell - mark rule as executed
-                                        if let Ok(mut tracker_guard) = tracker_clone.write() {
-                                            if let Some(tracker_ref) = tracker_guard.as_mut() {
-                                                let _ = tracker_ref.mark_rule_executed(&position_clone.mint, &rule.id);
-                                            }
-                                        }
-                                    }
-                                    // For full sell, mark_as_sold already handles everything
-                                }
-                                Err(e) => {
-                                    eprintln!("⚠️  Strategy sell failed for {} (rule {}): {} (reason already recorded in tracker)", 
-                                             &position_clone.mint[..8], rule.id, e);
-                                    // Don't mark as sold if sell failed
-                                }
-                            }
-                            
-                            // Mark rule as executed in strategy config (update in next cycle)
-                            // Note: We track in tracker, strategy config will be updated on next read
-                            
-                            return Some((format!("strategy_{}", rule.id), position_mint));
-                        }
-                    }
-                    
-                    // Fallback to old logic if no strategy config or no rule matched
+                    // Legacy auto-sell logic
                     // 🚀 PRIORITY: Check stop loss using PnL PERCENTAGE (not MC) - FIXED!
                     // Calculate PnL based on token price change
                     // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
@@ -4269,6 +4410,7 @@ async fn monitor_positions(
                         };
                         
                         // Execute sell IMMEDIATELY (no delays, no other checks)
+                        eprintln!("[DEBUG] 🚨 AUTO-SELL: Stop loss triggered, calling execute_sell with mock_sell={}...", config_clone.mock_sell);
                         if let Err(e) = execute_sell(
                             &config_clone,
                             &wallet_clone,
@@ -4309,6 +4451,8 @@ async fn monitor_positions(
                         } else {
                             "dead_coin"
                         };
+                        
+                        eprintln!("[DEBUG] 🎯 AUTO-SELL: {} triggered, calling execute_sell with mock_sell={}...", reason, config_clone.mock_sell);
                         
                         // Calculate PnL for logging
                         let pnl_percent = if entry_price > 0.0 {
@@ -4351,6 +4495,7 @@ async fn monitor_positions(
                         };
                         
                         // Execute sell (non-blocking for take profit/dead coin)
+                        eprintln!("[DEBUG] 🚀 AUTO-SELL: Executing {} sell with mock_sell={}...", reason, config_clone.mock_sell);
                         if let Err(e) = execute_sell(
                             &config_clone,
                             &wallet_clone,
@@ -5314,13 +5459,17 @@ async fn execute_sell(
     let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
 
     // ⚡ ULTRA FAST: Send transaction (mock mode check)
+    eprintln!("[DEBUG] 🔍 Checking mock_sell config in execute_sell: {}", config.mock_sell);
     if config.mock_sell {
+        eprintln!("[DEBUG] 🧪 MOCK SELL MODE (execute_sell): Skipping real transaction, generating mock signature...");
+        eprintln!("[DEBUG] 🧪 MOCK SELL MODE: Skipping real transaction, generating mock signature...");
         use solana_sdk::signature::Signature;
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let mut mock_sig_bytes = [0u8; 64];
         rng.fill(&mut mock_sig_bytes);
         let mock_signature = format!("MOCK_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        eprintln!("[DEBUG] 🧪 MOCK SELL: Generated mock signature: {}", mock_signature);
         // Get sell reason from details if available, otherwise use reason parameter
         let sell_reason = details.as_ref()
             .map(|d| d.reason.clone())
@@ -5330,14 +5479,25 @@ async fn execute_sell(
                 let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
             }
         }
-        let _ = event_tx.send(TokenEvent::Sold {
+        eprintln!("[DEBUG] 🧪 MOCK SELL: Marking position as sold in tracker...");
+        match event_tx.send(TokenEvent::Sold {
             mint: position.mint.clone(),
             signature: mock_signature.clone(),
             reason: format!("{} (MOCK)", reason),
             pnl: None,
             timestamp: Utc::now(),
-        });
+        }) {
+            Ok(_) => {
+                eprintln!("[DEBUG] 🧪 MOCK SELL: Event sent successfully");
+            }
+            Err(e) => {
+                eprintln!("[DEBUG] ⚠️  MOCK SELL: Failed to send event: {}", e);
+            }
+        }
+        eprintln!("[DEBUG] 🧪 MOCK SELL: Returning mock signature: {}", mock_signature);
         return Ok(mock_signature);
+    } else {
+        eprintln!("[DEBUG] ⚡ REAL SELL MODE: Proceeding with real transaction...");
     }
 
     // ⚡ ULTRA FAST: Send transaction - use fastest method directly
@@ -5655,13 +5815,16 @@ async fn execute_sell_with_percent(
         error
     })?;
 
+    eprintln!("[DEBUG] 🔍 Checking mock_sell config (execute_sell_with_percent): {}", config.mock_sell);
     if config.mock_sell {
+        eprintln!("[DEBUG] 🧪 MOCK SELL MODE (partial): Skipping real transaction, generating mock signature...");
         use solana_sdk::signature::Signature;
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let mut mock_sig_bytes = [0u8; 64];
         rng.fill(&mut mock_sig_bytes);
         let mock_signature = format!("MOCK_PARTIAL_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Generated mock signature: {}", mock_signature);
         
         // Update tracker for partial sell
         // Get sell reason from details if available, otherwise use reason parameter
@@ -5680,14 +5843,25 @@ async fn execute_sell_with_percent(
             }
         }
         
-        let _ = event_tx.send(TokenEvent::Sold {
+        eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Sending event...");
+        match event_tx.send(TokenEvent::Sold {
             mint: position.mint.clone(),
             signature: mock_signature.clone(),
             reason: format!("{} (MOCK, {:.0}%)", reason, sell_percent),
             pnl: None,
             timestamp: Utc::now(),
-        });
+        }) {
+            Ok(_) => {
+                eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Event sent successfully");
+            }
+            Err(e) => {
+                eprintln!("[DEBUG] ⚠️  MOCK SELL (partial): Failed to send event: {}", e);
+            }
+        }
+        eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Returning mock signature: {}", mock_signature);
         return Ok(mock_signature);
+    } else {
+        eprintln!("[DEBUG] ⚡ REAL SELL MODE (partial): Proceeding with real transaction...");
     }
 
     let tx_sig = match config.submission_mode {

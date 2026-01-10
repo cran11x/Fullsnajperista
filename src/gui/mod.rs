@@ -163,14 +163,7 @@ impl GuiApp {
                     } else {
                     }
                 }
-                BotControl::UpdateConfig(mut new_config) => {
-                    // ✅ FIX: Update sell strategy MC trigger to match Settings value
-                    // This ensures that when user changes take_profit_mc_sol in Settings,
-                    // the sell strategy is automatically updated
-                    if let Some(ref mut strategy) = new_config.sell_strategy_config.as_mut() {
-                        strategy.update_mc_trigger(new_config.take_profit_mc_sol);
-                    }
-                    
+                BotControl::UpdateConfig(new_config) => {
                     // Forward to bot thread if it's running
                     if let Some(ref tx) = self.control_tx_bot {
                         let _ = tx.send(BotControl::UpdateConfig(new_config.clone()));

@@ -1,0 +1,38 @@
+{
+  "session_start": "2026-01-09T20:38:32.004921Z",
+  "last_update": "2026-01-09T20:38:32.004921Z",
+  "total_snapshots": 0,
+  "tokens": {
+    "test_mint_sold": {
+      "mint": "test_mint_sold",
+      "bonding_curve": "test_bc",
+      "entry_mc_sol": 36.5,
+      "entry_price_sol": 0.00005,
+      "entry_timestamp": "2026-01-09T20:38:32.005047Z",
+      "our_buy_sol": 0.1,
+      "token_amount": null,
+      "snapshots": [],
+      "peak_mc_sol": 36.5,
+      "peak_pnl_percent": 0.0,
+      "lowest_mc_sol": 36.5,
+      "is_active": false,
+      "sell_timestamp": "2026-01-09T20:38:32.005293Z",
+      "final_pnl_percent": 50.0
+    }
+  }
+}_curve": "bc1",
+      "entry_mc_sol": 36.5,
+      "entry_price_sol": 0.00005,
+      "entry_timestamp": "2026-01-09T20:38:32.005073Z",
+      "our_buy_sol": 0.1,
+      "token_amount": null,
+      "snapshots": [],
+      "peak_mc_sol": 36.5,
+      "peak_pnl_percent": 0.0,
+      "lowest_mc_sol": 36.5,
+      "is_active": false,
+      "sell_timestamp": "2026-01-09T20:38:32.005248Z",
+      "final_pnl_percent": 10.0
+    }
+  }
+}

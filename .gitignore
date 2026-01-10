@@ -21,6 +21,7 @@ Thumbs.db
 *.log
 *.csv
 *.tmp
+mock_buys_*.jsonl
 
 # Environment files
 .env

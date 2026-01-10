@@ -8,7 +8,6 @@ use std::str::FromStr;
 use std::collections::HashSet;
 
 use crate::constants::PUMP_PROGRAM_ID;
-use crate::sell_strategy::SellStrategyConfig;
 
 /// Bot configuration loaded from environment variables
 #[derive(Debug, Clone)]
@@ -60,7 +59,6 @@ pub struct Config {
     pub max_name_length: usize,
     pub min_ticker_length: usize,
     pub max_ticker_length: usize,
-    pub sell_strategy_config: Option<SellStrategyConfig>,
     // Advanced filters - Basic
     pub enable_has_twitter: bool,
     pub enable_has_telegram: bool,
@@ -188,9 +186,9 @@ impl Config {
             .map_err(|_| anyhow!("Invalid COMPUTE_UNITS"))?;
 
         let one_shot_mode = std::env::var("ONE_SHOT_MODE")
-            .unwrap_or_else(|_| "true".to_string())
+            .unwrap_or_else(|_| "false".to_string())
             .parse::<bool>()
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         let submission_mode_str = std::env::var("SUBMISSION_MODE")
             .unwrap_or_else(|_| "helius".to_string())
@@ -366,42 +364,6 @@ impl Config {
             .unwrap_or_else(|_| "15".to_string())
             .parse::<u64>()
             .map_err(|_| anyhow!("Invalid DEAD_COIN_TIMEOUT_SEC"))?;
-
-        // Load sell strategy from JSON or use default
-        // ✅ FIX: Use take_profit_mc_sol from Settings instead of fixed 175 SOL
-        let sell_strategy_config = if let Ok(json_str) = std::env::var("SELL_STRATEGY_JSON") {
-            match SellStrategyConfig::from_json(&json_str) {
-                Ok(mut config) => {
-                    eprintln!("✅ Loaded sell strategy from SELL_STRATEGY_JSON");
-                    // Update MC trigger with value from Settings
-                    config.update_mc_trigger(take_profit_mc_sol);
-                    Some(config)
-                }
-                Err(e) => {
-                    eprintln!("⚠️  Failed to parse SELL_STRATEGY_JSON: {}, using default", e);
-                    Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
-                }
-            }
-        } else {
-            // Try loading from file
-            if let Ok(json_str) = std::fs::read_to_string("sell_strategy.json") {
-                match SellStrategyConfig::from_json(&json_str) {
-                    Ok(mut config) => {
-                        eprintln!("✅ Loaded sell strategy from sell_strategy.json");
-                        // Update MC trigger with value from Settings
-                        config.update_mc_trigger(take_profit_mc_sol);
-                        Some(config)
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️  Failed to parse sell_strategy.json: {}, using default", e);
-                        Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
-                    }
-                }
-            } else {
-                // Use default strategy with MC trigger from Settings
-                Some(SellStrategyConfig::default_with_mc_trigger(take_profit_mc_sol))
-            }
-        };
 
         let enable_dynamic_priority_fee = std::env::var("ENABLE_DYNAMIC_PRIORITY_FEE")
             .unwrap_or_else(|_| "false".to_string())
@@ -790,7 +752,6 @@ impl Config {
             max_name_length,
             min_ticker_length,
             max_ticker_length,
-            sell_strategy_config,
             // Advanced filters - Basic
             enable_has_twitter,
             enable_has_telegram,
@@ -984,7 +945,7 @@ impl Default for Config {
             priority_fee: 11_000_000,
             enable_dynamic_priority_fee: false,
             compute_units: 200_000,
-            one_shot_mode: true,
+            one_shot_mode: false,
             submission_mode: SubmissionMode::Helius,
             jito_tip: 1_500_000,
             require_socials: false,
@@ -1023,7 +984,6 @@ impl Default for Config {
             max_name_length: 20,
             min_ticker_length: 3,
             max_ticker_length: 7,
-            sell_strategy_config: Some(SellStrategyConfig::default_with_mc_trigger(175.0)), // Default 175 SOL, will be updated from Settings
             // Advanced filters - Basic
             enable_has_twitter: false,
             enable_has_telegram: false,

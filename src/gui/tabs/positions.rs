@@ -1087,11 +1087,6 @@ fn format_sell_reason(reason: &str) -> String {
         "take_profit" => "Take Profit".to_string(),
         "manual_sell" => "Manual Sell".to_string(),
         "auto_cleanup" => "Auto Cleanup".to_string(),
-        reason if reason.starts_with("strategy_") => {
-            // Format strategy reasons nicely
-            let rule_id = reason.strip_prefix("strategy_").unwrap_or(reason);
-            format!("Strategy: {}", rule_id)
-        }
         _ => reason.to_string(),
     }
 }
