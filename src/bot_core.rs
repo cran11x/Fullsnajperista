@@ -76,8 +76,107 @@ fn format_addr(addr: &str) -> String {
     }
 }
 
+/// Log mock sell token to separate file (JSONL format)
+fn log_mock_sell_token(
+    mint: &str,
+    mock_sell_signature: &str,
+    buy_signature: &str,
+    reason: &str,
+    details_opt: Option<&SellDetails>,
+    our_buy_sol: f64,
+    token_amount_opt: Option<u64>,
+    token_balance: u64,
+    mc_entry_sol: Option<f64>,
+    token_price_entry: Option<f64>,
+    current_price_opt: Option<f64>,
+    pnl_sol_opt: Option<f64>,
+    pnl_percent_opt: Option<f64>,
+) {
+    use std::fs::OpenOptions;
+    use std::io::{BufWriter, Write};
+    use chrono::Utc;
+    
+    #[derive(Serialize)]
+    struct MockSellEntry {
+        timestamp: String,
+        mint: String,
+        mock_sell_signature: String,
+        buy_signature: String,
+        reason: String,
+        trigger_type: Option<String>,
+        trigger_value: Option<f64>,
+        our_buy_sol: f64,
+        token_amount: Option<u64>,
+        token_balance_sold: u64,
+        mc_entry_sol: Option<f64>,
+        token_price_entry: Option<f64>,
+        current_price: Option<f64>,
+        pnl_sol: Option<f64>,
+        pnl_percent: Option<f64>,
+        peak_pnl_percent: Option<f64>,
+        time_since_buy_sec: Option<u64>,
+    }
+    
+    let trigger_type = details_opt.and_then(|d| d.trigger_type.clone());
+    let trigger_value = details_opt.and_then(|d| d.trigger_value);
+    let peak_pnl_percent = details_opt.and_then(|d| d.peak_pnl_percent);
+    let time_since_buy_sec = details_opt.and_then(|d| d.time_since_buy_sec);
+    
+    let entry = MockSellEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        mint: mint.to_string(),
+        mock_sell_signature: mock_sell_signature.to_string(),
+        buy_signature: buy_signature.to_string(),
+        reason: reason.to_string(),
+        trigger_type,
+        trigger_value,
+        our_buy_sol,
+        token_amount: token_amount_opt,
+        token_balance_sold: token_balance,
+        mc_entry_sol,
+        token_price_entry,
+        current_price: current_price_opt,
+        pnl_sol: pnl_sol_opt,
+        pnl_percent: pnl_percent_opt,
+        peak_pnl_percent,
+        time_since_buy_sec,
+    };
+    
+    // Create filename with timestamp (one file per day)
+    let date_str = Utc::now().format("%Y%m%d");
+    let filename = format!("mock_sells_{}.jsonl", date_str);
+    
+    // Try to write to file (non-blocking, ignore errors)
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&filename)
+    {
+        Ok(file) => {
+            let mut writer = BufWriter::new(file);
+            match serde_json::to_string(&entry) {
+                Ok(json_str) => {
+                    if let Err(e) = writeln!(writer, "{}", json_str) {
+                        eprintln!("[DEBUG] ⚠️  Failed to write mock sell entry: {}", e);
+                    } else {
+                        let _ = writer.flush();
+                        let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
+                        eprintln!("✅ MOCK SELL logged: {} -> {}", mint_short, filename);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[DEBUG] ⚠️  Failed to serialize mock sell entry: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[DEBUG] ⚠️  Failed to open mock sell log file {}: {}", filename, e);
+        }
+    }
+}
+
 /// Log mock buy token to separate file (JSONL format)
-async fn log_mock_buy_token(
+fn log_mock_buy_token(
     mint: &str,
     mock_signature: &str,
     init_signature: &str,
@@ -2838,23 +2937,34 @@ async fn process_and_buy(
         
         eprintln!("[DEBUG] ✅ Mock buy completed successfully - signature: {}", mock_signature);
         
-        // 📝 Log mock buy token to separate file
+        // 📝 Log mock buy token to separate file (non-blocking, fire and forget)
         eprintln!("[DEBUG] 📝 Logging mock buy token to file...");
-        log_mock_buy_token(
-            &mint.to_string(),
-            &mock_signature,
-            &init_signature,
-            dev_buy_sol,
-            &accounts.creator.to_string(),
-            creator_count, // u32
-            &socials_opt,
-            &socials_source_opt,
-            mc_entry_sol,
-            token_price_entry.unwrap_or(token_price_sol),
-            config.buy_amount_sol,
-            token_amount,
-            &accounts.bonding_curve.to_string(),
-        ).await;
+        let mint_str = mint.to_string();
+        let mock_sig_clone = mock_signature.clone();
+        let init_sig_clone = init_signature.clone();
+        let creator_str = accounts.creator.to_string();
+        let bonding_curve_str = accounts.bonding_curve.to_string();
+        let socials_clone = socials_opt.clone();
+        let socials_source_clone = socials_source_opt.clone();
+        let token_price_entry_val = token_price_entry.unwrap_or(token_price_sol);
+        let buy_amount_sol = config.buy_amount_sol; // Clone before move
+        tokio::task::spawn_blocking(move || {
+            log_mock_buy_token(
+                &mint_str,
+                &mock_sig_clone,
+                &init_sig_clone,
+                dev_buy_sol,
+                &creator_str,
+                creator_count,
+                &socials_clone,
+                &socials_source_clone,
+                mc_entry_sol,
+                token_price_entry_val,
+                buy_amount_sol,
+                token_amount,
+                &bonding_curve_str,
+            );
+        });
         
         eprintln!("[DEBUG] 📡 About to return from process_and_buy - returning to WebSocket loop...");
         eprintln!("[DEBUG] 📡 Bot will continue listening for new tokens...");
@@ -5337,16 +5447,35 @@ async fn execute_sell(
         }
     }
     
+    // ✅ MOCK BUY FIX: For mock buy positions (signature starts with "MOCK_"), 
+    // token balance will be 0, but we still want to allow mock sell
+    let is_mock_buy_position = position.signature.starts_with("MOCK_");
+    
     if token_balance == 0 {
-        eprintln!("   ❌ SELL FAILED: Token balance is 0 for all token accounts");
-        eprintln!("      - Tried tracker ATA: {:?}", user_token_account_from_tracker);
-        eprintln!("      - Tried Token 2022 ATA: {}", user_token_account_2022);
-        eprintln!("      - Tried standard Token Program ATA: {}", get_associated_token_address_with_program_id(
-            &user_wallet, &mint, &Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap()
-        ));
-        let error = anyhow!("Token balance is 0 - tried all token accounts (tracker ATA, Token 2022, standard Token Program)");
-        record_sell_failure_in_tracker(tracker, &position.mint, &error);
-        return Err(error);
+        if is_mock_buy_position && config.mock_sell {
+            // For mock buy + mock sell, use the token amount from tracker as "mock balance"
+            eprintln!("   ⚠️  Token balance is 0 (mock buy position), using tracker token_amount as mock balance");
+            if let Some(mock_balance) = position.token_amount {
+                token_balance = mock_balance;
+                eprintln!("   ✅ Using mock balance from tracker: {} tokens", token_balance);
+            } else {
+                // If no token_amount in tracker, calculate approximate amount based on buy price
+                eprintln!("   ⚠️  No token_amount in tracker, cannot determine mock balance");
+                let error = anyhow!("Mock buy position has no token_amount in tracker - cannot determine mock balance for sell");
+                record_sell_failure_in_tracker(tracker, &position.mint, &error);
+                return Err(error);
+            }
+        } else {
+            eprintln!("   ❌ SELL FAILED: Token balance is 0 for all token accounts");
+            eprintln!("      - Tried tracker ATA: {:?}", user_token_account_from_tracker);
+            eprintln!("      - Tried Token 2022 ATA: {}", user_token_account_2022);
+            eprintln!("      - Tried standard Token Program ATA: {}", get_associated_token_address_with_program_id(
+                &user_wallet, &mint, &Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap()
+            ));
+            let error = anyhow!("Token balance is 0 - tried all token accounts (tracker ATA, Token 2022, standard Token Program)");
+            record_sell_failure_in_tracker(tracker, &position.mint, &error);
+            return Err(error);
+        }
     }
 
     // ⚡ ULTRA FAST: Calculate sell amount
@@ -5480,6 +5609,39 @@ async fn execute_sell(
             }
         }
         eprintln!("[DEBUG] 🧪 MOCK SELL: Marking position as sold in tracker...");
+        
+        // 📝 Log mock sell token to separate file (non-blocking, fire and forget)
+        eprintln!("[DEBUG] 📝 Logging mock sell token to file...");
+        let mint_clone = position.mint.clone();
+        let mock_sig_clone = mock_signature.clone();
+        let buy_sig_clone = position.signature.clone();
+        let reason_clone = reason.to_string();
+        let details_clone = details.clone();
+        let our_buy_sol = position.our_buy_sol;
+        let token_amount_opt = position.token_amount;
+        let mc_entry_sol = position.mc_at_entry_sol;
+        let token_price_entry = position.token_price_sol;
+        let current_price_opt = position.current_price_sol;
+        let pnl_sol_opt = position.pnl_sol;
+        let pnl_percent_opt = position.pnl_percent;
+        tokio::task::spawn_blocking(move || {
+            log_mock_sell_token(
+                &mint_clone,
+                &mock_sig_clone,
+                &buy_sig_clone,
+                &reason_clone,
+                details_clone.as_ref(),
+                our_buy_sol,
+                token_amount_opt,
+                token_balance,
+                mc_entry_sol,
+                token_price_entry,
+                current_price_opt,
+                pnl_sol_opt,
+                pnl_percent_opt,
+            );
+        });
+        
         match event_tx.send(TokenEvent::Sold {
             mint: position.mint.clone(),
             signature: mock_signature.clone(),
@@ -5844,6 +6006,39 @@ async fn execute_sell_with_percent(
         }
         
         eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Sending event...");
+        
+        // 📝 Log mock sell token to separate file (non-blocking, fire and forget)
+        eprintln!("[DEBUG] 📝 Logging mock sell token (partial) to file...");
+        let mint_clone = position.mint.clone();
+        let mock_sig_clone = mock_signature.clone();
+        let buy_sig_clone = position.signature.clone();
+        let reason_clone = reason.to_string();
+        let details_clone = details.clone();
+        let our_buy_sol = position.our_buy_sol;
+        let token_amount_opt = position.token_amount;
+        let mc_entry_sol = position.mc_at_entry_sol;
+        let token_price_entry = position.token_price_sol;
+        let current_price_opt = position.current_price_sol;
+        let pnl_sol_opt = position.pnl_sol;
+        let pnl_percent_opt = position.pnl_percent;
+        tokio::task::spawn_blocking(move || {
+            log_mock_sell_token(
+                &mint_clone,
+                &mock_sig_clone,
+                &buy_sig_clone,
+                &reason_clone,
+                details_clone.as_ref(),
+                our_buy_sol,
+                token_amount_opt,
+                sell_amount, // Amount sold, not total balance
+                mc_entry_sol,
+                token_price_entry,
+                current_price_opt,
+                pnl_sol_opt,
+                pnl_percent_opt,
+            );
+        });
+        
         match event_tx.send(TokenEvent::Sold {
             mint: position.mint.clone(),
             signature: mock_signature.clone(),
