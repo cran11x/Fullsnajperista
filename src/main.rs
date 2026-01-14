@@ -3,7 +3,6 @@
 // #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod accounts;
-// pub mod blockhash_cache;
 pub mod account_subscription;
 pub mod bot_core;
 pub mod buy;
@@ -25,93 +24,13 @@ pub mod rate_limiter;
 pub mod socials;
 pub mod token_logger;
 pub mod tracking_logger;
+pub mod tools;
 pub mod utils;
 pub mod validation;
 pub mod wallet;
 pub mod websocket; // For tests
 
 use anyhow::{anyhow, Result};
-
-/// Test SOL price fetching
-async fn test_sol_price() {
-    println!("🧪 Testing SOL price fetching...\n");
-    
-    // Test 1: Get cached price (before refresh)
-    println!("1️⃣  Testing cached price (before refresh)...");
-    let cached_before = utils::get_cached_sol_price();
-    println!("   Cached price: ${:.2}", cached_before);
-    
-    // Test 2: Refresh SOL price
-    println!("\n2️⃣  Refreshing SOL price...");
-    utils::refresh_sol_price_if_needed().await;
-    
-    // Test 3: Get cached price (after refresh)
-    println!("\n3️⃣  Testing cached price (after refresh)...");
-    let cached_after = utils::get_cached_sol_price();
-    println!("   Cached price: ${:.2}", cached_after);
-    
-    if (cached_after - cached_before).abs() > 0.01 {
-        println!("   ✅ Price was updated!");
-    } else if cached_before == 150.0 {
-        println!("   ✅ Price was updated from default!");
-    } else {
-        println!("   ℹ️  Price unchanged (cache was fresh)");
-    }
-    
-    // Test 4: Test conversion functions
-    println!("\n4️⃣  Testing conversion functions...");
-    let test_sol = 100.0;
-    let test_usd = 15000.0;
-    
-    let sol_to_usd_result = utils::sol_to_usd(test_sol);
-    let usd_to_sol_result = utils::usd_to_sol(test_usd);
-    
-    println!("   {} SOL = ${:.2} USD", test_sol, sol_to_usd_result);
-    println!("   ${:.2} USD = {:.4} SOL", test_usd, usd_to_sol_result);
-    
-    // Verify conversion is correct
-    let back_to_sol = utils::usd_to_sol(sol_to_usd_result);
-    if (back_to_sol - test_sol).abs() < 0.01 {
-        println!("   ✅ Conversion is accurate!");
-    } else {
-        println!("   ⚠️  Conversion round-trip error: {:.4} != {:.4}", back_to_sol, test_sol);
-    }
-    
-    // Test 5: Force refresh by waiting
-    println!("\n5️⃣  Testing live price fetch (direct API call)...");
-    match utils::fetch_sol_price_usd().await {
-        Ok(price) => {
-            println!("   ✅ Live SOL price: ${:.2}", price);
-            println!("   Cached price: ${:.2}", utils::get_cached_sol_price());
-            if (price - utils::get_cached_sol_price()).abs() < 0.01 {
-                println!("   ✅ Cache matches live price!");
-            } else {
-                println!("   ⚠️  Cache differs from live price!");
-            }
-        }
-        Err(e) => {
-            println!("   ❌ Error fetching live price: {}", e);
-        }
-    }
-    
-    // Test 6: Test MC conversion (18k USD example)
-    println!("\n6️⃣  Testing MC conversion (18k USD example)...");
-    let mc_usd = 18000.0;
-    let mc_sol = utils::usd_to_sol(mc_usd);
-    println!("   ${:.0} USD = {:.2} SOL (at ${:.2}/SOL)", mc_usd, mc_sol, utils::get_cached_sol_price());
-    
-    // Convert back
-    let mc_usd_back = utils::sol_to_usd(mc_sol);
-    println!("   {:.2} SOL = ${:.0} USD", mc_sol, mc_usd_back);
-    
-    if (mc_usd_back - mc_usd).abs() < 1.0 {
-        println!("   ✅ MC conversion is accurate!");
-    } else {
-        println!("   ⚠️  MC conversion error: ${:.0} != ${:.0}", mc_usd_back, mc_usd);
-    }
-    
-    println!("\n✅ Test completed!");
-}
 
 // Remove old constants - now using Config and constants module
 
@@ -122,7 +41,9 @@ fn main() -> Result<()> {
         // Test SOL price fetching
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            test_sol_price().await;
+            if let Err(e) = tools::sol_price_test::run().await {
+                eprintln!("❌ SOL price test failed: {e}");
+            }
         });
         return Ok(());
     }

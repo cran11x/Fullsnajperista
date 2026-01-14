@@ -1,5 +1,5 @@
 // detection.rs - FIXED: Extract creator from CREATE instruction account[8]
-#![allow(unused_imports, dead_code)]
+
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -9,8 +9,8 @@ use std::str::FromStr;
 
 use crate::constants::{PUMP_PROGRAM_ID, BUY_DISCRIMINATOR};
 
-// 🔧 TOGGLE THIS: true = detailed logs, false = normal logs
-const DEBUG: bool = true;
+// 🔧 Debug output only in debug builds
+const DEBUG: bool = cfg!(debug_assertions);
 
 /// Calculate Associated Bonding Curve addresses with both Token Program versions (standard and 2022)
 fn calculate_addresses_both_programs(

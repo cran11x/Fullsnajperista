@@ -1,5 +1,5 @@
 // buy.rs - ULTRA OPTIMIZED WITH CACHE
-#![allow(unused_variables, unused_comparisons)]
+
 
 use anyhow::Result;
 use solana_sdk::{
@@ -237,30 +237,6 @@ mod tests {
             [Pubkey::new_unique(); 7],
             Pubkey::new_unique(),
         )
-    }
-
-    #[test]
-    fn test_derive_user_volume_pda() {
-        use crate::pda_derivation::derive_user_volume_pda;
-        
-        let user_wallet = Pubkey::new_unique();
-        let (pda, bump) = derive_user_volume_pda(&user_wallet);
-
-        // PDA should be different from user wallet
-        assert_ne!(pda, user_wallet);
-
-        // Bump should be valid (0-255)
-        assert!(bump <= 255);
-
-        // Same wallet should produce same PDA
-        let (pda2, bump2) = derive_user_volume_pda(&user_wallet);
-        assert_eq!(pda, pda2);
-        assert_eq!(bump, bump2);
-
-        // Different wallet should produce different PDA
-        let user_wallet2 = Pubkey::new_unique();
-        let (pda3, _) = derive_user_volume_pda(&user_wallet2);
-        assert_ne!(pda, pda3);
     }
 
     #[test]

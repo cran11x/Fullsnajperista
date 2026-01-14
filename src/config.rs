@@ -1,5 +1,4 @@
 // config.rs - ENV-BASED CONFIGURATION WITH VALIDATION
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -1052,6 +1051,12 @@ impl Default for Config {
 mod tests {
     use super::*;
     use std::env;
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+
+    // Tests in this module mutate process-wide environment variables.
+    // Serialize them to avoid flaky cross-test interference.
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn setup_test_env() {
         // Set valid test values (override any existing values)
@@ -1085,6 +1090,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         setup_test_env();
         
         let config = Config::from_env();
@@ -1101,6 +1107,7 @@ mod tests {
 
     #[test]
     fn test_config_validation() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let mut config = Config::default();
         
         // Valid config should pass
@@ -1132,6 +1139,7 @@ mod tests {
 
     #[test]
     fn test_config_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let config = Config::default();
         
         assert_eq!(config.buy_amount_sol, 0.015);
@@ -1144,6 +1152,7 @@ mod tests {
 
     #[test]
     fn test_config_submission_modes() {
+        let _lock = ENV_LOCK.lock().unwrap();
         // Save original API key
         let orig_api_key = env::var("HELIUS_API_KEY").ok();
         
@@ -1192,6 +1201,7 @@ mod tests {
 
     #[test]
     fn test_config_helper_methods() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let config = Config::default();
         
         // Test buy_amount_lamports
@@ -1208,6 +1218,7 @@ mod tests {
 
     #[test]
     fn test_config_missing_api_key() {
+        let _lock = ENV_LOCK.lock().unwrap();
         cleanup_test_env();
         // Remove API key if it exists
         env::remove_var("HELIUS_API_KEY");
@@ -1222,6 +1233,7 @@ mod tests {
 
     #[test]
     fn test_config_invalid_numbers() {
+        let _lock = ENV_LOCK.lock().unwrap();
         // Save original values
         let orig_buy_amount = env::var("BUY_AMOUNT_SOL").ok();
         let orig_api_key = env::var("HELIUS_API_KEY").ok();
@@ -1249,6 +1261,7 @@ mod tests {
 
     #[test]
     fn test_target_mint_address_loading() {
+        let _lock = ENV_LOCK.lock().unwrap();
         setup_test_env();
         
         // Ensure HELIUS_API_KEY is set for test
@@ -1293,6 +1306,7 @@ mod tests {
 
     #[test]
     fn test_target_mint_address_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let config = Config::default();
         assert!(config.target_mint_address.is_none());
     }

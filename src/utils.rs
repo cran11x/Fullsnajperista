@@ -1,5 +1,4 @@
 // utils.rs - RETRY LOGIC, HTTP CLIENT POOLING, AND HELPER FUNCTIONS
-#![allow(unused, dead_code)]
 
 use anyhow::Result;
 use reqwest::Client;
@@ -334,7 +333,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_success() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         let attempts = AtomicU32::new(0);
         let result = retry_with_backoff(
             || {

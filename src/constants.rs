@@ -1,5 +1,4 @@
 // constants.rs - CENTRALIZED CONSTANTS FOR PUMP.FUN SNIPER BOT
-#![allow(unused, dead_code)]
 
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;

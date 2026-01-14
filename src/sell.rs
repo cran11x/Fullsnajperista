@@ -126,23 +126,6 @@ pub async fn build_sell_instruction(
 
     // Debug: Log sell instruction details
     
-    let _account_labels = vec![
-        (0, "Global"),
-        (1, "Fee Recipient"),
-        (2, "Mint"),
-        (3, "Bonding Curve"),
-        (4, "Associated Bonding Curve"),
-        (5, "Associated User (User Token Account)"),
-        (6, "User (User Wallet)"),
-        (7, "System Program"),
-        (8, "Creator Vault"),
-        (9, "Token Program 2022"),
-        (10, "Event Authority"),
-        (11, "Pump.fun Program"),
-        (12, "Fee Config"),
-        (13, "Fee Program"),
-    ];
-    
     for (_idx, _account) in instruction.accounts.iter().enumerate() {
         // Account details removed for cleaner output
     }
@@ -153,29 +136,6 @@ pub async fn build_sell_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_derive_user_volume_pda() {
-        use crate::pda_derivation::derive_user_volume_pda;
-        
-        let user_wallet = Pubkey::new_unique();
-        let (pda, bump) = derive_user_volume_pda(&user_wallet);
-
-        // PDA should be different from user wallet
-        assert_ne!(pda, user_wallet);
-
-        // Bump is always valid (u8 type ensures 0-255 range)
-
-        // Same wallet should produce same PDA
-        let (pda2, bump2) = derive_user_volume_pda(&user_wallet);
-        assert_eq!(pda, pda2);
-        assert_eq!(bump, bump2);
-
-        // Different wallet should produce different PDA
-        let user_wallet2 = Pubkey::new_unique();
-        let (pda3, _) = derive_user_volume_pda(&user_wallet2);
-        assert_ne!(pda, pda3);
-    }
 
     #[test]
     fn test_validate_sell_params() {

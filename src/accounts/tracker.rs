@@ -129,6 +129,7 @@ impl TokenTracker {
     /// Get the directory where tracker files should be stored
     /// On macOS, when running from GUI, current_dir() can be root or system directory
     /// So we use executable directory instead (where the binary is located)
+    #[cfg(not(test))]
     fn get_tracker_dir() -> std::path::PathBuf {
         // Use executable directory (where the binary is located)
         // This works reliably on macOS even when launched from GUI
@@ -137,20 +138,40 @@ impl TokenTracker {
                 return exe_dir.to_path_buf();
             }
         }
-        
+
         // Fallback: current directory (should not happen, but safe fallback)
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
 
+    #[cfg(test)]
+    fn get_tracker_dir() -> std::path::PathBuf {
+        // In tests, never write into `target/` (shared + parallel tests).
+        // Use a per-process temp directory to avoid file-name collisions and flaky tests.
+        let mut dir = std::env::temp_dir();
+        dir.push("sniper_tracker_tests");
+        dir.push(format!("pid_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
     /// Create new tracker or load from latest existing JSON file
     pub fn new() -> Result<Self> {
-        // Try to find and load the latest JSON file first
-        if let Ok(tracker) = Self::load_from_latest_json() {
-            return Ok(tracker);
+        // Try to find and load the latest JSON file first (runtime only).
+        // In tests we always create a fresh tracker to avoid cross-test state.
+        #[cfg(not(test))]
+        {
+            if let Ok(tracker) = Self::load_from_latest_json() {
+                return Ok(tracker);
+            }
         }
         
         // If no existing JSON found, create new tracker
         let session_start = Utc::now();
+
+        // Test-only: include seconds + subsec to avoid file-name collisions under parallel tests.
+        #[cfg(test)]
+        let timestamp = session_start.format("%Y-%m-%d_%H-%M-%S_%f");
+        #[cfg(not(test))]
         let timestamp = session_start.format("%Y-%m-%d_%H-%M");
 
         let csv_filename = format!("tracker_{}.csv", timestamp);
@@ -1668,22 +1689,39 @@ mod tests {
         
         // Check format only if it's the new format (tracker_)
         if json_filename.starts_with("tracker_") {
-            // Check format: tracker_YYYY-MM-DD_HH-MM.json (should have dashes)
+            // Check format: tracker_YYYY-MM-DD_HH-MM.json (runtime)
+            // Test builds include extra precision to avoid collisions: tracker_YYYY-MM-DD_HH-MM-SS_SUBSEC.json
             let name_without_prefix = json_filename.strip_prefix("tracker_").unwrap();
             let name_without_suffix = name_without_prefix.strip_suffix(".json").unwrap();
             
-            // Should match pattern: YYYY-MM-DD_HH-MM
+            // Should match pattern: YYYY-MM-DD_HH-MM (runtime) or YYYY-MM-DD_HH-MM-SS_SUBSEC (tests)
             let parts: Vec<&str> = name_without_suffix.split('_').collect();
-            assert_eq!(parts.len(), 2, "Filename should have date and time separated by underscore");
+            assert!(
+                parts.len() == 2 || parts.len() == 3,
+                "Filename should have date and time separated by underscore (optional subsec part). Got parts={:?} for {}",
+                parts,
+                name_without_suffix
+            );
             
             // Date part should be YYYY-MM-DD
             let date_parts: Vec<&str> = parts[0].split('-').collect();
             assert_eq!(date_parts.len(), 3, "Date should be in YYYY-MM-DD format");
             assert_eq!(date_parts[0].len(), 4, "Year should be 4 digits");
             
-            // Time part should be HH-MM
+            // Time part should be HH-MM or HH-MM-SS
             let time_parts: Vec<&str> = parts[1].split('-').collect();
-            assert_eq!(time_parts.len(), 2, "Time should be in HH-MM format");
+            assert!(
+                time_parts.len() == 2 || time_parts.len() == 3,
+                "Time should be in HH-MM or HH-MM-SS format"
+            );
+
+            // Optional: subsecond precision in tests (digits only)
+            if parts.len() == 3 {
+                assert!(
+                    parts[2].chars().all(|c| c.is_ascii_digit()),
+                    "Subsecond part should be digits only"
+                );
+            }
         }
         
         // Add a buy to trigger JSON save
