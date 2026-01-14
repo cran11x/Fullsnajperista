@@ -38,6 +38,12 @@ pub struct TokenBuy {
     pub sold: bool,                         // Flag if position is sold
     pub sell_signature: Option<String>,     // Sell transaction signature if sold
 
+    // Breakeven protection state (armed once MC threshold is reached)
+    #[serde(default)]
+    pub breakeven_armed: bool,
+    #[serde(default)]
+    pub breakeven_armed_at_mc_sol: Option<f64>,
+
     // 🆕 NEW: Ultra Live PnL tracking
     pub current_price_sol: Option<f64>,      // Current token price in SOL
     pub current_value_sol: Option<f64>,      // Current position value in SOL
@@ -47,6 +53,8 @@ pub struct TokenBuy {
     
     // 🆕 NEW: Transaction fees tracking (for ultra-precision)
     pub buy_fees_sol: Option<f64>,           // Total fees paid for buy (Priority + Network)
+    #[serde(default)]
+    pub sell_fees_sol: Option<f64>,          // Total fees paid for sell (Priority + Network + tip)
     
     // 🆕 NEW: Peak tracking
     #[serde(default)]
@@ -810,6 +818,20 @@ impl TokenTracker {
         }
     }
 
+    /// Mark breakeven as armed for a position (persisted to JSON)
+    pub fn mark_breakeven_armed(&mut self, mint: &str, mc_sol: f64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            if !buy.breakeven_armed {
+                buy.breakeven_armed = true;
+                buy.breakeven_armed_at_mc_sol = Some(mc_sol);
+                self.save_json()?;
+            }
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
     /// Record a partial sell
     pub fn mark_partial_sell(&mut self, mint: &str, rule_id: &str, sell_percent: f64) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
@@ -982,7 +1004,7 @@ impl TokenTracker {
                 
                 // Estimated Sell Value = (Gross Value * 0.99) - Estimated Sell Fees
                 // Sell usually has lower priority fee, estimating 0.00001 SOL base + minimal priority
-                let estimated_sell_fees = 0.00001; 
+                let estimated_sell_fees = buy.sell_fees_sol.unwrap_or(0.00001);
                 let current_value_net = (current_value_gross * 0.99) - estimated_sell_fees;
                 
                 let pnl = current_value_net - cost_basis;
@@ -1084,6 +1106,51 @@ impl TokenTracker {
             Ok(())
         } else {
             eprintln!("❌ PnL UPDATE: Position not found in find() for mint {} (this shouldn't happen after existence check)", &mint[..8]);
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Apply a sell-time PnL snapshot with explicit sell fees (used for mock sells and any future precise sell accounting)
+    pub fn apply_sell_snapshot(&mut self, mint: &str, current_price_sol: f64, sell_fees_sol: f64) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            buy.sell_fees_sol = Some(sell_fees_sol);
+            buy.current_price_sol = Some(current_price_sol);
+            buy.last_pnl_update = Some(Utc::now());
+
+            // Need token_amount to value position
+            let token_amount = buy.token_amount.or_else(|| {
+                if let Some(entry_price) = buy.token_price_sol {
+                    if entry_price > 0.0 && buy.our_buy_sol > 0.0 {
+                        let tokens_human = buy.our_buy_sol / entry_price;
+                        let tokens_raw = (tokens_human * 1e6) as u64;
+                        if tokens_raw > 0 { Some(tokens_raw) } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+            if let Some(token_amount) = token_amount {
+                buy.token_amount = Some(token_amount);
+                let tokens_actual = token_amount as f64 / 1e6;
+                let current_value_gross = tokens_actual * current_price_sol;
+                buy.current_value_sol = Some(current_value_gross);
+
+                let buy_fees = buy.buy_fees_sol.unwrap_or(0.000015);
+                let cost_basis = buy.our_buy_sol + buy_fees;
+                let current_value_net = (current_value_gross * 0.99) - sell_fees_sol;
+                let pnl = current_value_net - cost_basis;
+                buy.pnl_sol = Some(pnl);
+                if cost_basis > 0.0 {
+                    buy.pnl_percent = Some((pnl / cost_basis) * 100.0);
+                }
+            }
+
+            self.save_json()?;
+            Ok(())
+        } else {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
         }
     }

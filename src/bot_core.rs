@@ -2702,7 +2702,18 @@ async fn process_and_buy(
         
         // In mock mode, we don't send the transaction, but we can still check if we would have succeeded
         // by checking if the token account already exists (from a previous real buy)
-        tokio::time::sleep(Duration::from_millis(200)).await; // Reduced from 500ms to 200ms for premium RPC
+        // ✅ Realistic mock: wait a configurable random delay before simulating the "fill"
+        // This makes mock buys look closer to real execution timing and improves PnL realism.
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let min_delay = config.mock_buy_delay_min_ms;
+        let max_delay = config.mock_buy_delay_max_ms;
+        let delay_ms = if min_delay >= max_delay {
+            min_delay
+        } else {
+            rng.gen_range(min_delay..=max_delay)
+        };
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         
         let token_account_exists = rpc.get_account(&user_ata).await.is_ok();
         if token_account_exists {
@@ -2726,24 +2737,44 @@ async fn process_and_buy(
             eprintln!("  ℹ️  Token account does not exist (would be created in real mode)");
         }
         
-        // Try to get MC for tracker (optional, don't fail if it doesn't work)
+        // Try to get MC/curve state for tracker at "fill time" (optional, don't fail if it doesn't work)
         let mc_entry_result = fetch_bonding_curve_mc(
             rpc,
             &accounts.bonding_curve,
         ).await;
         
-        let (mc_entry_sol, token_price_entry) = match mc_entry_result {
-            Ok((curve, mc_sol)) => {
-                let price = curve.get_token_price_sol();
-                (Some(mc_sol), if price > 0.0 { Some(price) } else { None })
+        // ✅ Mock fill (exact pump bonding-curve math + 1% buy fee)
+        let invested_sol = config.buy_amount_sol;
+        let mut mc_entry_sol: Option<f64> = None;
+        let mut simulated_token_amount: u64 = 0;
+        let mut entry_price_final: f64 = token_price_sol;
+
+        if let Ok((curve, mc_sol)) = mc_entry_result {
+            mc_entry_sol = Some(mc_sol);
+
+            // Price impact simulation: use pump.fun bonding curve math with current reserves
+            let sol_lamports = config.buy_amount_lamports();
+            let tokens_out_gross = curve.calculate_token_amount_for_sol(sol_lamports);
+
+            // pump.fun buy fee: 1% deducted from received tokens
+            simulated_token_amount = (tokens_out_gross as u128 * 99 / 100) as u64;
+
+            // Entry price: SOL sent to curve / tokens received (after 1% fee)
+            let tokens_human = simulated_token_amount as f64 / 1e6;
+            if tokens_human > 0.0 && invested_sol > 0.0 {
+                entry_price_final = invested_sol / tokens_human;
             }
-            Err(_) => (None, None)
-        };
+        }
+
+        // ✅ Mock buy fees: base + priority + jito + optional ATA creation cost
+        let priority_fee_sol = (priority_fee as f64 * config.compute_units as f64) / 1_000_000.0 / 1e9;
+        let jito_tip_sol = config.jito_tip as f64 / 1e9;
+        let base_fee_sol = 0.000005;
+        let ata_fee_sol = if token_account_exists { 0.0 } else { 0.002 }; // 2_000_000 lamports
+        let total_buy_fees = priority_fee_sol + jito_tip_sol + base_fee_sol + ata_fee_sol;
         
         // Generate a mock signature for testing (but mark it clearly as MOCK)
         use solana_sdk::signature::Signature;
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
         let mut mock_sig_bytes = [0u8; 64];
         rng.fill(&mut mock_sig_bytes);
         let mock_sig = Signature::from(mock_sig_bytes);
@@ -2764,7 +2795,7 @@ async fn process_and_buy(
                             signature: mock_signature.clone(), // Use mock signature
                             creator: accounts.creator.to_string(),
                             dev_buy_sol,
-                            our_buy_sol: config.buy_amount_sol,
+                            our_buy_sol: invested_sol,
                             timestamp: Utc::now(),
                             twitter: socials_opt.as_ref().and_then(|s| s.twitter.clone()),
                             website: socials_opt.as_ref().and_then(|s| s.website.clone()),
@@ -2799,18 +2830,21 @@ async fn process_and_buy(
                             socials_source: socials_source_opt.clone(),
                             mc_at_detection_sol: if mc_sol > 0.0 { Some(mc_sol) } else { None },
                             mc_at_entry_sol: mc_entry_sol,
-                            token_price_sol: token_price_entry.or(if token_price_sol > 0.0 { Some(token_price_sol) } else { None }),
-                            token_amount: if token_amount > 0 { Some(token_amount) } else { None },
+                            token_price_sol: if entry_price_final > 0.0 { Some(entry_price_final) } else { None },
+                            token_amount: if simulated_token_amount > 0 { Some(simulated_token_amount) } else { None },
                             user_token_account: Some(user_ata.to_string()),
                             bonding_curve: Some(accounts.bonding_curve.to_string()),
                             sold: false,
                             sell_signature: None,
+                            breakeven_armed: false,
+                            breakeven_armed_at_mc_sol: None,
                             current_price_sol: None,
                             current_value_sol: None,
                             pnl_sol: None,
                             pnl_percent: None,
                             last_pnl_update: None,
-                            buy_fees_sol: None,
+                            buy_fees_sol: Some(total_buy_fees),
+                            sell_fees_sol: None,
                             peak_mc_sol: None,
                             peak_pnl_percent: None,
                             executed_sell_rules: Vec::new(),
@@ -2854,9 +2888,9 @@ async fn process_and_buy(
                             let mint_str = mint.to_string();
                             let bonding_curve_str = accounts.bonding_curve.to_string();
                             let entry_mc = mc_entry_sol.unwrap_or(0.0);
-                            let entry_price = token_price_entry.unwrap_or(token_price_sol);
-                            let our_buy_sol = config.buy_amount_sol;
-                            let token_amount_opt = if token_amount > 0 { Some(token_amount) } else { None };
+                            let entry_price = entry_price_final;
+                            let our_buy_sol = invested_sol;
+                            let token_amount_opt = if simulated_token_amount > 0 { Some(simulated_token_amount) } else { None };
                             
                             // Try to get write lock (non-blocking)
                             eprintln!("[DEBUG] 📊 Attempting to acquire history tracker write lock (non-blocking)...");
@@ -2946,8 +2980,8 @@ async fn process_and_buy(
         let bonding_curve_str = accounts.bonding_curve.to_string();
         let socials_clone = socials_opt.clone();
         let socials_source_clone = socials_source_opt.clone();
-        let token_price_entry_val = token_price_entry.unwrap_or(token_price_sol);
-        let buy_amount_sol = config.buy_amount_sol; // Clone before move
+        let token_price_entry_val = entry_price_final;
+        let buy_amount_sol = invested_sol; // Clone before move
         tokio::task::spawn_blocking(move || {
             log_mock_buy_token(
                 &mint_str,
@@ -2961,7 +2995,7 @@ async fn process_and_buy(
                 mc_entry_sol,
                 token_price_entry_val,
                 buy_amount_sol,
-                token_amount,
+                simulated_token_amount,
                 &bonding_curve_str,
             );
         });
@@ -3405,12 +3439,15 @@ async fn process_and_buy(
                         bonding_curve: Some(accounts.bonding_curve.to_string()),
                         sold: false,
                         sell_signature: None,
+                        breakeven_armed: false,
+                        breakeven_armed_at_mc_sol: None,
                         current_price_sol: None,
                         current_value_sol: None,
                         pnl_sol: None,
                         pnl_percent: None,
                         last_pnl_update: None,
                         buy_fees_sol: Some(total_buy_fees),
+                        sell_fees_sol: None,
                         peak_mc_sol: None,
                         peak_pnl_percent: None,
                         executed_sell_rules: Vec::new(),
@@ -4066,9 +4103,31 @@ async fn monitor_positions(
             // Auto-sell monitoring
 
             // Get config values including Helius API key and dead coin settings
-            let (stop_loss_percent, take_profit_mc_sol, _monitor_interval, helius_api_key, _sell_percent, enable_dead_coin_sell, dead_coin_timeout_sec) = {
+            let (
+                stop_loss_percent,
+                take_profit_mc_sol,
+                _monitor_interval,
+                helius_api_key,
+                _sell_percent,
+                enable_dead_coin_sell,
+                dead_coin_timeout_sec,
+                enable_breakeven,
+                _breakeven_arm_mc_usd,
+                breakeven_buffer_percent,
+            ) = {
                 let cfg = config.read().unwrap();
-                (cfg.stop_loss_percent, cfg.take_profit_mc_sol, cfg.monitor_interval_sec, cfg.helius_api_key.clone(), cfg.sell_percent, cfg.enable_dead_coin_sell, cfg.dead_coin_timeout_sec)
+                (
+                    cfg.stop_loss_percent,
+                    cfg.take_profit_mc_sol,
+                    cfg.monitor_interval_sec,
+                    cfg.helius_api_key.clone(),
+                    cfg.sell_percent,
+                    cfg.enable_dead_coin_sell,
+                    cfg.dead_coin_timeout_sec,
+                    cfg.enable_breakeven,
+                    cfg.breakeven_arm_mc_usd,
+                    cfg.breakeven_buffer_percent,
+                )
             };
             
             // Refresh SOL price if needed (every 5 minutes)
@@ -4254,14 +4313,21 @@ async fn monitor_positions(
             // 🚀 OPTIMIZED: Batch fetch bonding curve accounts first, then process positions
             // First, handle positions that can be sold immediately (PnL already calculated)
             let mut positions_to_fetch = Vec::new();
-            let mut positions_to_sell_immediately = Vec::new();
+            let mut positions_to_sell_immediately: Vec<(TokenBuy, &'static str)> = Vec::new();
             
             for position in active_positions.iter() {
                 // 🚀 ULTRA FAST: Check PnL from tracker FIRST (if available) - fastest path
                 if let Some(pnl_percent) = position.pnl_percent {
+                    // Breakeven (if armed) has priority over stop loss
+                    if enable_breakeven && position.breakeven_armed && pnl_percent <= breakeven_buffer_percent {
+                        // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
+                        positions_to_sell_immediately.push((position.clone(), "breakeven"));
+                        continue; // Skip to next position
+                    }
+
                     if pnl_percent <= -stop_loss_percent {
                         // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
-                        positions_to_sell_immediately.push(position.clone());
+                        positions_to_sell_immediately.push((position.clone(), "stop_loss"));
                         continue; // Skip to next position
                     }
                 }
@@ -4287,9 +4353,26 @@ async fn monitor_positions(
             }
             
             // Execute immediate sells (no RPC needed)
-            for position in positions_to_sell_immediately {
-                eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (threshold: -{:.2}%) - SELLING IMMEDIATELY", 
-                         position.pnl_percent.unwrap_or(0.0), stop_loss_percent);
+            for (position, reason) in positions_to_sell_immediately {
+                let (trigger_type, trigger_value) = if reason == "breakeven" {
+                    ("BreakEven", breakeven_buffer_percent)
+                } else {
+                    ("StopLoss", stop_loss_percent)
+                };
+
+                if reason == "breakeven" {
+                    eprintln!(
+                        "🛡️ BREAKEVEN TRIGGERED: PnL = {:.2}% (threshold: <= {:.2}%) - SELLING IMMEDIATELY",
+                        position.pnl_percent.unwrap_or(0.0),
+                        breakeven_buffer_percent
+                    );
+                } else {
+                    eprintln!(
+                        "🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (threshold: -{:.2}%) - SELLING IMMEDIATELY",
+                        position.pnl_percent.unwrap_or(0.0),
+                        stop_loss_percent
+                    );
+                }
                 
                 let wallet_bytes = wallet.to_bytes();
                 let wallet_clone = match Keypair::from_bytes(&wallet_bytes) {
@@ -4307,11 +4390,11 @@ async fn monitor_positions(
                 let event_tx_clone = event_tx.clone();
                 let rpc_clone = Arc::clone(&rpc_arc);
                 
-                // Create basic sell details for stop loss
+                // Create basic sell details
                 let sell_details = SellDetails {
-                    reason: "stop_loss".to_string(),
-                    trigger_type: Some("StopLoss".to_string()),
-                    trigger_value: Some(stop_loss_percent),
+                    reason: reason.to_string(),
+                    trigger_type: Some(trigger_type.to_string()),
+                    trigger_value: Some(trigger_value),
                     current_pnl_percent: position_clone.pnl_percent,
                     peak_pnl_percent: position_clone.peak_pnl_percent,
                     current_mc_sol: None, // Not available in this context
@@ -4334,12 +4417,16 @@ async fn monitor_positions(
                         rpc_clone.as_ref(),
                         &tracker_clone,
                         &position_clone,
-                        "stop_loss",
+                        reason,
                         &event_tx_clone,
                         Some(sell_details),
                     ).await {
-                        eprintln!("⚠️  Stop loss sell failed for {}: {} (reason already recorded in tracker)", 
-                                 &position_clone.mint[..8], e);
+                        eprintln!(
+                            "⚠️  {} sell failed for {}: {} (reason already recorded in tracker)",
+                            reason,
+                            &position_clone.mint[..8],
+                            e
+                        );
                     }
                 });
             }
@@ -4449,22 +4536,46 @@ async fn monitor_positions(
                         eprintln!("⚠️  AUTO-SELL: PnL invalid ({:?}) for {} - PnL-based checks will be skipped", 
                                  current_pnl_percent, &position_clone.mint[..8]);
                     }
+
+                    // ✅ Breakeven arming: once MC reaches configured USD threshold, mark position as armed
+                    let mut breakeven_armed_now = position_clone.breakeven_armed;
+                    if config_clone.enable_breakeven && is_mc_valid && !breakeven_armed_now {
+                        let arm_mc_sol = crate::utils::usd_to_sol(config_clone.breakeven_arm_mc_usd);
+                        if arm_mc_sol > 0.0 && current_mc_sol >= arm_mc_sol {
+                            if let Ok(mut guard) = tracker_clone.write() {
+                                if let Some(t) = guard.as_mut() {
+                                    let _ = t.mark_breakeven_armed(&position_clone.mint, current_mc_sol);
+                                }
+                            }
+                            breakeven_armed_now = true;
+                        }
+                    }
                     
                     // Legacy auto-sell logic
                     // 🚀 PRIORITY: Check stop loss using PnL PERCENTAGE (not MC) - FIXED!
                     // Calculate PnL based on token price change
                     // ✅ CRITICAL FIX: Only calculate PnL if entry price is set
                     // This prevents incorrect PnL calculation when entry price is not yet available
-                    let should_sell_stop_loss = if entry_price > 0.0 {
+                    let stop_trigger_reason: Option<&'static str> = if entry_price > 0.0 {
                         // Calculate PnL percentage: ((current_price - entry_price) / entry_price) * 100
                         let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
                         
-                        if pnl_percent <= -stop_loss_percent {
+                        // Breakeven has priority over stop loss (only when armed)
+                        if config_clone.enable_breakeven && breakeven_armed_now && pnl_percent <= config_clone.breakeven_buffer_percent {
+                            eprintln!(
+                                "🛡️ BREAKEVEN TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: <= {:.2}%)",
+                                pnl_percent,
+                                entry_price,
+                                current_price,
+                                config_clone.breakeven_buffer_percent
+                            );
+                            Some("breakeven")
+                        } else if pnl_percent <= -stop_loss_percent {
                             eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
                                      pnl_percent, entry_price, current_price, stop_loss_percent);
-                            true
+                            Some("stop_loss")
                         } else {
-                            false
+                            None
                         }
                     } else if let Some(entry_mc_val) = entry_mc {
                         // Fallback to MC check if we don't have entry price but have entry MC
@@ -4479,16 +4590,16 @@ async fn monitor_positions(
                             eprintln!("🚨 STOP LOSS TRIGGERED (MC): MC dropped from {:.2} SOL to {:.2} SOL (threshold: {:.2} SOL)", 
                                      entry_mc_val, current_mc_sol, stop_loss_threshold);
                         }
-                        current_mc_sol < stop_loss_threshold
+                        if current_mc_sol < stop_loss_threshold { Some("stop_loss") } else { None }
                     } else {
                         // No entry price and no entry MC - can't calculate stop loss, skip
                         eprintln!("⚠️  Position {}: No entry price ({:?}) and no entry MC ({:?}) - cannot monitor stop loss", 
                                  position_clone.mint, position_clone.token_price_sol, entry_mc);
-                        false
+                        None
                     };
                     
                     // 🚀 ULTRA FAST: If stop loss triggered, sell IMMEDIATELY (skip other checks)
-                    if should_sell_stop_loss {
+                    if let Some(stop_reason) = stop_trigger_reason {
                         // Calculate PnL for logging
                         let pnl_percent = if entry_price > 0.0 {
                             Some(((current_price - entry_price) / entry_price) * 100.0)
@@ -4504,10 +4615,15 @@ async fn monitor_positions(
                         };
                         
                         // Create detailed sell information
+                        let (trigger_type, trigger_value) = if stop_reason == "breakeven" {
+                            ("BreakEven".to_string(), config_clone.breakeven_buffer_percent)
+                        } else {
+                            ("StopLoss".to_string(), stop_loss_percent)
+                        };
                         let sell_details = SellDetails {
-                            reason: "stop_loss".to_string(),
-                            trigger_type: Some("StopLoss".to_string()),
-                            trigger_value: Some(stop_loss_percent),
+                            reason: stop_reason.to_string(),
+                            trigger_type: Some(trigger_type),
+                            trigger_value: Some(trigger_value),
                             current_pnl_percent: pnl_percent,
                             peak_pnl_percent: position_clone.peak_pnl_percent,
                             current_mc_sol: Some(current_mc_sol),
@@ -4520,22 +4636,30 @@ async fn monitor_positions(
                         };
                         
                         // Execute sell IMMEDIATELY (no delays, no other checks)
-                        eprintln!("[DEBUG] 🚨 AUTO-SELL: Stop loss triggered, calling execute_sell with mock_sell={}...", config_clone.mock_sell);
+                        eprintln!(
+                            "[DEBUG] 🚨 AUTO-SELL: {} triggered, calling execute_sell with mock_sell={}...",
+                            stop_reason,
+                            config_clone.mock_sell
+                        );
                         if let Err(e) = execute_sell(
                             &config_clone,
                             &wallet_clone,
                             rpc_task.as_ref(),
                             &tracker_clone,
                             &position_clone,
-                            "stop_loss",
+                            stop_reason,
                             &event_tx_clone,
                             Some(sell_details),
                         ).await {
-                            eprintln!("⚠️  Stop loss sell failed for {}: {} (reason already recorded in tracker)", 
-                                     &position_clone.mint[..8], e);
+                            eprintln!(
+                                "⚠️  {} sell failed for {}: {} (reason already recorded in tracker)",
+                                stop_reason,
+                                &position_clone.mint[..8],
+                                e
+                            );
                         }
                         
-                        return Some(("stop_loss".to_string(), position_mint));
+                        return Some((stop_reason.to_string(), position_mint));
                     }
                     
                     // Check take profit: current_mc_sol >= take_profit_mc_sol
@@ -5033,12 +5157,15 @@ pub async fn execute_manual_buy(
             bonding_curve: Some(accounts.bonding_curve.to_string()),
             sold: false,
             sell_signature: None,
+            breakeven_armed: false,
+            breakeven_armed_at_mc_sol: None,
             current_price_sol: None,
             current_value_sol: None,
             pnl_sol: None,
             pnl_percent: None,
             last_pnl_update: None,
             buy_fees_sol: Some(0.00002), // Estimate for manual buy
+            sell_fees_sol: None,
             peak_mc_sol: None,
             peak_pnl_percent: None,
             executed_sell_rules: Vec::new(),
@@ -5593,12 +5720,31 @@ async fn execute_sell(
         eprintln!("[DEBUG] 🧪 MOCK SELL MODE (execute_sell): Skipping real transaction, generating mock signature...");
         eprintln!("[DEBUG] 🧪 MOCK SELL MODE: Skipping real transaction, generating mock signature...");
         use solana_sdk::signature::Signature;
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let mut mock_sig_bytes = [0u8; 64];
-        rng.fill(&mut mock_sig_bytes);
-        let mock_signature = format!("MOCK_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        let mock_signature = {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let mut mock_sig_bytes = [0u8; 64];
+            rng.fill(&mut mock_sig_bytes);
+            format!("MOCK_SELL_{}", Signature::from(mock_sig_bytes).to_string())
+        };
         eprintln!("[DEBUG] 🧪 MOCK SELL: Generated mock signature: {}", mock_signature);
+
+        // ✅ Make mock sell match real fee/PnL logic as closely as possible:
+        // - Use real-time bonding curve price for valuation at sell moment
+        // - Include actual tx-side fees we would pay (base + priority + fixed 0.0002 SOL tip)
+        if let Ok((curve, _mc_sol)) = fetch_bonding_curve_mc(rpc, &bonding_curve).await {
+            let current_price = curve.get_token_price_sol();
+            let priority_fee_sol = (priority_fee as f64 * config.compute_units as f64) / 1_000_000.0 / 1e9;
+            let base_fee_sol = 0.000005;
+            let helius_tip_sol = helius_tip_amount as f64 / 1e9; // 200_000 lamports = 0.0002 SOL
+            let sell_fees_sol = priority_fee_sol + base_fee_sol + helius_tip_sol;
+
+            if let Ok(mut tracker_opt) = tracker.write() {
+                if let Some(tracker) = tracker_opt.as_mut() {
+                    let _ = tracker.apply_sell_snapshot(&position.mint, current_price, sell_fees_sol);
+                }
+            }
+        }
         // Get sell reason from details if available, otherwise use reason parameter
         let sell_reason = details.as_ref()
             .map(|d| d.reason.clone())
@@ -5981,11 +6127,13 @@ async fn execute_sell_with_percent(
     if config.mock_sell {
         eprintln!("[DEBUG] 🧪 MOCK SELL MODE (partial): Skipping real transaction, generating mock signature...");
         use solana_sdk::signature::Signature;
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let mut mock_sig_bytes = [0u8; 64];
-        rng.fill(&mut mock_sig_bytes);
-        let mock_signature = format!("MOCK_PARTIAL_SELL_{}", Signature::from(mock_sig_bytes).to_string());
+        let mock_signature = {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let mut mock_sig_bytes = [0u8; 64];
+            rng.fill(&mut mock_sig_bytes);
+            format!("MOCK_PARTIAL_SELL_{}", Signature::from(mock_sig_bytes).to_string())
+        };
         eprintln!("[DEBUG] 🧪 MOCK SELL (partial): Generated mock signature: {}", mock_signature);
         
         // Update tracker for partial sell
@@ -5996,11 +6144,29 @@ async fn execute_sell_with_percent(
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
                 if sell_percent >= 100.0 {
+                    // Snapshot PnL at sell moment with realistic sell fees before marking sold
+                    if let Ok((curve, _mc_sol)) = fetch_bonding_curve_mc(rpc, &bonding_curve).await {
+                        let current_price = curve.get_token_price_sol();
+                        let priority_fee_sol = (priority_fee as f64 * config.compute_units as f64) / 1_000_000.0 / 1e9;
+                        let base_fee_sol = 0.000005;
+                        let helius_tip_sol = helius_tip_amount as f64 / 1e9;
+                        let sell_fees_sol = priority_fee_sol + base_fee_sol + helius_tip_sol;
+                        let _ = tracker.apply_sell_snapshot(&position.mint, current_price, sell_fees_sol);
+                    }
                     let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
                 } else {
                     // Partial sell - update balance
                     let new_balance = token_balance - sell_amount;
                     let _ = tracker.update_token_amount(&position.mint, new_balance);
+                    // Update PnL snapshot (position still active) using realistic sell fees estimate
+                    if let Ok((curve, _mc_sol)) = fetch_bonding_curve_mc(rpc, &bonding_curve).await {
+                        let current_price = curve.get_token_price_sol();
+                        let priority_fee_sol = (priority_fee as f64 * config.compute_units as f64) / 1_000_000.0 / 1e9;
+                        let base_fee_sol = 0.000005;
+                        let helius_tip_sol = helius_tip_amount as f64 / 1e9;
+                        let sell_fees_sol = priority_fee_sol + base_fee_sol + helius_tip_sol;
+                        let _ = tracker.apply_sell_snapshot(&position.mint, current_price, sell_fees_sol);
+                    }
                 }
             }
         }

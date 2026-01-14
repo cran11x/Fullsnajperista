@@ -603,8 +603,20 @@ impl GuiApp {
         let tracker_clone = self.tracker.clone();
         let seen_tokens = Arc::new(crate::accounts::SeenTokens::new());
         let health_monitor = Arc::new(std::sync::Mutex::new(crate::health::HealthMonitor::new()));
-        let das_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(10, 60));
-        let socials_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(20, 60));
+
+        // Build local rate limiters based on config (prevents DAS/Socials request spikes)
+        // Note: these are created when the bot starts; changing settings requires restart to take effect.
+        let (das_max_requests, das_window_secs, socials_max_requests, socials_window_secs) = {
+            let cfg = config_clone.read().unwrap();
+            (
+                cfg.das_max_requests,
+                cfg.das_window_secs,
+                cfg.socials_max_requests,
+                cfg.socials_window_secs,
+            )
+        };
+        let das_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(das_max_requests, das_window_secs));
+        let socials_rate_limiter = Arc::new(crate::rate_limiter::RateLimiter::new(socials_max_requests, socials_window_secs));
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (control_tx_bot, control_rx_bot) = tokio::sync::mpsc::unbounded_channel();
         let wallet_balance_clone = self.wallet_balance.clone();

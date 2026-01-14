@@ -58,6 +58,12 @@ struct SettingsState {
     take_profit_mc_str: Option<String>,
     sell_percent_str: Option<String>,
     monitor_interval_str: Option<String>,
+    // Mock simulation
+    mock_buy_delay_min_ms_str: Option<String>,
+    mock_buy_delay_max_ms_str: Option<String>,
+    // Breakeven settings
+    breakeven_arm_mc_usd_str: Option<String>,
+    breakeven_buffer_percent_str: Option<String>,
     // Blacklist/Whitelist
     blacklisted_tokens_str: Option<String>,
     blacklisted_creators_str: Option<String>,
@@ -74,6 +80,11 @@ struct SettingsState {
     socials_max_retries_str: Option<String>,
     socials_retry_delay_ms_str: Option<String>,
     socials_max_concurrent_str: Option<String>,
+    // Rate limiting (local throttling)
+    das_max_requests_str: Option<String>,
+    das_window_secs_str: Option<String>,
+    socials_max_requests_str: Option<String>,
+    socials_window_secs_str: Option<String>,
     last_update_time: Option<std::time::Instant>,
 }
 
@@ -206,6 +217,18 @@ impl SettingsState {
                 }
                 self.monitor_interval_str.as_mut().unwrap()
             }
+            "breakeven_arm_mc_usd" => {
+                if self.breakeven_arm_mc_usd_str.is_none() {
+                    self.breakeven_arm_mc_usd_str = Some(default);
+                }
+                self.breakeven_arm_mc_usd_str.as_mut().unwrap()
+            }
+            "breakeven_buffer_percent" => {
+                if self.breakeven_buffer_percent_str.is_none() {
+                    self.breakeven_buffer_percent_str = Some(default);
+                }
+                self.breakeven_buffer_percent_str.as_mut().unwrap()
+            }
             "blacklisted_tokens" => {
                 if self.blacklisted_tokens_str.is_none() {
                     self.blacklisted_tokens_str = Some(default);
@@ -277,6 +300,42 @@ impl SettingsState {
                     self.socials_max_concurrent_str = Some(default);
                 }
                 self.socials_max_concurrent_str.as_mut().unwrap()
+            }
+            "das_max_requests" => {
+                if self.das_max_requests_str.is_none() {
+                    self.das_max_requests_str = Some(default);
+                }
+                self.das_max_requests_str.as_mut().unwrap()
+            }
+            "das_window_secs" => {
+                if self.das_window_secs_str.is_none() {
+                    self.das_window_secs_str = Some(default);
+                }
+                self.das_window_secs_str.as_mut().unwrap()
+            }
+            "socials_max_requests" => {
+                if self.socials_max_requests_str.is_none() {
+                    self.socials_max_requests_str = Some(default);
+                }
+                self.socials_max_requests_str.as_mut().unwrap()
+            }
+            "socials_window_secs" => {
+                if self.socials_window_secs_str.is_none() {
+                    self.socials_window_secs_str = Some(default);
+                }
+                self.socials_window_secs_str.as_mut().unwrap()
+            }
+            "mock_buy_delay_min_ms" => {
+                if self.mock_buy_delay_min_ms_str.is_none() {
+                    self.mock_buy_delay_min_ms_str = Some(default);
+                }
+                self.mock_buy_delay_min_ms_str.as_mut().unwrap()
+            }
+            "mock_buy_delay_max_ms" => {
+                if self.mock_buy_delay_max_ms_str.is_none() {
+                    self.mock_buy_delay_max_ms_str = Some(default);
+                }
+                self.mock_buy_delay_max_ms_str.as_mut().unwrap()
             }
             _ => panic!("Unknown field id: {}", id),
         }
@@ -355,6 +414,28 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     }
     if state.socials_max_concurrent_str.is_none() {
         state.socials_max_concurrent_str = Some(config_clone.socials_max_concurrent.to_string());
+    }
+
+    // Initialize rate limiter config if needed
+    if state.das_max_requests_str.is_none() {
+        state.das_max_requests_str = Some(config_clone.das_max_requests.to_string());
+    }
+    if state.das_window_secs_str.is_none() {
+        state.das_window_secs_str = Some(config_clone.das_window_secs.to_string());
+    }
+    if state.socials_max_requests_str.is_none() {
+        state.socials_max_requests_str = Some(config_clone.socials_max_requests.to_string());
+    }
+    if state.socials_window_secs_str.is_none() {
+        state.socials_window_secs_str = Some(config_clone.socials_window_secs.to_string());
+    }
+
+    // Initialize mock buy delay config if needed
+    if state.mock_buy_delay_min_ms_str.is_none() {
+        state.mock_buy_delay_min_ms_str = Some(config_clone.mock_buy_delay_min_ms.to_string());
+    }
+    if state.mock_buy_delay_max_ms_str.is_none() {
+        state.mock_buy_delay_max_ms_str = Some(config_clone.mock_buy_delay_max_ms.to_string());
     }
     
     // Enhanced Wallet Private Key Section with premium styling
@@ -715,6 +796,59 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new("⚠️  Mock mode: Transactions will be simulated, not sent to blockchain")
                 .size(12.0)
                 .color(egui::Color32::from_rgb(255, 210, 110)));
+            
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mock Fill Delay Min (ms):")
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
+                let min_str = state.get_or_init("mock_buy_delay_min_ms", config_clone.mock_buy_delay_min_ms.to_string());
+                if ui.add(egui::TextEdit::singleline(min_str).desired_width(140.0)).changed() {
+                    if let Ok(val) = min_str.parse::<u64>() {
+                        if val > 0 {
+                            config_clone.mock_buy_delay_min_ms = val;
+                            // Keep invariant min <= max
+                            if config_clone.mock_buy_delay_min_ms > config_clone.mock_buy_delay_max_ms {
+                                config_clone.mock_buy_delay_max_ms = config_clone.mock_buy_delay_min_ms;
+                                if let Some(s) = state.mock_buy_delay_max_ms_str.as_mut() {
+                                    *s = config_clone.mock_buy_delay_max_ms.to_string();
+                                }
+                            }
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                
+                ui.add_space(20.0);
+                ui.label(egui::RichText::new("Max (ms):")
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(220, 230, 245)));
+                ui.add_space(8.0);
+                let max_str = state.get_or_init("mock_buy_delay_max_ms", config_clone.mock_buy_delay_max_ms.to_string());
+                if ui.add(egui::TextEdit::singleline(max_str).desired_width(140.0)).changed() {
+                    if let Ok(val) = max_str.parse::<u64>() {
+                        if val > 0 {
+                            config_clone.mock_buy_delay_max_ms = val;
+                            // Keep invariant min <= max
+                            if config_clone.mock_buy_delay_max_ms < config_clone.mock_buy_delay_min_ms {
+                                config_clone.mock_buy_delay_min_ms = config_clone.mock_buy_delay_max_ms;
+                                if let Some(s) = state.mock_buy_delay_min_ms_str.as_mut() {
+                                    *s = config_clone.mock_buy_delay_min_ms.to_string();
+                                }
+                            }
+                            apply_config_live(&config, &control_tx, &config_clone);
+                            state.last_update_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("ℹ️  Mock buy will wait a random delay between Min/Max before recording the simulated fill.")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(160, 170, 185)));
         }
         
         ui.add_space(6.0);
@@ -923,6 +1057,71 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
             }
+
+            // Breakeven settings
+            ui.add_space(10.0);
+            if ui.checkbox(&mut config_clone.enable_breakeven, egui::RichText::new("🛡️ Enable Breakeven (arm at MC → protect entry)")
+                    .size(13.0)).changed() {
+                // If enabling breakeven, set safe defaults if invalid
+                if config_clone.enable_breakeven {
+                    if config_clone.breakeven_arm_mc_usd <= 0.0 {
+                        config_clone.breakeven_arm_mc_usd = 10000.0;
+                    }
+                    if config_clone.breakeven_buffer_percent < 0.0 || config_clone.breakeven_buffer_percent > 100.0 {
+                        config_clone.breakeven_buffer_percent = 0.0;
+                    }
+                }
+                apply_config_live(&config, &control_tx, &config_clone);
+                state.last_update_time = Some(std::time::Instant::now());
+            }
+
+            if config_clone.enable_breakeven {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Arm Breakeven at MC (USD):")
+                        .size(13.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 230, 245)));
+                    ui.add_space(8.0);
+                    let arm_str = state.get_or_init("breakeven_arm_mc_usd", config_clone.breakeven_arm_mc_usd.to_string());
+                    if ui.add(egui::TextEdit::singleline(arm_str).desired_width(150.0)).changed() {
+                        if let Ok(val) = arm_str.parse::<f64>() {
+                            if val > 0.0 {
+                                config_clone.breakeven_arm_mc_usd = val;
+                                apply_config_live(&config, &control_tx, &config_clone);
+                                state.last_update_time = Some(std::time::Instant::now());
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("(Arm breakeven when MC reaches this)")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Breakeven Buffer (%):")
+                        .size(13.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 230, 245)));
+                    ui.add_space(8.0);
+                    let buffer_str = state.get_or_init("breakeven_buffer_percent", config_clone.breakeven_buffer_percent.to_string());
+                    if ui.add(egui::TextEdit::singleline(buffer_str).desired_width(150.0)).changed() {
+                        if let Ok(val) = buffer_str.parse::<f64>() {
+                            if val >= 0.0 && val <= 100.0 {
+                                config_clone.breakeven_buffer_percent = val;
+                                apply_config_live(&config, &control_tx, &config_clone);
+                                state.last_update_time = Some(std::time::Instant::now());
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("(0.0 = entry, e.g. 0.3 = entry+0.3%)")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(160, 170, 185)));
+                });
+            }
             
             ui.add_space(10.0);
             ui.label(egui::RichText::new("ℹ️  Auto-sell will trigger when:")
@@ -936,6 +1135,15 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
             ui.label(egui::RichText::new(format!("  • Market cap reaches {} (Take Profit)", format_mc_sol_with_usd(config_clone.take_profit_mc_sol)))
                 .size(11.0)
                 .color(egui::Color32::from_rgb(210, 220, 235)));
+            if config_clone.enable_breakeven {
+                ui.label(egui::RichText::new(format!(
+                    "  • After MC reaches ${:.0}, sell if PnL falls to entry + {:.2}% (Breakeven)",
+                    config_clone.breakeven_arm_mc_usd,
+                    config_clone.breakeven_buffer_percent
+                ))
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(210, 220, 235)));
+            }
             if config_clone.enable_dead_coin_sell {
                 ui.label(egui::RichText::new(format!("  • No price movement for {} seconds (Dead Coin)", config_clone.dead_coin_timeout_sec))
                     .size(11.0)
@@ -1508,6 +1716,89 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
     });
     
     ui.add_space(12.0);
+
+    // Rate limiting (local throttling)
+    ui.group(|ui| {
+        ui.set_min_height(140.0);
+        ui.heading(egui::RichText::new("⏱️ Rate Limiting (Local)")
+            .size(19.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 70, 70)));
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("DAS Max Requests:")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let das_max_req_str = state.get_or_init("das_max_requests", config_clone.das_max_requests.to_string());
+            if ui.add(egui::TextEdit::singleline(das_max_req_str).desired_width(100.0)).changed() {
+                if let Ok(val) = das_max_req_str.parse::<u32>() {
+                    if val > 0 {
+                        config_clone.das_max_requests = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("DAS Window (sec):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let das_win_str = state.get_or_init("das_window_secs", config_clone.das_window_secs.to_string());
+            if ui.add(egui::TextEdit::singleline(das_win_str).desired_width(100.0)).changed() {
+                if let Ok(val) = das_win_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.das_window_secs = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        });
+
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Socials Max Requests:")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let s_max_req_str = state.get_or_init("socials_max_requests", config_clone.socials_max_requests.to_string());
+            if ui.add(egui::TextEdit::singleline(s_max_req_str).desired_width(100.0)).changed() {
+                if let Ok(val) = s_max_req_str.parse::<u32>() {
+                    if val > 0 {
+                        config_clone.socials_max_requests = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("Socials Window (sec):")
+                .size(12.0)
+                .color(egui::Color32::from_rgb(220, 230, 245)));
+            ui.add_space(8.0);
+            let s_win_str = state.get_or_init("socials_window_secs", config_clone.socials_window_secs.to_string());
+            if ui.add(egui::TextEdit::singleline(s_win_str).desired_width(100.0)).changed() {
+                if let Ok(val) = s_win_str.parse::<u64>() {
+                    if val > 0 {
+                        config_clone.socials_window_secs = val;
+                        apply_config_live(&config, &control_tx, &config_clone);
+                        state.last_update_time = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("ℹ️  Local throttling to reduce rate-limit errors. These values take effect next time you start/restart the bot.")
+            .size(11.0)
+            .color(egui::Color32::from_rgb(160, 170, 185)));
+    });
     
     // Enhanced Token Metadata Filters
     ui.group(|ui| {

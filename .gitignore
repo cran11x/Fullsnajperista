@@ -24,6 +24,9 @@ Thumbs.db
 mock_buys_*.jsonl
 mock_sells_*.jsonl
 
+# Local installers / binaries (should not be committed)
+rustup-init.exe
+
 # Environment files
 .env
 .env.local

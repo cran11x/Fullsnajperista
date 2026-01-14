@@ -36,6 +36,9 @@ pub struct Config {
     pub enable_tracker: bool,
     pub mock_buy: bool,
     pub mock_sell: bool,
+    // Mock buy simulation timing (ms)
+    pub mock_buy_delay_min_ms: u64,
+    pub mock_buy_delay_max_ms: u64,
     pub target_mint_address: Option<Pubkey>,
     pub pump_program_id: Pubkey,
     pub global_account: Pubkey,
@@ -47,6 +50,10 @@ pub struct Config {
     pub enable_auto_sell: bool,
     pub stop_loss_percent: f64,
     pub take_profit_mc_sol: f64,
+    // Breakeven protection (arms at MC threshold, then sells back near entry)
+    pub enable_breakeven: bool,
+    pub breakeven_arm_mc_usd: f64,
+    pub breakeven_buffer_percent: f64,
     pub sell_percent: f64,
     pub monitor_interval_sec: u64,
     pub enable_dead_coin_sell: bool,
@@ -118,6 +125,11 @@ pub struct Config {
     pub socials_max_retries: u32,
     pub socials_retry_delay_ms: u64,
     pub socials_max_concurrent: usize,
+    // Rate limiting (local throttling to avoid API/provider limits)
+    pub das_max_requests: u32,
+    pub das_window_secs: u64,
+    pub socials_max_requests: u32,
+    pub socials_window_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +288,17 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
+        // Mock buy delay configuration (used only when MOCK_BUY=true)
+        let mock_buy_delay_min_ms = std::env::var("MOCK_BUY_DELAY_MIN_MS")
+            .unwrap_or_else(|_| "800".to_string())
+            .parse::<u64>()
+            .unwrap_or(800);
+
+        let mock_buy_delay_max_ms = std::env::var("MOCK_BUY_DELAY_MAX_MS")
+            .unwrap_or_else(|_| "2000".to_string())
+            .parse::<u64>()
+            .unwrap_or(2000);
+
         let pump_program_id = Pubkey::from_str(
             std::env::var("PUMP_PROGRAM_ID")
                 .unwrap_or_else(|_| PUMP_PROGRAM_ID.to_string())
@@ -343,6 +366,22 @@ impl Config {
             .unwrap_or_else(|_| "175.0".to_string()) // ~24000 USD at 137 SOL/USD
             .parse::<f64>()
             .map_err(|_| anyhow!("Invalid TAKE_PROFIT_MC_SOL"))?;
+
+        // Breakeven configuration (USD threshold + buffer %)
+        let enable_breakeven = std::env::var("ENABLE_BREAKEVEN")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let breakeven_arm_mc_usd = std::env::var("BREAKEVEN_ARM_MC_USD")
+            .unwrap_or_else(|_| "10000".to_string())
+            .parse::<f64>()
+            .unwrap_or(10000.0);
+
+        let breakeven_buffer_percent = std::env::var("BREAKEVEN_BUFFER_PERCENT")
+            .unwrap_or_else(|_| "0.0".to_string())
+            .parse::<f64>()
+            .unwrap_or(0.0);
 
         let sell_percent = std::env::var("SELL_PERCENT")
             .unwrap_or_else(|_| "100.0".to_string())
@@ -671,6 +710,27 @@ impl Config {
             .parse::<usize>()
             .unwrap_or(10);
 
+        // Rate limiting (local throttling)
+        let das_max_requests = std::env::var("DAS_MAX_REQUESTS")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<u32>()
+            .unwrap_or(10);
+
+        let das_window_secs = std::env::var("DAS_WINDOW_SECS")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse::<u64>()
+            .unwrap_or(60);
+
+        let socials_max_requests = std::env::var("SOCIALS_MAX_REQUESTS")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse::<u32>()
+            .unwrap_or(20);
+
+        let socials_window_secs = std::env::var("SOCIALS_WINDOW_SECS")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse::<u64>()
+            .unwrap_or(60);
+
         let config = Self {
             rpc_url: if rpc_url.ends_with('=') {
                 format!("{}{}", rpc_url, helius_api_key)
@@ -729,6 +789,8 @@ impl Config {
             enable_tracker,
             mock_buy,
             mock_sell,
+            mock_buy_delay_min_ms,
+            mock_buy_delay_max_ms,
             target_mint_address,
             pump_program_id,
             global_account,
@@ -740,6 +802,9 @@ impl Config {
             enable_auto_sell,
             stop_loss_percent,
             take_profit_mc_sol,
+            enable_breakeven,
+            breakeven_arm_mc_usd,
+            breakeven_buffer_percent,
             sell_percent,
             monitor_interval_sec,
             enable_dead_coin_sell,
@@ -811,6 +876,10 @@ impl Config {
             socials_max_retries,
             socials_retry_delay_ms,
             socials_max_concurrent,
+            das_max_requests,
+            das_window_secs,
+            socials_max_requests,
+            socials_window_secs,
         };
 
         config.validate()?;
@@ -839,6 +908,27 @@ impl Config {
             return Err(anyhow!("COMPUTE_UNITS must be > 0"));
         }
 
+        if self.mock_buy_delay_min_ms == 0 || self.mock_buy_delay_max_ms == 0 {
+            return Err(anyhow!("MOCK_BUY_DELAY_MIN_MS and MOCK_BUY_DELAY_MAX_MS must be > 0"));
+        }
+        if self.mock_buy_delay_min_ms > self.mock_buy_delay_max_ms {
+            return Err(anyhow!("MOCK_BUY_DELAY_MIN_MS must be <= MOCK_BUY_DELAY_MAX_MS"));
+        }
+
+        // Validate rate limiter settings
+        if self.das_max_requests == 0 {
+            return Err(anyhow!("DAS_MAX_REQUESTS must be > 0"));
+        }
+        if self.das_window_secs == 0 {
+            return Err(anyhow!("DAS_WINDOW_SECS must be > 0"));
+        }
+        if self.socials_max_requests == 0 {
+            return Err(anyhow!("SOCIALS_MAX_REQUESTS must be > 0"));
+        }
+        if self.socials_window_secs == 0 {
+            return Err(anyhow!("SOCIALS_WINDOW_SECS must be > 0"));
+        }
+
         // Validate auto-sell options only if auto-sell is enabled
         if self.enable_auto_sell {
             if self.stop_loss_percent < 0.0 || self.stop_loss_percent > 100.0 {
@@ -855,6 +945,19 @@ impl Config {
 
             if self.monitor_interval_sec == 0 {
                 return Err(anyhow!("MONITOR_INTERVAL_SEC must be > 0"));
+            }
+        }
+
+        // Validate breakeven options only if breakeven is enabled
+        if self.enable_breakeven {
+            if !self.enable_auto_sell {
+                return Err(anyhow!("ENABLE_BREAKEVEN requires ENABLE_AUTO_SELL=true"));
+            }
+            if self.breakeven_arm_mc_usd <= 0.0 {
+                return Err(anyhow!("BREAKEVEN_ARM_MC_USD must be > 0"));
+            }
+            if self.breakeven_buffer_percent < 0.0 || self.breakeven_buffer_percent > 100.0 {
+                return Err(anyhow!("BREAKEVEN_BUFFER_PERCENT must be between 0 and 100"));
             }
         }
 
@@ -961,6 +1064,8 @@ impl Default for Config {
             enable_tracker: true,
             mock_buy: false,
             mock_sell: false,
+            mock_buy_delay_min_ms: 800,
+            mock_buy_delay_max_ms: 2000,
             target_mint_address: None,
             pump_program_id: Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap(),
             global_account: Pubkey::from_str("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf").unwrap(),
@@ -972,6 +1077,9 @@ impl Default for Config {
             enable_auto_sell: false,
             stop_loss_percent: 30.0,
             take_profit_mc_sol: 175.0, // ~24000 USD at 137 SOL/USD
+            enable_breakeven: false,
+            breakeven_arm_mc_usd: 10000.0,
+            breakeven_buffer_percent: 0.0,
             sell_percent: 100.0,
             monitor_interval_sec: 5,
             enable_dead_coin_sell: false,
@@ -1043,6 +1151,10 @@ impl Default for Config {
             socials_max_retries: 2,
             socials_retry_delay_ms: 200,
             socials_max_concurrent: 10,
+            das_max_requests: 10,
+            das_window_secs: 60,
+            socials_max_requests: 20,
+            socials_window_secs: 60,
         }
     }
 }
@@ -1086,6 +1198,12 @@ mod tests {
         env::remove_var("MAX_DEV_TOKENS");
         env::remove_var("ENABLE_TRACKER");
         env::remove_var("MOCK_BUY");
+        env::remove_var("MOCK_BUY_DELAY_MIN_MS");
+        env::remove_var("MOCK_BUY_DELAY_MAX_MS");
+        env::remove_var("DAS_MAX_REQUESTS");
+        env::remove_var("DAS_WINDOW_SECS");
+        env::remove_var("SOCIALS_MAX_REQUESTS");
+        env::remove_var("SOCIALS_WINDOW_SECS");
     }
 
     #[test]
