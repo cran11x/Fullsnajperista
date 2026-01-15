@@ -11,6 +11,7 @@ target/
 *.json
 !Cargo.toml
 !package.json
+!tracker_*.json
 
 # IDE files
 .vscode/

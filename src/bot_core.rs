@@ -4318,13 +4318,6 @@ async fn monitor_positions(
             for position in active_positions.iter() {
                 // 🚀 ULTRA FAST: Check PnL from tracker FIRST (if available) - fastest path
                 if let Some(pnl_percent) = position.pnl_percent {
-                    // Breakeven (if armed) has priority over stop loss
-                    if enable_breakeven && position.breakeven_armed && pnl_percent <= breakeven_buffer_percent {
-                        // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
-                        positions_to_sell_immediately.push((position.clone(), "breakeven"));
-                        continue; // Skip to next position
-                    }
-
                     if pnl_percent <= -stop_loss_percent {
                         // PnL already calculated - use it immediately (NO RPC CALL NEEDED!)
                         positions_to_sell_immediately.push((position.clone(), "stop_loss"));
@@ -4361,11 +4354,7 @@ async fn monitor_positions(
                 };
 
                 if reason == "breakeven" {
-                    eprintln!(
-                        "🛡️ BREAKEVEN TRIGGERED: PnL = {:.2}% (threshold: <= {:.2}%) - SELLING IMMEDIATELY",
-                        position.pnl_percent.unwrap_or(0.0),
-                        breakeven_buffer_percent
-                    );
+                    eprintln!("🛡️ BREAKEVEN TRIGGERED: SELLING IMMEDIATELY");
                 } else {
                     eprintln!(
                         "🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (threshold: -{:.2}%) - SELLING IMMEDIATELY",
@@ -4561,15 +4550,28 @@ async fn monitor_positions(
                         let pnl_percent = ((current_price - entry_price) / entry_price) * 100.0;
                         
                         // Breakeven has priority over stop loss (only when armed)
-                        if config_clone.enable_breakeven && breakeven_armed_now && pnl_percent <= config_clone.breakeven_buffer_percent {
-                            eprintln!(
-                                "🛡️ BREAKEVEN TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: <= {:.2}%)",
-                                pnl_percent,
-                                entry_price,
-                                current_price,
-                                config_clone.breakeven_buffer_percent
-                            );
-                            Some("breakeven")
+                    if config_clone.enable_breakeven && breakeven_armed_now {
+                        // MC-based breakeven: after arming at target MC, sell if MC falls back to entry MC
+                        // Optional buffer allows selling slightly ABOVE entry MC (e.g. buffer=2 -> entry*1.02)
+                        let entry_mc_for_be = position_clone.mc_at_entry_sol
+                            .or(position_clone.mc_at_detection_sol)
+                            .unwrap_or(0.0);
+                        if is_mc_valid && entry_mc_for_be > 0.0 {
+                            let be_threshold_mc = entry_mc_for_be * (1.0 + (config_clone.breakeven_buffer_percent / 100.0));
+                            if current_mc_sol <= be_threshold_mc {
+                                eprintln!(
+                                    "🛡️ BREAKEVEN TRIGGERED (MC): MC fell back to entry (current {:.2} SOL, entry {:.2} SOL, threshold <= {:.2} SOL)",
+                                    current_mc_sol,
+                                    entry_mc_for_be,
+                                    be_threshold_mc
+                                );
+                                Some("breakeven")
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                         } else if pnl_percent <= -stop_loss_percent {
                             eprintln!("🚨 STOP LOSS TRIGGERED: PnL = {:.2}% (price: {:.8} -> {:.8}, threshold: -{:.2}%)", 
                                      pnl_percent, entry_price, current_price, stop_loss_percent);

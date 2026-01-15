@@ -1060,7 +1060,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
 
             // Breakeven settings
             ui.add_space(10.0);
-            if ui.checkbox(&mut config_clone.enable_breakeven, egui::RichText::new("🛡️ Enable Breakeven (arm at MC → protect entry)")
+            if ui.checkbox(&mut config_clone.enable_breakeven, egui::RichText::new("🛡️ Enable Breakeven (arm at MC → sell on return to entry MC)")
                     .size(13.0)).changed() {
                 // If enabling breakeven, set safe defaults if invalid
                 if config_clone.enable_breakeven {
@@ -1101,7 +1101,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Breakeven Buffer (%):")
+                    ui.label(egui::RichText::new("Breakeven Buffer (% of entry MC):")
                         .size(13.0)
                         .strong()
                         .color(egui::Color32::from_rgb(220, 230, 245)));
@@ -1117,7 +1117,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                         }
                     }
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("(0.0 = entry, e.g. 0.3 = entry+0.3%)")
+                    ui.label(egui::RichText::new("(0.0 = entry MC, e.g. 0.3 = entry MC +0.3%)")
                         .size(11.0)
                         .color(egui::Color32::from_rgb(160, 170, 185)));
                 });
@@ -1137,7 +1137,7 @@ pub fn render(ui: &mut egui::Ui, config: &Arc<RwLock<Config>>, control_tx: &mpsc
                 .color(egui::Color32::from_rgb(210, 220, 235)));
             if config_clone.enable_breakeven {
                 ui.label(egui::RichText::new(format!(
-                    "  • After MC reaches ${:.0}, sell if PnL falls to entry + {:.2}% (Breakeven)",
+                    "  • After MC reaches ${:.0}, sell if MC falls back to entry MC (+{:.2}% buffer)",
                     config_clone.breakeven_arm_mc_usd,
                     config_clone.breakeven_buffer_percent
                 ))
