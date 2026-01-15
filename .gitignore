@@ -23,6 +23,7 @@ Thumbs.db
 *.tmp
 mock_buys_*.jsonl
 mock_sells_*.jsonl
+tracker_*.json
 
 # Local installers / binaries (should not be committed)
 rustup-init.exe
