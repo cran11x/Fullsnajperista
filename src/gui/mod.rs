@@ -620,6 +620,11 @@ impl GuiApp {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (control_tx_bot, control_rx_bot) = tokio::sync::mpsc::unbounded_channel();
         let wallet_balance_clone = self.wallet_balance.clone();
+
+        // Position snapshot logger (optional; bot should still run if creation fails)
+        let snapshot_logger = Arc::new(std::sync::Mutex::new(
+            crate::tracking_logger::create_snapshot_logger().ok(),
+        ));
         
         // Store bot control tx so stop_bot() and handle_control_messages() can use it
         self.control_tx_bot = Some(control_tx_bot.clone());
@@ -773,6 +778,7 @@ impl GuiApp {
                     event_tx.clone(),
                     control_rx_bot,
                     wallet_balance_clone,
+                    snapshot_logger,
                 ).await {
                     Ok(_) => {
                         eprintln!("[BOT] Bot thread finished successfully");

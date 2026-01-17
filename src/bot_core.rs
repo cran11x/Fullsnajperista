@@ -342,6 +342,7 @@ pub async fn run_bot(
     event_tx: mpsc::UnboundedSender<TokenEvent>,
     mut control_rx: mpsc::UnboundedReceiver<BotControl>,
     wallet_balance: Arc<std::sync::RwLock<f64>>,
+    snapshot_logger: Arc<std::sync::Mutex<Option<crate::tracking_logger::SnapshotLogger>>>,
 ) -> Result<()> {
     let call_number = RUN_BOT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     eprintln!("[BOT] Started (call #{})", call_number);
@@ -473,6 +474,7 @@ pub async fn run_bot(
             pnl_history,
             pnl_shutdown,
             tracking_logger,
+            snapshot_logger,
         ).await;
     });
     
@@ -2838,6 +2840,9 @@ async fn process_and_buy(
                             sell_signature: None,
                             breakeven_armed: false,
                             breakeven_armed_at_mc_sol: None,
+                            breakeven_arm_threshold_mc_sol: None,
+                            breakeven_entry_mc_sol: None,
+                            breakeven_stop_mc_sol: None,
                             current_price_sol: None,
                             current_value_sol: None,
                             pnl_sol: None,
@@ -2860,6 +2865,7 @@ async fn process_and_buy(
                             sell_failure_timestamp: None,
                             sell_reason: None,
                             sell_timestamp: None,
+                            sell_mc_sol: None,
                             tracking_error_count: 0,
                             last_tracking_error: None,
                             last_successful_tracking: None,
@@ -3441,6 +3447,9 @@ async fn process_and_buy(
                         sell_signature: None,
                         breakeven_armed: false,
                         breakeven_armed_at_mc_sol: None,
+                        breakeven_arm_threshold_mc_sol: None,
+                        breakeven_entry_mc_sol: None,
+                        breakeven_stop_mc_sol: None,
                         current_price_sol: None,
                         current_value_sol: None,
                         pnl_sol: None,
@@ -3463,6 +3472,7 @@ async fn process_and_buy(
                         sell_failure_timestamp: None,
                         sell_reason: None,
                         sell_timestamp: None,
+                        sell_mc_sol: None,
                         tracking_error_count: 0,
                         last_tracking_error: None,
                         last_successful_tracking: None,
@@ -4531,9 +4541,29 @@ async fn monitor_positions(
                     if config_clone.enable_breakeven && is_mc_valid && !breakeven_armed_now {
                         let arm_mc_sol = crate::utils::usd_to_sol(config_clone.breakeven_arm_mc_usd);
                         if arm_mc_sol > 0.0 && current_mc_sol >= arm_mc_sol {
+                            // Record exact breakeven thresholds in tracker (for debugging)
+                            let entry_mc_for_be = position_clone
+                                .mc_at_entry_sol
+                                .or(position_clone.mc_at_detection_sol)
+                                .unwrap_or(0.0);
+                            let stop_mc_sol = if entry_mc_for_be > 0.0 {
+                                entry_mc_for_be * (1.0 + (config_clone.breakeven_buffer_percent / 100.0))
+                            } else {
+                                0.0
+                            };
                             if let Ok(mut guard) = tracker_clone.write() {
                                 if let Some(t) = guard.as_mut() {
-                                    let _ = t.mark_breakeven_armed(&position_clone.mint, current_mc_sol);
+                                    if entry_mc_for_be > 0.0 && stop_mc_sol > 0.0 {
+                                        let _ = t.mark_breakeven_armed_with_thresholds(
+                                            &position_clone.mint,
+                                            current_mc_sol,
+                                            arm_mc_sol,
+                                            entry_mc_for_be,
+                                            stop_mc_sol,
+                                        );
+                                    } else {
+                                        let _ = t.mark_breakeven_armed(&position_clone.mint, current_mc_sol);
+                                    }
                                 }
                             }
                             breakeven_armed_now = true;
@@ -5161,6 +5191,9 @@ pub async fn execute_manual_buy(
             sell_signature: None,
             breakeven_armed: false,
             breakeven_armed_at_mc_sol: None,
+            breakeven_arm_threshold_mc_sol: None,
+            breakeven_entry_mc_sol: None,
+            breakeven_stop_mc_sol: None,
             current_price_sol: None,
             current_value_sol: None,
             pnl_sol: None,
@@ -5183,6 +5216,7 @@ pub async fn execute_manual_buy(
             sell_failure_timestamp: None,
             sell_reason: None,
             sell_timestamp: None,
+            sell_mc_sol: None,
             tracking_error_count: 0,
             last_tracking_error: None,
             last_successful_tracking: None,
@@ -5753,7 +5787,13 @@ async fn execute_sell(
             .or_else(|| Some(reason.to_string()));
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
+                let sell_mc_sol = details.as_ref().and_then(|d| d.current_mc_sol);
+                let _ = tracker.mark_as_sold_with_context(
+                    &position.mint,
+                    mock_signature.clone(),
+                    sell_reason,
+                    sell_mc_sol,
+                );
             }
         }
         eprintln!("[DEBUG] 🧪 MOCK SELL: Marking position as sold in tracker...");
@@ -5920,7 +5960,13 @@ async fn execute_sell(
             .or_else(|| Some(reason.to_string()));
         if let Ok(mut tracker_opt) = tracker.write() {
             if let Some(tracker) = tracker_opt.as_mut() {
-                let _ = tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason);
+                let sell_mc_sol = details.as_ref().and_then(|d| d.current_mc_sol);
+                let _ = tracker.mark_as_sold_with_context(
+                    &position.mint,
+                    signature.clone(),
+                    sell_reason,
+                    sell_mc_sol,
+                );
             }
         }
     } else {
@@ -6155,7 +6201,13 @@ async fn execute_sell_with_percent(
                         let sell_fees_sol = priority_fee_sol + base_fee_sol + helius_tip_sol;
                         let _ = tracker.apply_sell_snapshot(&position.mint, current_price, sell_fees_sol);
                     }
-                    let _ = tracker.mark_as_sold(&position.mint, mock_signature.clone(), sell_reason);
+                    let sell_mc_sol = details.as_ref().and_then(|d| d.current_mc_sol);
+                    let _ = tracker.mark_as_sold_with_context(
+                        &position.mint,
+                        mock_signature.clone(),
+                        sell_reason,
+                        sell_mc_sol,
+                    );
                 } else {
                     // Partial sell - update balance
                     let new_balance = token_balance - sell_amount;
@@ -6362,9 +6414,10 @@ async fn execute_sell_with_percent(
     let update_result = {
         if let Ok(mut tracker_opt) = tracker.try_write() {
             if let Some(tracker) = tracker_opt.as_mut() {
+                let sell_mc_sol = details.as_ref().and_then(|d| d.current_mc_sol);
                 if sell_percent >= 100.0 {
                     // Full sell
-                    tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason)
+                    tracker.mark_as_sold_with_context(&position.mint, signature.clone(), sell_reason, sell_mc_sol)
                 } else {
                     // Partial sell - update balance and track
                     let new_balance = token_balance - sell_amount;
@@ -6392,8 +6445,9 @@ async fn execute_sell_with_percent(
                 .or_else(|| Some(reason.to_string()));
             if let Ok(mut tracker_opt) = tracker.try_write() {
                 if let Some(tracker) = tracker_opt.as_mut() {
+                    let sell_mc_sol = details.as_ref().and_then(|d| d.current_mc_sol);
                     let retry_result = if sell_percent >= 100.0 {
-                        tracker.mark_as_sold(&position.mint, signature.clone(), sell_reason_retry)
+                        tracker.mark_as_sold_with_context(&position.mint, signature.clone(), sell_reason_retry, sell_mc_sol)
                     } else {
                         let new_balance = token_balance - sell_amount;
                         tracker.update_token_amount(&position.mint, new_balance)
@@ -6432,6 +6486,7 @@ async fn monitor_pnl_ultra_fast(
     history_tracker: Arc<std::sync::RwLock<crate::accounts::HistoryTracker>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     tracking_logger: Arc<std::sync::Mutex<Option<crate::tracking_logger::TrackingLogger>>>,
+    snapshot_logger: Arc<std::sync::Mutex<Option<crate::tracking_logger::SnapshotLogger>>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(150)); // Update every 150ms (~7x/sec) - balanced for UI responsiveness
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -6457,6 +6512,9 @@ async fn monitor_pnl_ultra_fast(
                 0
             }
         };
+
+        // Snapshot cadence: log ~1x/sec (PnL loop is ~150ms)
+        let should_snapshot = cycle % 7 == 0;
         
         // Use select to check shutdown during interval tick
         tokio::select! {
@@ -6543,12 +6601,12 @@ async fn monitor_pnl_ultra_fast(
         for (idx, (mint, bonding_curve_str)) in position_data.iter().enumerate() {
             let mint_short = if mint.len() > 8 { &mint[..8] } else { mint };
             
-            // Get position info for logging
-            let position_info = {
+            // Get position info for logging (and full position for snapshot logging)
+            let position_buy = {
                 if let Ok(tracker_guard) = tracker.read() {
                     if let Some(tracker_ref) = tracker_guard.as_ref() {
                         if let Some(pos) = tracker_ref.get_active_positions().iter().find(|p| p.mint == *mint) {
-                            Some(crate::tracking_logger::PositionTrackingInfo::from(pos))
+                            Some(pos.clone())
                         } else {
                             None
                         }
@@ -6559,6 +6617,8 @@ async fn monitor_pnl_ultra_fast(
                     None
                 }
             };
+
+            let position_info = position_buy.as_ref().map(crate::tracking_logger::PositionTrackingInfo::from);
             
             let context = crate::tracking_logger::TrackingContext {
                 monitor_cycle: Some(cycle),
@@ -6644,6 +6704,40 @@ async fn monitor_pnl_ultra_fast(
                 let current_mc_sol = curve.calculate_mc_sol();
                 use crate::utils::sol_to_usd;
                 let _current_mc = sol_to_usd(current_mc_sol);
+
+                // Time-series snapshot logging (no extra RPC; uses already computed values)
+                if should_snapshot {
+                    if let Some(ref pos) = position_buy {
+                        if let Ok(logger_guard) = snapshot_logger.lock() {
+                            if let Some(ref logger) = *logger_guard {
+                                let entry_mc_sol = pos.mc_at_entry_sol.unwrap_or(0.0);
+                                let peak_mc_sol = pos.peak_mc_sol.unwrap_or(current_mc_sol);
+                                let entry_price = pos.token_price_sol.unwrap_or(0.0);
+                                let pnl_percent = if entry_price > 0.0 {
+                                    ((current_price - entry_price) / entry_price) * 100.0
+                                } else {
+                                    pos.pnl_percent.unwrap_or(0.0)
+                                };
+                                let time_held_sec = {
+                                    let now = Utc::now();
+                                    now.signed_duration_since(pos.timestamp).num_seconds().max(0) as u64
+                                };
+                                let _ = logger.log(crate::tracking_logger::PositionSnapshot {
+                                    ts: Utc::now(),
+                                    mint: pos.mint.clone(),
+                                    entry_mc_sol,
+                                    peak_mc_sol,
+                                    current_mc_sol,
+                                    entry_price,
+                                    current_price,
+                                    pnl_percent,
+                                    breakeven_armed: pos.breakeven_armed,
+                                    time_held_sec,
+                                });
+                            }
+                        }
+                    }
+                }
                 
                 // ✅ VALIDATION: Check if price is suspicious before using it
                 let _price_validation: Option<()> = if let Some(ref pos_info) = position_info {

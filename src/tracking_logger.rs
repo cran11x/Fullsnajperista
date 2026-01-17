@@ -427,12 +427,76 @@ impl TrackingLogger {
     }
 }
 
+// =========================
+// Position Snapshot Logger
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionSnapshot {
+    pub ts: DateTime<Utc>,
+    pub mint: String,
+    pub entry_mc_sol: f64,
+    pub peak_mc_sol: f64,
+    pub current_mc_sol: f64,
+    pub entry_price: f64,
+    pub current_price: f64,
+    pub pnl_percent: f64,
+    pub breakeven_armed: bool,
+    pub time_held_sec: u64,
+}
+
+pub struct SnapshotLogger {
+    file_path: String,
+    writer: Mutex<BufWriter<File>>,
+}
+
+impl SnapshotLogger {
+    pub fn new(file_path: impl AsRef<Path>) -> Result<Self> {
+        let path = file_path.as_ref();
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+
+        Ok(Self {
+            file_path: path.to_string_lossy().to_string(),
+            writer: Mutex::new(BufWriter::new(file)),
+        })
+    }
+
+    pub fn log(&self, snapshot: PositionSnapshot) -> Result<()> {
+        let mut writer = self.writer.lock().unwrap();
+        serde_json::to_writer(&mut *writer, &snapshot)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+}
+
 // Helper function to create logger with timestamped filename
 pub fn create_tracking_logger() -> Result<TrackingLogger> {
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
     let filename = format!("tracking_log_{}.jsonl", timestamp);
     eprintln!("📊 Creating tracking logger: {}", filename);
     TrackingLogger::new(&filename)
+}
+
+// Helper function to create snapshot logger with daily rotation
+pub fn create_snapshot_logger() -> Result<SnapshotLogger> {
+    let date = Utc::now().format("%Y-%m-%d");
+    let filename = format!("snapshots_{}.jsonl", date);
+    eprintln!("📈 Creating snapshot logger: {}", filename);
+    SnapshotLogger::new(&filename)
 }
 
 // Helper to create PositionTrackingInfo from TokenBuy

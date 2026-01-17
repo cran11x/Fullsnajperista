@@ -43,6 +43,13 @@ pub struct TokenBuy {
     pub breakeven_armed: bool,
     #[serde(default)]
     pub breakeven_armed_at_mc_sol: Option<f64>,
+    // Breakeven details (for debugging/visibility)
+    #[serde(default)]
+    pub breakeven_arm_threshold_mc_sol: Option<f64>, // Configured arm threshold (converted to SOL at runtime)
+    #[serde(default)]
+    pub breakeven_entry_mc_sol: Option<f64>,         // Entry MC used for breakeven (mc_at_entry or mc_at_detection)
+    #[serde(default)]
+    pub breakeven_stop_mc_sol: Option<f64>,          // Stop MC threshold after arming (entry_mc * (1 + buffer%))
 
     // 🆕 NEW: Ultra Live PnL tracking
     pub current_price_sol: Option<f64>,      // Current token price in SOL
@@ -95,6 +102,8 @@ pub struct TokenBuy {
     pub sell_reason: Option<String>,           // Reason why position was sold (e.g., "stop_loss", "take_profit", "manual_sell", "strategy_xxx")
     #[serde(default)]
     pub sell_timestamp: Option<DateTime<Utc>>, // When the position was sold
+    #[serde(default)]
+    pub sell_mc_sol: Option<f64>,              // MC at sell time (if known)
     
     // 🆕 NEW: Tracking error tracking
     #[serde(default)]
@@ -735,11 +744,23 @@ impl TokenTracker {
 
     /// Mark a position as sold
     pub fn mark_as_sold(&mut self, mint: &str, sell_signature: String, sell_reason: Option<String>) -> Result<()> {
+        self.mark_as_sold_with_context(mint, sell_signature, sell_reason, None)
+    }
+
+    /// Mark as sold and optionally attach sell-time MC (useful for debugging why a sell triggered)
+    pub fn mark_as_sold_with_context(
+        &mut self,
+        mint: &str,
+        sell_signature: String,
+        sell_reason: Option<String>,
+        sell_mc_sol: Option<f64>,
+    ) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
             buy.sold = true;
             buy.sell_signature = Some(sell_signature);
             buy.sell_reason = sell_reason.clone();
             buy.sell_timestamp = Some(Utc::now());
+            buy.sell_mc_sol = sell_mc_sol;
             
             // If sell_reason starts with "strategy_", extract rule ID and add to executed_sell_rules
             if let Some(ref reason) = sell_reason {
@@ -826,6 +847,30 @@ impl TokenTracker {
                 buy.breakeven_armed_at_mc_sol = Some(mc_sol);
                 self.save_json()?;
             }
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
+    /// Arm breakeven and persist the exact thresholds used (for debugging / transparency in UI)
+    pub fn mark_breakeven_armed_with_thresholds(
+        &mut self,
+        mint: &str,
+        armed_at_mc_sol: f64,
+        arm_threshold_mc_sol: f64,
+        entry_mc_sol: f64,
+        stop_mc_sol: f64,
+    ) -> Result<()> {
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            if !buy.breakeven_armed {
+                buy.breakeven_armed = true;
+                buy.breakeven_armed_at_mc_sol = Some(armed_at_mc_sol);
+            }
+            buy.breakeven_arm_threshold_mc_sol = Some(arm_threshold_mc_sol);
+            buy.breakeven_entry_mc_sol = Some(entry_mc_sol);
+            buy.breakeven_stop_mc_sol = Some(stop_mc_sol);
+            self.save_json()?;
             Ok(())
         } else {
             Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
