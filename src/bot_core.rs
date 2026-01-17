@@ -6704,40 +6704,6 @@ async fn monitor_pnl_ultra_fast(
                 let current_mc_sol = curve.calculate_mc_sol();
                 use crate::utils::sol_to_usd;
                 let _current_mc = sol_to_usd(current_mc_sol);
-
-                // Time-series snapshot logging (no extra RPC; uses already computed values)
-                if should_snapshot {
-                    if let Some(ref pos) = position_buy {
-                        if let Ok(logger_guard) = snapshot_logger.lock() {
-                            if let Some(ref logger) = *logger_guard {
-                                let entry_mc_sol = pos.mc_at_entry_sol.unwrap_or(0.0);
-                                let peak_mc_sol = pos.peak_mc_sol.unwrap_or(current_mc_sol);
-                                let entry_price = pos.token_price_sol.unwrap_or(0.0);
-                                let pnl_percent = if entry_price > 0.0 {
-                                    ((current_price - entry_price) / entry_price) * 100.0
-                                } else {
-                                    pos.pnl_percent.unwrap_or(0.0)
-                                };
-                                let time_held_sec = {
-                                    let now = Utc::now();
-                                    now.signed_duration_since(pos.timestamp).num_seconds().max(0) as u64
-                                };
-                                let _ = logger.log(crate::tracking_logger::PositionSnapshot {
-                                    ts: Utc::now(),
-                                    mint: pos.mint.clone(),
-                                    entry_mc_sol,
-                                    peak_mc_sol,
-                                    current_mc_sol,
-                                    entry_price,
-                                    current_price,
-                                    pnl_percent,
-                                    breakeven_armed: pos.breakeven_armed,
-                                    time_held_sec,
-                                });
-                            }
-                        }
-                    }
-                }
                 
                 // ✅ VALIDATION: Check if price is suspicious before using it
                 let _price_validation: Option<()> = if let Some(ref pos_info) = position_info {
@@ -6790,11 +6756,15 @@ async fn monitor_pnl_ultra_fast(
                 let mut our_buy_sol_for_history: Option<f64> = None;
                 let mut token_amount_for_history: Option<u64> = None;
                 let mut bonding_curve_for_history: Option<String> = None;
+                let mut snapshot_position_buy: Option<crate::accounts::TokenBuy> = None;
                 
                 // Update PnL and peak MC in tracker (fast, no disk write)
                 // ✅ OPTIMIZED: Use try_write to avoid blocking UI thread
                 if let Ok(mut tracker_guard) = tracker.try_write() {
                     if let Some(tracker) = tracker_guard.as_mut() {
+                        // Track peak MC (this must happen before snapshot logging so peak never decreases)
+                        let _ = tracker.update_position_peak_mc_fast(mint, current_mc_sol);
+
                         let pnl_start = std::time::Instant::now();
                         let pnl_result = tracker.update_position_pnl_fast(mint, current_price);
                         let pnl_duration_ms = pnl_start.elapsed().as_millis() as u64;
@@ -6856,6 +6826,9 @@ async fn monitor_pnl_ultra_fast(
                             our_buy_sol_for_history = Some(pos.our_buy_sol);
                             token_amount_for_history = pos.token_amount;
                             bonding_curve_for_history = pos.bonding_curve.clone();
+                            if should_snapshot {
+                                snapshot_position_buy = Some(pos.clone());
+                            }
                         }
                     } else {
                         // Tracker is None - skip silently (not an error condition)
@@ -6863,6 +6836,46 @@ async fn monitor_pnl_ultra_fast(
                 } else {
                     // Failed to acquire lock - UI thread is reading, skip this update (will retry next cycle)
                     // Don't log as this is expected when UI is actively rendering
+                }
+
+                // Time-series snapshot logging (no extra RPC; uses already computed values).
+                // IMPORTANT: This is intentionally *after* updating peak MC in tracker, so `peak_mc_sol` never decreases.
+                if should_snapshot {
+                    let pos_for_snapshot = snapshot_position_buy.as_ref().or(position_buy.as_ref());
+                    if let Some(pos) = pos_for_snapshot {
+                        if let Ok(logger_guard) = snapshot_logger.lock() {
+                            if let Some(ref logger) = *logger_guard {
+                                let entry_mc_sol = pos.mc_at_entry_sol.unwrap_or(0.0);
+                                let peak_mc_sol = pos
+                                    .peak_mc_sol
+                                    .unwrap_or(current_mc_sol)
+                                    .max(current_mc_sol);
+                                let entry_price = pos.token_price_sol.unwrap_or(0.0);
+                                let pnl_percent = if entry_price > 0.0 {
+                                    ((current_price - entry_price) / entry_price) * 100.0
+                                } else {
+                                    pos.pnl_percent.unwrap_or(0.0)
+                                };
+                                let time_held_sec = {
+                                    let now = Utc::now();
+                                    now.signed_duration_since(pos.timestamp).num_seconds().max(0) as u64
+                                };
+
+                                let _ = logger.log(crate::tracking_logger::PositionSnapshot {
+                                    ts: Utc::now(),
+                                    mint: pos.mint.clone(),
+                                    entry_mc_sol,
+                                    peak_mc_sol,
+                                    current_mc_sol,
+                                    entry_price,
+                                    current_price,
+                                    pnl_percent,
+                                    breakeven_armed: pos.breakeven_armed,
+                                    time_held_sec,
+                                });
+                            }
+                        }
+                    }
                 }
                 
                 // 📊 ULTRA HISTORY: Record snapshot for chart generation

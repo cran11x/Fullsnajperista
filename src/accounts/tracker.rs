@@ -1155,6 +1155,23 @@ impl TokenTracker {
         }
     }
 
+    /// Update peak market cap (in SOL) for a position (ultra-fast, no disk write).
+    /// Peak is defined as the maximum `current_mc_sol` observed over time and should never decrease.
+    pub fn update_position_peak_mc_fast(&mut self, mint: &str, current_mc_sol: f64) -> Result<()> {
+        // Ignore invalid values (prevents poisoning peak with NaN/inf)
+        if !current_mc_sol.is_finite() || current_mc_sol.is_nan() || current_mc_sol <= 0.0 {
+            return Ok(());
+        }
+
+        if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
+            let prev = buy.peak_mc_sol.unwrap_or(current_mc_sol);
+            buy.peak_mc_sol = Some(prev.max(current_mc_sol));
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Position not found or already sold: {}", mint))
+        }
+    }
+
     /// Apply a sell-time PnL snapshot with explicit sell fees (used for mock sells and any future precise sell accounting)
     pub fn apply_sell_snapshot(&mut self, mint: &str, current_price_sol: f64, sell_fees_sol: f64) -> Result<()> {
         if let Some(buy) = self.stats.buys.iter_mut().find(|b| b.mint == mint && !b.sold) {
@@ -1311,6 +1328,93 @@ mod tests {
         assert!(position.peak_pnl_percent.unwrap_or(0.0) >= peak_before.unwrap_or(0.0));
         // Current PnL should also be higher now
         assert!(position.pnl_percent.is_some());
+    }
+
+    #[test]
+    fn test_peak_mc_tracking() {
+        let mut tracker = TokenTracker::new().unwrap();
+        tracker.clear_all_buys().unwrap(); // Clear any existing data for test isolation
+
+        let buy = TokenBuy {
+            token_number: 1,
+            mint: "test_mint_peak_mc".to_string(),
+            signature: "test_sig".to_string(),
+            creator: "test_creator".to_string(),
+            dev_buy_sol: 2.0,
+            our_buy_sol: 0.1,
+            timestamp: Utc::now(),
+            has_socials: false,
+            twitter: None,
+            website: None,
+            telegram: None,
+            discord: None,
+            twitter_type: None,
+            creator_token_count: 0,
+            detection_method: "instruction".to_string(),
+            mc_at_detection_sol: Some(10.0),
+            mc_at_entry_sol: Some(10.0),
+            token_price_sol: Some(0.00005),
+            token_amount: Some(2000000), // 2 tokens with 6 decimals
+            user_token_account: None,
+            bonding_curve: Some("test_bonding_curve".to_string()),
+            sold: false,
+            sell_signature: None,
+            current_price_sol: None,
+            current_value_sol: None,
+            pnl_sol: None,
+            pnl_percent: None,
+            last_pnl_update: None,
+            buy_fees_sol: Some(0.00001),
+            peak_mc_sol: None,
+            peak_pnl_percent: None,
+            executed_sell_rules: Vec::new(),
+            partial_sell_count: 0,
+            total_sold_percent: 0.0,
+            dev_buy_usd: None,
+            our_buy_usd: None,
+            pnl_usd: None,
+            mc_at_detection_usd: None,
+            mc_at_entry_usd: None,
+            current_value_usd: None,
+            sell_failure_reason: None,
+            sell_failure_timestamp: None,
+            sell_reason: None,
+            sell_timestamp: None,
+            socials_source: None,
+            tracking_error_count: 0,
+            last_tracking_error: None,
+            last_successful_tracking: None,
+            suspicious_price_detected: false,
+            bonding_curve_mismatch_detected: false,
+        };
+
+        tracker.record_buy(buy).unwrap();
+
+        tracker.update_position_peak_mc_fast("test_mint_peak_mc", 12.0).unwrap();
+        let pos = tracker
+            .get_active_positions()
+            .into_iter()
+            .find(|p| p.mint == "test_mint_peak_mc")
+            .unwrap();
+        assert_eq!(pos.peak_mc_sol, Some(12.0));
+
+        // Lower MC should NOT decrease peak
+        tracker.update_position_peak_mc_fast("test_mint_peak_mc", 11.0).unwrap();
+        let pos = tracker
+            .get_active_positions()
+            .into_iter()
+            .find(|p| p.mint == "test_mint_peak_mc")
+            .unwrap();
+        assert_eq!(pos.peak_mc_sol, Some(12.0));
+
+        // Higher MC should update peak
+        tracker.update_position_peak_mc_fast("test_mint_peak_mc", 20.0).unwrap();
+        let pos = tracker
+            .get_active_positions()
+            .into_iter()
+            .find(|p| p.mint == "test_mint_peak_mc")
+            .unwrap();
+        assert_eq!(pos.peak_mc_sol, Some(20.0));
     }
 
     #[test]
